@@ -1,0 +1,231 @@
+/* --- palettes --------------------------------------------------------
+   Appearance has two axes: a theme (the family of colours) and a mode
+   (dark or light). Both are attributes on <html>, set before React mounts
+   so the app never flashes the wrong palette on load.
+
+   Every combination declares the whole set rather than patching the block
+   above it. A partial override is how a warm theme ends up with one cold
+   grey panel, and check-theme refuses it.
+
+   Names say what a part is, not what colour it happens to be: --chrome is
+   the menu bar and status bar, whatever colour a theme makes them.
+
+   --pasteboard is the one colour a theme doesn't get to choose freely. It
+   is the ground around the image, and a tinted ground shifts how every
+   colour in the image is judged, so it is a neutral grey (equal R, G and B)
+   in every palette. The interface around it can be as warm or cold as the
+   theme likes. check-theme holds every palette to this.
+-------------------------------------------------------------------- */
+
+/* --- graphite, dark: the default ------------------------------------ */
+:root,
+:root[data-theme="graphite"][data-mode="dark"] {
+  color-scheme: dark;
+
+  --bg: #1b1c1e;
+  --chrome: #252629;
+  --chrome-edge: #131415;
+  --panel: #2b2c30;
+  --panel-head: #313237;
+  --hairline: #36383d;
+  --rule: #4a4c52;
+
+  --ink: #e8e8ea;
+  --ink-dim: #b7b8bd;
+  --ink-faint: #9a9ca2;
+
+  /* --accent fills (a primary button, a selected row's marker); --accent-line
+     is the same hue where it has to hold up as text or a thin stroke. */
+  --accent: #3a66db;
+  --accent-line: #8aaaff;
+  --on-accent: #ffffff;
+  --danger: #c2412f;
+  --on-danger: #ffffff;
+  --focus: #8aaaff;
+
+  --field: #1f2023;
+  --field-edge: #4a4c53;
+  --hover: #393b41;
+  --selected: #2f3d66;
+  --menu: #303135;
+  --menu-edge: #121314;
+  --shadow: rgb(0 0 0 / 0.5);
+  --scrim: rgb(0 0 0 / 0.45);
+
+  --pasteboard: #2b2b2b;
+}
+
+/* --- graphite, light ------------------------------------------------ */
+:root[data-theme="graphite"][data-mode="light"] {
+  color-scheme: light;
+
+  --bg: #c9cacd;
+  --chrome: #e4e5e8;
+  --chrome-edge: #b4b6bb;
+  --panel: #eeeff1;
+  --panel-head: #e3e4e7;
+  --hairline: #d4d6da;
+  --rule: #b0b3b9;
+
+  --ink: #1a1b1e;
+  --ink-dim: #43464d;
+  --ink-faint: #5e626a;
+
+  --accent: #2f5bd3;
+  --accent-line: #2a51bd;
+  --on-accent: #ffffff;
+  --danger: #b23a2b;
+  --on-danger: #ffffff;
+  --focus: #2f5bd3;
+
+  --field: #ffffff;
+  --field-edge: #b9bcc2;
+  --hover: #dfe1e5;
+  --selected: #d4def8;
+  --menu: #f7f7f8;
+  --menu-edge: #a9acb2;
+  --shadow: rgb(20 22 28 / 0.22);
+  --scrim: rgb(20 22 28 / 0.3);
+
+  --pasteboard: #b4b4b4;
+}
+
+/* --- darkroom, dark: warm greys and a safelight amber --------------- */
+:root[data-theme="darkroom"][data-mode="dark"] {
+  color-scheme: dark;
+
+  --bg: #1c1816;
+  --chrome: #26201d;
+  --chrome-edge: #120f0e;
+  --panel: #2d2622;
+  --panel-head: #342c27;
+  --hairline: #3a312c;
+  --rule: #54473f;
+
+  --ink: #eee4dc;
+  --ink-dim: #c3b5aa;
+  --ink-faint: #a59488;
+
+  --accent: #e09a3e;
+  --accent-line: #e9a752;
+  --on-accent: #1d1208;
+  --danger: #c8432f;
+  --on-danger: #ffffff;
+  --focus: #e9a752;
+
+  --field: #201b18;
+  --field-edge: #54473f;
+  --hover: #3d342e;
+  --selected: #4a3520;
+  --menu: #322a25;
+  --menu-edge: #110d0c;
+  --shadow: rgb(0 0 0 / 0.5);
+  --scrim: rgb(0 0 0 / 0.45);
+
+  --pasteboard: #2a2a2a;
+}
+
+/* --- darkroom, light ------------------------------------------------ */
+:root[data-theme="darkroom"][data-mode="light"] {
+  color-scheme: light;
+
+  --bg: #cfc7c0;
+  --chrome: #e9e2db;
+  --chrome-edge: #bfb5ac;
+  --panel: #f2ece6;
+  --panel-head: #e8e0d8;
+  --hairline: #dbd1c8;
+  --rule: #b9ada2;
+
+  --ink: #241c17;
+  --ink-dim: #4e423a;
+  --ink-faint: #67594f;
+
+  --accent: #9a5a12;
+  --accent-line: #8a4f0e;
+  --on-accent: #ffffff;
+  --danger: #a83424;
+  --on-danger: #ffffff;
+  --focus: #8a4f0e;
+
+  --field: #fffaf6;
+  --field-edge: #c2b6ab;
+  --hover: #e4dad1;
+  --selected: #f1dcc0;
+  --menu: #faf6f2;
+  --menu-edge: #b0a397;
+  --shadow: rgb(40 28 20 / 0.22);
+  --scrim: rgb(40 28 20 / 0.3);
+
+  --pasteboard: #b4b4b4;
+}
+
+/* --- fjord, dark: cool slate and sea teal --------------------------- */
+:root[data-theme="fjord"][data-mode="dark"] {
+  color-scheme: dark;
+
+  --bg: #151a1e;
+  --chrome: #1d2429;
+  --chrome-edge: #0e1215;
+  --panel: #222a30;
+  --panel-head: #283138;
+  --hairline: #2e383f;
+  --rule: #435159;
+
+  --ink: #e3ebef;
+  --ink-dim: #afbec6;
+  --ink-faint: #8fa2ac;
+
+  --accent: #17807a;
+  --accent-line: #5cc8bf;
+  --on-accent: #ffffff;
+  --danger: #c2442f;
+  --on-danger: #ffffff;
+  --focus: #5cc8bf;
+
+  --field: #182025;
+  --field-edge: #435159;
+  --hover: #2f3a41;
+  --selected: #1d4746;
+  --menu: #252e34;
+  --menu-edge: #0b0f12;
+  --shadow: rgb(0 0 0 / 0.5);
+  --scrim: rgb(0 0 0 / 0.45);
+
+  --pasteboard: #2b2b2b;
+}
+
+/* --- fjord, light --------------------------------------------------- */
+:root[data-theme="fjord"][data-mode="light"] {
+  color-scheme: light;
+
+  --bg: #c3ccd1;
+  --chrome: #dfe6ea;
+  --chrome-edge: #adb9c0;
+  --panel: #ebf0f3;
+  --panel-head: #dfe6ea;
+  --hairline: #cfd9de;
+  --rule: #a8b6bd;
+
+  --ink: #142026;
+  --ink-dim: #33424a;
+  --ink-faint: #53656e;
+
+  --accent: #136f6a;
+  --accent-line: #0f625d;
+  --on-accent: #ffffff;
+  --danger: #ad3727;
+  --on-danger: #ffffff;
+  --focus: #136f6a;
+
+  --field: #ffffff;
+  --field-edge: #b2bfc5;
+  --hover: #d7e0e5;
+  --selected: #cbe6e3;
+  --menu: #f5f8f9;
+  --menu-edge: #9fadb4;
+  --shadow: rgb(16 28 34 / 0.22);
+  --scrim: rgb(16 28 34 / 0.3);
+
+  --pasteboard: #b4b4b4;
+}

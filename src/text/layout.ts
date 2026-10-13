@@ -1,0 +1,930 @@
+/**
+ * Text layout: content in, glyphs placed out (ARCHITECTURE.md, "Type").
+ *
+ * Paragraph by paragraph:
+ *
+ * 1. Each character's settings are resolved through the styles, and its
+ *    font chosen: the run's, or for a character that font lacks, a
+ *    fallback for its script.
+ * 2. Bidi levels (UAX #9) and scripts split the paragraph into items of one
+ *    font, size, direction and script, each shaped by HarfBuzz with the
+ *    whole paragraph as context.
+ * 3. Line break opportunities (UAX #14) cut it into segments, and a
+ *    composer picks the breaks: single-line takes each line as full as it
+ *    goes; every-line weighs the whole paragraph (Knuth and Plass), for
+ *    even justified spacing or the least ragged edge.
+ * 4. Each line is put in visual order (bidi's rule L2), aligned or
+ *    justified, and its glyphs placed: on baselines down the frame for area
+ *    text, from the origin for point text, or along the path for path text.
+ *
+ * What comes out is a glyph set the vector pipeline draws, and for editing,
+ * each line's caret positions and characters' boxes.
+ *
+ * Pure apart from the fonts it's handed: check-text runs it in Node.
+ */
+import LineBreaker from 'linebreak'
+import bidiFactory from 'bidi-js'
+import { DEFAULT_FONT, leadingOf, paragraphText, resolveChar, resolvePara, type CharProps, type ParaProps, type TextContent, type TextStyles } from '../doc/text'
+import type { Face, Font, ShapedGlyph } from './hb'
+import { flattenPath, type Box, type PathData } from '../geom/path'
+import { glyphsBounds, type GlyphSet } from '../geom/glyphs'
+
+const bidi = bidiFactory()
+
+/** Where layout gets fonts: synchronously, from what's loaded. */
+export interface FontProvider {
+  /** The face for a family and style, and the style's own variation coordinates; null when it isn't available. */
+  face(family: string, style: string): { face: Face; coords: Record<string, number> } | null
+  /** Faces to try, in order, for a character the chosen font lacks: for its script first. */
+  fallbacks(script: string): Face[]
+  /** The face to use when a font is missing altogether. */
+  defaultFace(): { face: Face; coords: Record<string, number> }
+}
+
+export interface LayoutInput {
+  content: TextContent
+  styles?: TextStyles
+  mode: 'point' | 'area' | 'path'
+  /** Area text's frame or path text's path, in the node's coordinates. */
+  frame: PathData | null
+  pathOffset?: number
+}
+
+/** One laid-out line, for editing: where it is and where each position falls. */
+export interface Line {
+  para: number
+  /** Positions in the whole content: [start, end), end before any paragraph break. */
+  start: number
+  end: number
+  baseline: number
+  top: number
+  bottom: number
+  /** Left to right on screen, whatever the text's direction. */
+  x0: number
+  x1: number
+  rtl: boolean
+  /** Each character's box on the line, left and right, for positions start..end-1. */
+  boxes: [number, number][]
+  /** Each character's direction: true where it's right to left. */
+  charRtl: boolean[]
+}
+
+export interface TextLayout {
+  glyphs: GlyphSet
+  lines: Line[]
+  /** The ink's box, in the node's coordinates. */
+  bounds: Box | null
+  /** Text that didn't fit the frame (or ran off the path's end). */
+  overflow: boolean
+  /** Fonts the text asks for that aren't available, as "family style". */
+  missing: string[]
+  /** Path text: where on the path each line's x is measured (arc length = x + this). */
+  pathStart?: number
+}
+
+// --- scripts -------------------------------------------------------------------------------------
+
+const SCRIPTS: [string, RegExp][] = [
+  ['Latn', /\p{Script=Latin}/u],
+  ['Arab', /\p{Script=Arabic}/u],
+  ['Hebr', /\p{Script=Hebrew}/u],
+  ['Deva', /\p{Script=Devanagari}/u],
+  ['Beng', /\p{Script=Bengali}/u],
+  ['Cyrl', /\p{Script=Cyrillic}/u],
+  ['Grek', /\p{Script=Greek}/u],
+  ['Thai', /\p{Script=Thai}/u],
+  ['Hani', /\p{Script=Han}/u],
+  ['Hira', /\p{Script=Hiragana}/u],
+  ['Kana', /\p{Script=Katakana}/u],
+  ['Hang', /\p{Script=Hangul}/u],
+  ['Tami', /\p{Script=Tamil}/u],
+  ['Gujr', /\p{Script=Gujarati}/u],
+  ['Guru', /\p{Script=Gurmukhi}/u],
+  ['Geor', /\p{Script=Georgian}/u],
+  ['Armn', /\p{Script=Armenian}/u],
+  ['Ethi', /\p{Script=Ethiopic}/u],
+  ['Khmr', /\p{Script=Khmer}/u],
+]
+
+/** A character's script, or '' for the common and inherited ones that take their neighbours'. */
+export function scriptOf(ch: string): string {
+  for (const [tag, re] of SCRIPTS) if (re.test(ch)) return tag
+  return ''
+}
+
+const isMark = (ch: string) => /\p{M}/u.test(ch)
+const isSpace = (code: number) => code === 0x20 || code === 0xa0 || code === 0x3000 || code === 0x09
+
+// --- per paragraph ---------------------------------------------------------------------------------
+
+interface Item {
+  start: number
+  end: number
+  props: CharProps
+  font: Font
+  upem: number
+  rtl: boolean
+  script: string
+}
+
+/** A glyph as shaped, in pixels, by the character it belongs to. */
+interface PGlyph {
+  item: Item
+  gid: number
+  /** Its cluster's first character, in the paragraph. */
+  cluster: number
+  ax: number
+  dx: number
+  dy: number
+}
+
+interface Shaped {
+  text: string
+  items: Item[]
+  /** Glyphs of each item, in the order HarfBuzz gives them (visual within the item). */
+  glyphs: PGlyph[][]
+  /** Each character's advance: its cluster's, on the cluster's first character; 0 on the rest. */
+  adv: Float64Array
+  /** Each character's cluster: [first, end). */
+  clusterOf: Int32Array
+  clusterEnd: Int32Array
+  levels: Uint8Array
+  baseRtl: boolean
+  para: ParaProps
+  /** Each character's settings. */
+  charProps: CharProps[]
+  missing: Set<string>
+}
+
+/** Characters' fonts: the run's, or a fallback that has the character. */
+function shapeParagraph(text: string, runs: { start: number; end: number; props: CharProps }[], para: ParaProps, fonts: FontProvider): Shaped {
+  const N = text.length
+  const missing = new Set<string>()
+  const charProps: CharProps[] = new Array(N)
+  for (const r of runs) for (let i = r.start; i < r.end; i++) charProps[i] = r.props
+
+  // Bidi levels.
+  const lv = N ? bidi.getEmbeddingLevels(text, para.direction === 'auto' ? undefined : para.direction) : { levels: new Uint8Array(0), paragraphs: [{ start: 0, end: 0, level: para.direction === 'rtl' ? 1 : 0 }] }
+  const levels = lv.levels
+  const baseRtl = (lv.paragraphs[0]?.level ?? (para.direction === 'rtl' ? 1 : 0)) % 2 === 1
+
+  // Scripts, the common characters taking the one before (or after) them.
+  const scripts: string[] = new Array(N)
+  let last = ''
+  for (let i = 0; i < N; ) {
+    const cp = text.codePointAt(i)!
+    const ch = String.fromCodePoint(cp)
+    const s = scriptOf(ch) || last
+    for (let k = 0; k < ch.length; k++) scripts[i + k] = s
+    if (s) last = s
+    i += ch.length
+  }
+  let next = ''
+  for (let i = N - 1; i >= 0; i--) {
+    if (scripts[i]) next = scripts[i]
+    else scripts[i] = next || 'Latn'
+  }
+
+  // Fonts: the run's face, or the first fallback that has the character.
+  const faces: { face: Face; coords: Record<string, number> }[] = new Array(N)
+  const faceCache = new Map<string, { face: Face; coords: Record<string, number> } | null>()
+  const runFace = (p: CharProps) => {
+    const key = `${p.font}\u0000${p.style}`
+    if (!faceCache.has(key)) {
+      const got = fonts.face(p.font, p.style)
+      if (!got) missing.add(`${p.font} ${p.style}`)
+      faceCache.set(key, got)
+    }
+    return faceCache.get(key) ?? fonts.defaultFace()
+  }
+  for (let i = 0; i < N; ) {
+    const cp = text.codePointAt(i)!
+    const len = cp > 0xffff ? 2 : 1
+    const ch = String.fromCodePoint(cp)
+    let f = runFace(charProps[i])
+    // Marks stay with their base; spaces and controls with the run's font.
+    if (i > 0 && isMark(ch)) f = faces[i - 1]
+    else if (cp > 0x20 && !isSpace(cp) && !f.face.font(f.coords).hasGlyph(cp)) {
+      const alt = fonts.fallbacks(scripts[i]).find((x) => x.font().hasGlyph(cp))
+      if (alt) f = { face: alt, coords: {} }
+    }
+    for (let k = 0; k < len; k++) faces[i + k] = f
+    i += len
+  }
+
+  // Items: one font, settings, direction and script.
+  const items: Item[] = []
+  for (let i = 0; i < N; ) {
+    let j = i + 1
+    while (j < N && faces[j] === faces[i] && charProps[j] === charProps[i] && levels[j] === levels[i] && scripts[j] === scripts[i]) j++
+    const p = charProps[i]
+    const f = faces[i]
+    items.push({ start: i, end: j, props: p, font: f.face.font({ ...f.coords, ...p.variations }), upem: f.face.info.upem, rtl: levels[i] % 2 === 1, script: scripts[i] })
+    i = j
+  }
+
+  // Shape each item, in context.
+  const adv = new Float64Array(N)
+  const clusterOf = new Int32Array(N).fill(-1)
+  const clusterEnd = new Int32Array(N)
+  const glyphs: PGlyph[][] = []
+  for (const it of items) {
+    const p = it.props
+    const features = [...p.features]
+    if (p.kerning === 'none') features.push('kern=0')
+    const shaped: ShapedGlyph[] = it.font.shape(text, it.start, it.end - it.start, it.rtl ? 'rtl' : 'ltr', it.script, p.language, features)
+    const s = p.size / it.upem
+    const hs = p.horizontalScale / 100
+    const list: PGlyph[] = shaped.map((g) => ({ item: it, gid: g.gid, cluster: g.cluster, ax: g.ax * s * hs, dx: g.dx * s * hs, dy: g.dy * s }))
+    glyphs.push(list)
+    // Clusters in logical order: each starts at its smallest offset.
+    const starts = [...new Set(list.map((g) => g.cluster))].sort((a, b) => a - b)
+    for (let k = 0; k < starts.length; k++) {
+      const c0 = starts[k]
+      const c1 = k + 1 < starts.length ? starts[k + 1] : it.end
+      for (let q = c0; q < c1; q++) {
+        clusterOf[q] = c0
+        clusterEnd[q] = c1
+      }
+    }
+    const track = (p.tracking / 1000) * p.size
+    for (const g of list) adv[g.cluster] += g.ax
+    for (const c0 of starts) adv[c0] += track
+  }
+  for (let i = 0; i < N; i++) {
+    if (clusterOf[i] < 0) {
+      clusterOf[i] = i
+      clusterEnd[i] = i + 1
+    }
+  }
+  return { text, items, glyphs, adv, clusterOf, clusterEnd, levels, baseRtl, para, charProps, missing }
+}
+
+/** Break opportunities (UAX #14): offsets a line may end at, and the ones it must. */
+function breaks(text: string): { at: number; required: boolean }[] {
+  const out: { at: number; required: boolean }[] = []
+  if (!text) return [{ at: 0, required: true }]
+  const lb = new LineBreaker(text)
+  for (let b = lb.nextBreak(); b; b = lb.nextBreak()) out.push({ at: b.position, required: b.required })
+  if (!out.length || out[out.length - 1].at !== text.length) out.push({ at: text.length, required: true })
+  return out
+}
+
+interface Segment {
+  start: number
+  end: number
+  /** Width without its trailing spaces, which hang past the line's end. */
+  width: number
+  trail: number
+  /** How many spaces it has, trailing included: where justification goes. */
+  spaces: number
+  trailSpaces: number
+  /** How wide its spaces are, not counting trailing ones: what can stretch and shrink. */
+  spaceWidth: number
+  required: boolean
+}
+
+function segments(sh: Shaped): Segment[] {
+  const out: Segment[] = []
+  let prev = 0
+  for (const b of breaks(sh.text)) {
+    if (b.at <= prev && b.at !== 0) continue
+    out.push(measure(sh, prev, b.at, b.required))
+    prev = b.at
+  }
+  return out
+}
+
+/** A stretch of a paragraph [start, end) as a segment: its widths and spaces. */
+function measure(sh: Shaped, start: number, end: number, required: boolean): Segment {
+  let width = 0
+  let spaces = 0
+  let spaceWidth = 0
+  for (let i = start; i < end; i++) {
+    width += sh.adv[i]
+    if (isSpace(sh.text.charCodeAt(i))) {
+      spaces++
+      spaceWidth += sh.adv[i]
+    }
+  }
+  let trail = 0
+  let trailSpaces = 0
+  for (let i = end - 1; i >= start && (isSpace(sh.text.charCodeAt(i)) || sh.text.charCodeAt(i) === 0x2028); i--) {
+    trail += sh.adv[i]
+    if (isSpace(sh.text.charCodeAt(i))) {
+      trailSpaces++
+      spaceWidth -= sh.adv[i]
+    }
+  }
+  return { start, end, width: width - trail, trail, spaces, trailSpaces, spaceWidth, required }
+}
+
+/** Where a too-long segment can be cut: at cluster boundaries. */
+function splitSegment(sh: Shaped, seg: Segment, width: number): Segment[] {
+  const out: Segment[] = []
+  let s = seg.start
+  let w = 0
+  for (let i = seg.start; i < seg.end; i = sh.clusterEnd[i]) {
+    const a = sh.adv[i]
+    if (w + a > width && i > s) {
+      out.push(measure(sh, s, i, false))
+      s = i
+      w = 0
+    }
+    w += a
+  }
+  out.push(measure(sh, s, seg.end, seg.required))
+  return out
+}
+
+/** The segments from offset `from` on, the first cut to start there. */
+function segmentsFrom(sh: Shaped, segs: Segment[], from: number): Segment[] {
+  const out: Segment[] = []
+  for (const g of segs) {
+    if (g.end <= from) continue
+    out.push(g.start < from ? measure(sh, from, g.end, g.required) : g)
+  }
+  return out
+}
+
+/** Single-line composer: each line as full as it will go. Returns each line's end offset. */
+function composeGreedy(sh: Shaped, segs: Segment[], widthAt: (line: number) => number): number[] {
+  const ends: number[] = []
+  let line = 0
+  let w = 0
+  let pendingTrail = 0
+  let started = false
+  for (let k = 0; k < segs.length; k++) {
+    let seg = segs[k]
+    const avail = widthAt(line)
+    if (started && w + pendingTrail + seg.width > avail + 1e-6) {
+      ends.push(seg.start)
+      line++
+      w = 0
+      pendingTrail = 0
+      started = false
+    }
+    // A segment too long for a whole line is cut where it must be.
+    if (!started && seg.width > widthAt(line) + 1e-6 && seg.end - seg.start > 1) {
+      const parts = splitSegment(sh, seg, widthAt(line))
+      for (const p of parts.slice(0, -1)) {
+        ends.push(p.end)
+        line++
+      }
+      seg = parts[parts.length - 1]
+    }
+    w += pendingTrail + seg.width
+    pendingTrail = seg.trail
+    started = true
+    if (seg.required && k < segs.length - 1) {
+      ends.push(seg.end)
+      line++
+      w = 0
+      pendingTrail = 0
+      started = false
+    }
+  }
+  ends.push(sh.text.length)
+  return ends
+}
+
+/**
+ * Every-line composer (Knuth and Plass): the breaks that make the whole
+ * paragraph best. Justified, lines are scored by how far their spaces
+ * stretch or shrink; otherwise by the square of the space left at their end,
+ * the least ragged edge. The last line is free.
+ */
+function composeOptimal(segs: Segment[], width: number, justified: boolean, firstIndent: number): number[] | null {
+  const n = segs.length
+  if (n > 3000) return null
+  const best = new Float64Array(n + 1).fill(Infinity)
+  const from = new Int32Array(n + 1).fill(-1)
+  best[0] = 0
+  // Required breaks split the problem: a line never runs past one.
+  for (let i = 0; i < n; i++) {
+    if (best[i] === Infinity) continue
+    let w = 0
+    let spaceW = 0
+    const avail = width - (i === 0 ? firstIndent : 0)
+    for (let j = i; j < n; j++) {
+      const s = segs[j]
+      const natural = w + s.width
+      // The spaces between this line's segments (the trailing ones of all but its last) and inside them.
+      const inner = spaceW + s.spaceWidth
+      const last = j === n - 1 || s.required
+      const slack = avail - natural
+      const shrink = justified ? inner / 3 : 0
+      let cost: number
+      if (natural - shrink > avail + 1e-6) {
+        // Too long: allowed only for a line of one segment, which can't be helped.
+        if (j > i) break
+        cost = 1e6
+      } else if (last) cost = slack < 0 ? 100 : 0
+      else if (justified) {
+        const r = slack >= 0 ? slack / Math.max(1e-6, inner / 2) : slack / Math.max(1e-6, shrink)
+        const bad = 100 * Math.min(Math.abs(r), 10) ** 3
+        cost = (1 + bad) ** 2
+      } else cost = slack * slack
+      const total = best[i] + cost
+      if (total < best[j + 1]) {
+        best[j + 1] = total
+        from[j + 1] = i
+      }
+      if (s.required && j < n - 1) break
+      w = natural + s.trail
+      spaceW = inner + s.trail
+    }
+  }
+  if (best[n] === Infinity) return null
+  const cuts: number[] = []
+  for (let k = n; k > 0; k = from[k]) {
+    if (from[k] < 0) return null
+    cuts.unshift(segs[k - 1].end)
+  }
+  return cuts
+}
+
+// --- lines into glyphs ----------------------------------------------------------------------------
+
+interface Placed {
+  glyphs: { outline: number[]; m: number[] }[]
+  boxes: [number, number][]
+  charRtl: boolean[]
+  width: number
+}
+
+/**
+ * One line of a paragraph, [s, e), laid out left to right from x = 0:
+ * its pieces in visual order (rule L2), glyphs placed on baseline 0 (y down),
+ * `extra` added after each inner space when justified.
+ */
+function placeLine(sh: Shaped, s: number, e: number, extra: number): Placed {
+  // Trailing spaces hang: drawn, but not counted in the line's width.
+  let contentEnd = e
+  while (contentEnd > s && (isSpace(sh.text.charCodeAt(contentEnd - 1)) || sh.text.charCodeAt(contentEnd - 1) === 0x2028)) contentEnd--
+  const pieces: { item: number; glyphs: PGlyph[]; level: number }[] = []
+  sh.items.forEach((it, k) => {
+    if (it.end <= s || it.start >= e) return
+    const gs = sh.glyphs[k].filter((g) => g.cluster >= s && g.cluster < e)
+    if (gs.length) pieces.push({ item: k, glyphs: gs, level: sh.levels[Math.max(s, it.start)] })
+  })
+  // Reverse runs of pieces from the highest level down to the lowest odd one.
+  const maxLevel = Math.max(0, ...pieces.map((p) => p.level))
+  const minOdd = Math.min(...pieces.map((p) => p.level).filter((l) => l % 2 === 1), Infinity)
+  for (let level = maxLevel; level >= minOdd && level > 0; level--) {
+    for (let i = 0; i < pieces.length; ) {
+      if (pieces[i].level < level) {
+        i++
+        continue
+      }
+      let j = i
+      while (j < pieces.length && pieces[j].level >= level) j++
+      pieces.splice(i, j - i, ...pieces.slice(i, j).reverse())
+      i = j
+    }
+  }
+  const boxes: [number, number][] = Array.from({ length: e - s }, () => [0, 0] as [number, number])
+  const charRtl: boolean[] = Array.from({ length: e - s }, (_, i) => sh.levels[s + i] % 2 === 1)
+  const glyphs: { outline: number[]; m: number[] }[] = []
+  let x = 0
+  for (const piece of pieces) {
+    const it = sh.items[piece.item]
+    const p = it.props
+    const scale = p.size / it.upem
+    const hs = p.horizontalScale / 100
+    const vs = p.verticalScale / 100
+    const track = (p.tracking / 1000) * p.size
+    // Each cluster's span on screen, as its glyphs go by.
+    const spans = new Map<number, [number, number]>()
+    for (let gi = 0; gi < piece.glyphs.length; gi++) {
+      const g = piece.glyphs[gi]
+      const outline = it.font.outline(g.gid)
+      if (outline.length) glyphs.push({ outline, m: [scale * hs, 0, 0, -scale * vs, x + g.dx, -g.dy - p.baselineShift] })
+      const begin = x
+      x += g.ax
+      // A cluster's last glyph (in visual order, where the next one's cluster differs) takes the tracking and any justification.
+      if (piece.glyphs[gi + 1]?.cluster !== g.cluster) {
+        x += track
+        if (extra && isSpace(sh.text.charCodeAt(g.cluster)) && g.cluster < contentEnd) x += extra
+      }
+      const span = spans.get(g.cluster)
+      spans.set(g.cluster, span ? [Math.min(span[0], begin), Math.max(span[1], x)] : [begin, x])
+    }
+    // Characters' boxes: a cluster's span shared evenly, in reading order.
+    for (const [c0, [l, r]] of spans) {
+      const c1 = Math.min(sh.clusterEnd[c0], e)
+      const count = Math.max(1, c1 - c0)
+      for (let q = c0; q < c1; q++) {
+        const f0 = (q - c0) / count
+        const f1 = (q - c0 + 1) / count
+        boxes[q - s] = it.rtl ? [r - (r - l) * f1, r - (r - l) * f0] : [l + (r - l) * f0, l + (r - l) * f1]
+      }
+    }
+  }
+  // The width that counts: up to the last character that isn't a trailing space.
+  let width = 0
+  for (let q = s; q < contentEnd; q++) width = Math.max(width, boxes[q - s][1])
+  return { glyphs, boxes, charRtl, width }
+}
+
+/** The free stretch of a frame across a band of rows: the widest run inside it at the band's top, middle and bottom. */
+function frameSpan(polys: number[][], y0: number, y1: number): [number, number] | null {
+  const at = (y: number): [number, number][] => {
+    const xs: { x: number; d: number }[] = []
+    for (const pts of polys) {
+      const n = pts.length / 2
+      for (let i = 0; i < n; i++) {
+        const ax = pts[i * 2]
+        const ay = pts[i * 2 + 1]
+        const bx = pts[((i + 1) % n) * 2]
+        const by = pts[((i + 1) % n) * 2 + 1]
+        if (ay <= y === by <= y) continue
+        xs.push({ x: ax + ((bx - ax) * (y - ay)) / (by - ay), d: by > ay ? 1 : -1 })
+      }
+    }
+    xs.sort((a, b) => a.x - b.x)
+    const out: [number, number][] = []
+    let wn = 0
+    for (let k = 0; k < xs.length; k++) {
+      const was = wn
+      wn += xs[k].d
+      if (was === 0 && wn !== 0) out.push([xs[k].x, xs[k].x])
+      else if (was !== 0 && wn === 0 && out.length) out[out.length - 1][1] = xs[k].x
+    }
+    return out
+  }
+  // The intersection of the spans at three heights, its widest piece.
+  let spans = at(y0 + 1e-6)
+  for (const y of [(y0 + y1) / 2, y1 - 1e-6]) {
+    const other = at(y)
+    const next: [number, number][] = []
+    for (const a of spans) for (const b of other) if (Math.min(a[1], b[1]) > Math.max(a[0], b[0])) next.push([Math.max(a[0], b[0]), Math.min(a[1], b[1])])
+    spans = next
+  }
+  if (!spans.length) return null
+  return spans.reduce((a, b) => (b[1] - b[0] > a[1] - a[0] ? b : a))
+}
+
+/** A line's height above and below its baseline: its biggest font's ascent and descent. */
+function lineMetrics(sh: Shaped, s: number, e: number): { ascent: number; descent: number; leading: number } {
+  let ascent = 0
+  let descent = 0
+  let leading = 0
+  const seen = new Set<Item>()
+  for (const it of sh.items) {
+    if (it.end <= s || it.start >= e || seen.has(it)) continue
+    seen.add(it)
+    const m = it.font.metrics()
+    const k = (it.props.size / it.upem) * (it.props.verticalScale / 100)
+    ascent = Math.max(ascent, m.ascender * k + Math.max(0, it.props.baselineShift))
+    descent = Math.max(descent, -m.descender * k - Math.min(0, it.props.baselineShift))
+    leading = Math.max(leading, leadingOf(it.props))
+  }
+  if (!seen.size) {
+    // An empty line: the settings typing there would get.
+    const p = sh.charProps[s] ?? sh.charProps[s - 1]
+    if (p) {
+      ascent = p.size * 0.8
+      descent = p.size * 0.2
+      leading = leadingOf(p)
+    }
+  }
+  return { ascent, descent, leading }
+}
+
+// --- the whole text --------------------------------------------------------------------------------
+
+/** Lays text out: its glyphs, its lines, whether it overflows. */
+export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout {
+  const styles = input.styles
+  const outlines: number[][] = []
+  const outlineIndex = new Map<number[], number>()
+  const placements: number[] = []
+  const lines: Line[] = []
+  const missing = new Set<string>()
+  let overflow = false
+
+  const place = (outline: number[], m: number[]) => {
+    let k = outlineIndex.get(outline)
+    if (k === undefined) {
+      k = outlines.length
+      outlines.push(outline)
+      outlineIndex.set(outline, k)
+    }
+    placements.push(k, ...m)
+  }
+  const UNIT_SQUARE = [0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 4]
+  // A bar from x0 to x1, h thick about yc: an underline or a strikethrough, as a unit square placed.
+  const rect = (x0: number, x1: number, yc: number, h: number) => {
+    if (x1 > x0 && h > 0) place(UNIT_SQUARE, [x1 - x0, 0, 0, h, x0, yc - h / 2])
+  }
+
+  // The frame: area text's polygon and box; path text's polyline.
+  const framePolys = input.frame ? pathPolys(input.frame) : []
+  let fx0 = 0
+  let fy0 = 0
+  let fx1 = 0
+  let fy1 = 0
+  if (framePolys.length) {
+    fx0 = Infinity
+    fy0 = Infinity
+    fx1 = -Infinity
+    fy1 = -Infinity
+    for (const pts of framePolys)
+      for (let i = 0; i < pts.length; i += 2) {
+        fx0 = Math.min(fx0, pts[i])
+        fx1 = Math.max(fx1, pts[i])
+        fy0 = Math.min(fy0, pts[i + 1])
+        fy1 = Math.max(fy1, pts[i + 1])
+      }
+  }
+  const area = input.mode === 'area' && framePolys.length > 0
+  const onPath = input.mode === 'path' && framePolys.length > 0
+  const rectFrame = area && isRect(framePolys)
+
+  // Path text is one line: its paragraphs run on, joined by spaces.
+  const content: TextContent = onPath
+    ? { paragraphs: [{ ...input.content.paragraphs[0], runs: input.content.paragraphs.flatMap((p, i) => (i ? [{ text: ' ', style: p.runs[0].style, props: p.runs[0].props }, ...p.runs] : p.runs)) }] }
+    : input.content
+
+  let y = area ? fy0 : 0
+  let first = true
+  let posBase = 0
+  for (let pi = 0; pi < content.paragraphs.length; pi++) {
+    const p = content.paragraphs[pi]
+    const text = paragraphText(p)
+    const para = resolvePara(p, styles)
+    const runs: { start: number; end: number; props: CharProps }[] = []
+    let at = 0
+    for (const r of p.runs) {
+      runs.push({ start: at, end: at + r.text.length, props: resolveChar(r, p, styles) })
+      at += r.text.length
+    }
+    // An empty paragraph still has its run's settings, for its line's height.
+    const sh = shapeParagraph(text, runs.length ? runs : [{ start: 0, end: 0, props: resolveChar({ style: null, props: {} }, p, styles) }], para, fonts)
+    if (!text.length) sh.charProps[0] = runs[0]?.props ?? resolveChar({ style: null, props: {} }, p, styles)
+    for (const m of sh.missing) missing.add(m)
+    const segs = segments(sh)
+    if (!first) y += para.spaceBefore
+
+    // Line widths: area text's frame (less indents); point and path text don't wrap.
+    const indentStart = para.indentLeft
+    const indentEnd = para.indentRight
+    const fullWidth = area ? fx1 - fx0 - indentStart - indentEnd : Infinity
+    const widthAt = (line: number) => (area ? fullWidth - (line === 0 ? para.indentFirst : 0) : Infinity)
+    let ends: number[]
+    if (!area) ends = composeGreedy(sh, segs, () => Infinity)
+    else if (rectFrame && para.composer === 'every') ends = composeOptimal(segs, fullWidth, para.align === 'justify' || para.align === 'justify-all', para.indentFirst) ?? composeGreedy(sh, segs, widthAt)
+    else ends = area && !rectFrame ? [] : composeGreedy(sh, segs, widthAt)
+
+    // A shaped frame's lines: where each was broken, so it's set there.
+    const tops: number[] = []
+    if (area && !rectFrame) {
+      // A shaped frame: lines broken one at a time, each as wide as the frame is where it falls.
+      ends = []
+      let s = 0
+      let lineNo = 0
+      let probeY = y
+      while (s < text.length || (s === 0 && !text.length)) {
+        const m = lineMetrics(sh, s, Math.min(text.length, s + 1))
+        const top = probeY
+        const span = frameSpan(framePolys, top, top + m.ascent + m.descent)
+        if (!span) {
+          probeY += m.leading || 1
+          if (probeY > fy1) break
+          continue
+        }
+        const w = span[1] - span[0] - indentStart - indentEnd - (lineNo === 0 ? para.indentFirst : 0)
+        const rest = segmentsFrom(sh, segs, s)
+        // Too narrow here for the next word: further down, unless no part of the frame is wide enough for it.
+        if (rest.length && rest[0].width > w && rest[0].width <= fx1 - fx0 - indentStart - indentEnd) {
+          probeY += m.leading || 1
+          if (probeY > fy1) break
+          continue
+        }
+        const one = composeGreedy(sh, rest.length ? rest : [measure(sh, s, text.length, true)], (k) => (k === 0 ? w : Infinity))
+        const e = one[0] ?? text.length
+        ends.push(e)
+        tops.push(top)
+        probeY += m.leading
+        lineNo++
+        if (e <= s) break
+        s = e
+        if (!text.length) break
+      }
+      if (!ends.length || ends[ends.length - 1] < text.length) {
+        overflow = true
+        if (!ends.length) ends = []
+      }
+    }
+
+    let s = 0
+    for (let li = 0; li < ends.length; li++) {
+      const e = ends[li]
+      if (e < s) continue
+      const m = lineMetrics(sh, s, Math.max(e, s + 1))
+      // First baseline: the line's ascent below the top for area text; the origin for point text.
+      const baseline = tops[li] !== undefined ? tops[li] + m.ascent : area ? (first ? y + m.ascent : y + m.leading) : first ? 0 : y + m.leading
+      if (area && baseline + m.descent > fy1 + 1e-6) {
+        overflow = true
+        break
+      }
+      const lastLine = li === ends.length - 1
+      let x0 = 0
+      let x1 = 0
+      if (area) {
+        const span = rectFrame ? [fx0, fx1] : (frameSpan(framePolys, baseline - m.ascent, baseline + m.descent) ?? [fx0, fx1])
+        x0 = span[0] + (sh.baseRtl ? indentEnd : indentStart + (li === 0 ? para.indentFirst : 0))
+        x1 = span[1] - (sh.baseRtl ? indentStart + (li === 0 ? para.indentFirst : 0) : indentEnd)
+      }
+      const natural = placeLine(sh, s, e, 0)
+      let extra = 0
+      const justify = area && (para.align === 'justify-all' || (para.align === 'justify' && !lastLine))
+      if (justify) {
+        let inner = 0
+        let contentEnd = e
+        while (contentEnd > s && isSpace(text.charCodeAt(contentEnd - 1))) contentEnd--
+        for (let q = s; q < contentEnd; q++) if (isSpace(text.charCodeAt(q))) inner++
+        // Negative where the composer chose to tighten the spaces.
+        if (inner) extra = (x1 - x0 - natural.width) / inner
+      }
+      const placed = extra ? placeLine(sh, s, e, extra) : natural
+      // Where the line starts: by alignment, in the frame or about the origin.
+      const align = para.align === 'justify' || para.align === 'justify-all' ? (sh.baseRtl ? 'right' : 'left') : para.align
+      const startSide = sh.baseRtl ? (align === 'left' ? 'right' : align === 'right' ? 'left' : align) : align
+      let ox: number
+      if (area) ox = startSide === 'left' ? x0 : startSide === 'right' ? x1 - placed.width : (x0 + x1 - placed.width) / 2
+      else ox = startSide === 'left' ? 0 : startSide === 'right' ? -placed.width : -placed.width / 2
+      if (!area) {
+        x0 = ox
+        x1 = ox + placed.width
+      }
+      for (const g of placed.glyphs) place(g.outline, [g.m[0], g.m[1], g.m[2], g.m[3], g.m[4] + ox, g.m[5] + baseline])
+      // Underline and strikethrough, run by run.
+      for (const it of sh.items) {
+        if (it.end <= s || it.start >= e || !(it.props.underline || it.props.strikethrough)) continue
+        let l = Infinity
+        let r = -Infinity
+        for (let q = Math.max(s, it.start); q < Math.min(e, it.end); q++) {
+          const b = placed.boxes[q - s]
+          l = Math.min(l, b[0])
+          r = Math.max(r, b[1])
+        }
+        const mt = it.font.metrics()
+        const k = it.props.size / it.upem
+        if (it.props.underline) rect(l + ox, r + ox, baseline - mt.underlineOffset * k, Math.max(1e-3, mt.underlineSize * k))
+        if (it.props.strikethrough) rect(l + ox, r + ox, baseline - mt.strikeOffset * k, Math.max(1e-3, mt.strikeSize * k))
+      }
+      lines.push({
+        para: pi,
+        start: posBase + s,
+        end: posBase + e,
+        baseline,
+        top: baseline - m.ascent,
+        bottom: baseline + m.descent,
+        x0,
+        x1,
+        rtl: sh.baseRtl,
+        boxes: placed.boxes.map(([a, b]) => [a + ox, b + ox] as [number, number]),
+        charRtl: placed.charRtl,
+      })
+      y = baseline
+      first = false
+      s = e
+    }
+    if (!ends.length && !area) {
+      // Point text's empty paragraph: still a line, for the caret.
+      const m = lineMetrics(sh, 0, 1)
+      const baseline = first ? 0 : y + m.leading
+      lines.push({ para: pi, start: posBase, end: posBase, baseline, top: baseline - m.ascent, bottom: baseline + m.descent, x0: 0, x1: 0, rtl: sh.baseRtl, boxes: [], charRtl: [] })
+      y = baseline
+      first = false
+    }
+    y += para.spaceAfter
+    posBase += text.length + 1
+    if (overflow) break
+  }
+
+  let glyphs: GlyphSet = { kind: 'glyphs', outlines, placements }
+  let pathStart: number | undefined
+  if (onPath) {
+    const r = alongPath(glyphs, lines, framePolys[0], input.pathOffset ?? 0, input.content.paragraphs[0] ? resolvePara(input.content.paragraphs[0], styles).align : 'left')
+    glyphs = r.glyphs
+    overflow = r.overflow
+    pathStart = r.start
+  }
+  return { glyphs, lines, bounds: glyphsBounds(glyphs), overflow, missing: [...missing], pathStart }
+}
+
+/** Whether a frame is an upright rectangle: then every line is as wide as the next. */
+function isRect(polys: number[][]): boolean {
+  if (polys.length !== 1) return false
+  const p = polys[0]
+  if (p.length !== 8) return false
+  for (let i = 0; i < 4; i++) {
+    const ax = p[i * 2]
+    const ay = p[i * 2 + 1]
+    const bx = p[((i + 1) % 4) * 2]
+    const by = p[((i + 1) % 4) * 2 + 1]
+    if (Math.abs(ax - bx) > 1e-6 && Math.abs(ay - by) > 1e-6) return false
+  }
+  return true
+}
+
+/**
+ * Path text: the line laid out flat, then each glyph moved onto the path,
+ * its middle at its distance along it, turned to the path's direction
+ * there. Glyphs past the path's end aren't drawn.
+ */
+/** A frame or text path flattened as layout reads it: a closed one ends back at its start, so text runs along its last side too. */
+function pathPolys(frame: PathData): number[][] {
+  return flattenPath(frame, 0.25).map((l) => (l.closed && l.pts.length >= 4 ? [...l.pts, l.pts[0], l.pts[1]] : l.pts))
+}
+
+/** How far along a text path (its first subpath, as layout reads it) the point nearest (x, y) is: where text clicked onto a path starts. */
+export function distanceAlong(frame: PathData, x: number, y: number): number {
+  const pts = pathPolys(frame)[0]
+  if (!pts || pts.length < 4) return 0
+  let best = Infinity
+  let at = 0
+  let run = 0
+  for (let i = 2; i < pts.length; i += 2) {
+    const ax = pts[i - 2]
+    const ay = pts[i - 1]
+    const dx = pts[i] - ax
+    const dy = pts[i + 1] - ay
+    const len = Math.hypot(dx, dy)
+    const t = len ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (len * len))) : 0
+    const d = Math.hypot(ax + dx * t - x, ay + dy * t - y)
+    if (d < best) {
+      best = d
+      at = run + t * len
+    }
+    run += len
+  }
+  return at
+}
+
+function alongPath(flat: GlyphSet, lines: Line[], pts: number[], offset: number, align: string): { glyphs: GlyphSet; overflow: boolean; start: number } {
+  const n = pts.length / 2
+  const cum = [0]
+  for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.hypot(pts[i * 2] - pts[i * 2 - 2], pts[i * 2 + 1] - pts[i * 2 - 1]))
+  const total = cum[n - 1]
+  const line = lines[0]
+  const width = line ? line.x1 - line.x0 : 0
+  const startX = line ? line.x0 : 0
+  const start = (align === 'right' ? total - width - offset : align === 'centre' ? (total - width) / 2 + offset : offset) - startX
+  if (line) {
+    line.x0 += start
+    line.x1 += start
+    line.boxes = line.boxes.map(([a, b]) => [a + start, b + start])
+  }
+  const at = (s: number): { x: number; y: number; a: number } | null => {
+    if (s < 0 || s > total || n < 2) return null
+    let k = 1
+    while (k < n - 1 && cum[k] < s) k++
+    const seg = cum[k] - cum[k - 1] || 1
+    const t = (s - cum[k - 1]) / seg
+    const ax = pts[(k - 1) * 2]
+    const ay = pts[(k - 1) * 2 + 1]
+    const bx = pts[k * 2]
+    const by = pts[k * 2 + 1]
+    return { x: ax + (bx - ax) * t, y: ay + (by - ay) * t, a: Math.atan2(by - ay, bx - ax) }
+  }
+  const placements: number[] = []
+  let overflow = false
+  const p = flat.placements
+  for (let i = 0; i < p.length; i += 7) {
+    const [a, b, c, d, e, f] = p.slice(i + 1, i + 7)
+    // The glyph's own box tells where its middle is.
+    const outline = flat.outlines[p[i]]
+    let ox0 = Infinity
+    let ox1 = -Infinity
+    for (let q = 0; q < outline.length; ) {
+      const op = outline[q]
+      const k = op === 0 || op === 1 ? 2 : op === 3 ? 6 : 0
+      for (let j = 0; j < k; j += 2) {
+        ox0 = Math.min(ox0, outline[q + 1 + j])
+        ox1 = Math.max(ox1, outline[q + 1 + j])
+      }
+      q += 1 + k
+    }
+    const mid = ox0 === Infinity ? e : e + (a * (ox0 + ox1)) / 2
+    const s = mid + start
+    const pos = at(s)
+    if (!pos) {
+      overflow = overflow || s > total
+      continue
+    }
+    const cos = Math.cos(pos.a)
+    const sin = Math.sin(pos.a)
+    // In the glyph's frame: x from its middle, y from the baseline; then turned and moved onto the path.
+    const lx = e - mid
+    const ly = f
+    placements.push(p[i], cos * a - sin * b, sin * a + cos * b, cos * c - sin * d, sin * c + cos * d, pos.x + cos * lx - sin * ly, pos.y + sin * lx + cos * ly)
+  }
+  return { glyphs: { kind: 'glyphs', outlines: flat.outlines, placements }, overflow, start }
+}
+
+/** The default font a document asks for, for messages. */
+export const DEFAULT_FAMILY = DEFAULT_FONT

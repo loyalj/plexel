@@ -1,0 +1,20 @@
+# Vite emits content-hashed filenames under /assets, so they can never go
+# stale: cache them for a year and never ask again.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The page itself needs no rule. It is the one unhashed file, and Pages
+# already serves it at / with max-age=0, must-revalidate. A rule for
+# /index.html would never match, because Pages redirects that path to /.
+
+# The last two are cross-origin isolation, which is what lets the page and
+# the engine worker share memory: the tile slabs, and the ring the pen's
+# samples travel through (ARCHITECTURE.md, "The threads"). The dev server
+# sets the same pair in vite.config.ts. require-corp also blocks any
+# cross-origin subresource that does not opt in through CORP or CORS; the
+# app loads none.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
