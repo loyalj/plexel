@@ -24,6 +24,7 @@ import {
 } from './types'
 import { isObject, readBool, readNumber, readOneOf, readParams, readRef, readString, type Warn } from './read'
 import { readAppearance, readGeometry, readPaint } from './vector'
+import { readArtboard } from './artboardRead'
 import { emptyParagraph, readTextContent } from './text'
 
 export interface NodeDef<K extends NodeKind = NodeKind> {
@@ -55,7 +56,7 @@ const KNOCKOUTS = ['none', 'shallow', 'deep'] as const
 const obj = (raw: unknown) => (isObject(raw) ? raw : {})
 
 /** Layer kinds: what a group may hold. */
-const LAYER_KINDS: NodeKind[] = ['group', 'pixel', 'vector', 'boolean', 'text', 'adjustment', 'filter', 'embedded', 'linked', 'fill']
+const LAYER_KINDS: NodeKind[] = ['group', 'pixel', 'vector', 'boolean', 'text', 'adjustment', 'filter', 'embedded', 'linked', 'fill', 'symbol']
 
 export const NODE_DEFS: { [K in NodeKind]: NodeDef<K> } = {
   group: {
@@ -66,7 +67,13 @@ export const NODE_DEFS: { [K in NodeKind]: NodeDef<K> } = {
     accepts: (k) => LAYER_KINDS.includes(k),
     role: 'layer',
     defaults: () => ({ knockout: 'none' }),
-    readProps: (raw, warn) => ({ knockout: readOneOf(obj(raw).knockout, KNOCKOUTS, 'none', 'a group’s knockout', warn) }),
+    readProps: (raw, warn) => {
+      const artboard = obj(raw).artboard
+      return {
+        knockout: readOneOf(obj(raw).knockout, KNOCKOUTS, 'none', 'a group’s knockout', warn),
+        ...(isObject(artboard) ? { artboard: readArtboard(artboard, warn) } : {}),
+      }
+    },
   },
   pixel: {
     kind: 'pixel',
@@ -225,6 +232,16 @@ export const NODE_DEFS: { [K in NodeKind]: NodeDef<K> } = {
     role: 'layer',
     defaults: () => ({ paint: { kind: 'solid', colour: [0, 0, 0] } }),
     readProps: (raw) => ({ paint: readPaint(obj(raw).paint) }),
+  },
+  symbol: {
+    kind: 'symbol',
+    label: 'Symbol',
+    defaultName: 'Symbol',
+    // An instance shows its symbol's contents; nothing is clipped to it.
+    container: false,
+    role: 'layer',
+    defaults: () => ({ symbol: '' }),
+    readProps: (raw, warn) => ({ symbol: readString(obj(raw).symbol, '', 'an instance’s symbol', warn) }),
   },
   mask: {
     kind: 'mask',

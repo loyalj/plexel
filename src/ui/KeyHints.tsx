@@ -20,7 +20,7 @@ import { interfacePrefs } from './interface'
 import { Chord, chordModifiers, type Modifier } from './Keys'
 
 /** The hints for a tool at a moment: pure, so the checks can ask it too. */
-export function hintsFor(tool: string, session: keyof typeof SESSION_KEYS | null, dragging: boolean): ToolKey[] {
+function hintsFor(tool: string, session: keyof typeof SESSION_KEYS | null, dragging: boolean): ToolKey[] {
   if (session) return SESSION_KEYS[session]
   const keys = TOOL_BY_ID.get(tool as never)?.keys ?? []
   if (dragging) return keys.filter((k) => k.during === 'drag')
@@ -65,7 +65,15 @@ export function KeyHints() {
   if (!prefs.keyHints || !front) return null
   const s = session && session.key === front ? session.kind : null
   const dragging = gesture !== null && gesture !== 'pan'
-  const base = gesture === 'size' ? [{ keys: 'Drag', does: 'left and right for size, up and down for hardness' }] : hintsFor(tool, s, dragging)
+  const base =
+    gesture === 'size'
+      ? [{ keys: 'Drag', does: 'left and right for size, up and down for hardness' }]
+      : gesture === 'hue'
+        ? [
+            { keys: 'Drag', does: 'in the square for the shade, onto the strip for the hue' },
+            { keys: 'Esc', does: 'the colour back' },
+          ]
+        : hintsFor(tool, s, dragging)
   const back = spring ? TOOL_BY_ID.get(spring.from) : null
   const list = back ? [{ keys: spring!.code.replace(/^Key/, ''), does: `held: let go for the ${back.name} again` }, ...base] : base
   if (!list.length) return null

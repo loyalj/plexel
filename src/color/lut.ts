@@ -46,9 +46,9 @@ export interface Lut {
  * of 3.8.
  */
 export const LUT_SIZE = 33
-export const LUT_CMYK_SIZE = 17
-export const LUT_K_SLICES = 33
-export const LUT_GRAY_SIZE = 1024
+const LUT_CMYK_SIZE = 17
+const LUT_K_SLICES = 33
+const LUT_GRAY_SIZE = 1024
 
 function grid(size: number, channels: number, extra: number[] = []): Float32Array {
   const n = size ** channels
@@ -218,10 +218,12 @@ export function lutGamut(lut: Lut, c: number[]): number {
   return 1 - sampleChannel(lut, c, 3)
 }
 
-/** What the display pass shows on top of the table: inks hidden, and the warnings. */
+/** What the display pass shows on top of the table: channels hidden, one shown alone in gray, and the warnings. */
 export interface Look {
-  /** CMYK: which inks are shown; a hidden ink counts as none. */
+  /** Which channels are shown: CMYK's inks, RGB's lights; a hidden one counts as none. */
   inks: [boolean, boolean, boolean, boolean]
+  /** The one colour channel shown alone, in gray, as its own value (CMYK's ink as its absence); -1 for none. */
+  gray: number
   gamut: boolean
   /** CMYK: total ink (0..4, 3 is 300%) past which a pixel is marked; 0 for none. */
   inkLimit: number
@@ -230,14 +232,18 @@ export interface Look {
   inkAlarm: [number, number, number]
 }
 
-export const PLAIN_LOOK: Look = { inks: [true, true, true, true], gamut: false, inkLimit: 0, alarm: [0.5, 0.5, 0.5], inkAlarm: [0.1, 0.9, 0.3] }
+export const PLAIN_LOOK: Look = { inks: [true, true, true, true], gray: -1, gamut: false, inkLimit: 0, alarm: [0.5, 0.5, 0.5], inkAlarm: [0.1, 0.9, 0.3] }
 
 /**
  * The display colour for one document colour (0..1 per channel, CMYK as
  * ink): the reference the display shader is held to, warnings included.
  */
 export function displayRef(lut: Lut, look: Look, c: number[]): number[] {
-  const v = lut.input === 'cmyk' ? c.map((x, i) => (look.inks[i] ? x : 0)) : c
+  if (look.gray >= 0) {
+    const g = Math.min(1, Math.max(0, lut.input === 'cmyk' ? 1 - (c[look.gray] ?? 0) : (c[look.gray] ?? 0)))
+    return [g, g, g]
+  }
+  const v = lut.input === 'gray' ? c : c.map((x, i) => (look.inks[i] ? x : 0))
   let out = sampleLut(lut, v)
   if (look.gamut && lutGamut(lut, v) >= 0.5) out = [...look.alarm]
   if (look.inkLimit > 0 && lut.input === 'cmyk' && c[0] + c[1] + c[2] + c[3] > look.inkLimit) out = [...look.inkAlarm]

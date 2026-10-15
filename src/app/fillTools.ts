@@ -12,6 +12,7 @@ import type { BlendModeId } from '../doc/types'
 import { BLEND_MODES } from '../doc/types'
 import type { GradientType, PaintStop } from '../doc/vector'
 import { GRADIENT_TYPES } from '../doc/vector'
+import { Listeners } from '../lib/listeners'
 
 export type GradientPreset = 'fg-bg' | 'fg-clear' | 'bg-fg' | 'black-white' | 'white-black' | 'fg-bg-fg'
 
@@ -49,7 +50,7 @@ export interface FillToolState {
 
 const KEY = 'plexel.fillTools.v1'
 
-export const defaultFillTools = (): FillToolState => ({
+const defaultFillTools = (): FillToolState => ({
   gradient: { preset: 'fg-bg', type: 'linear', makes: 'layer', blend: 'normal', opacity: 1, reverse: false },
   bucket: { source: 'fg', pattern: null, blend: 'normal', opacity: 1, tolerance: 32, contiguous: true, antialias: true, sampleAll: false },
 })
@@ -59,7 +60,7 @@ const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d)
 const blendOf = (v: unknown): BlendModeId => (BLEND_MODES.includes(v as BlendModeId) && v !== 'pass-through' ? (v as BlendModeId) : 'normal')
 
 /** Settings as saved, repaired where they're missing or wrong. */
-export function readFillTools(raw: unknown): FillToolState {
+function readFillTools(raw: unknown): FillToolState {
   const d = defaultFillTools()
   if (!raw || typeof raw !== 'object') return d
   const r = raw as Record<string, Record<string, unknown> | undefined>
@@ -108,7 +109,7 @@ export function presetStops(preset: GradientPreset, fg: number[], bg: number[], 
 
 class FillToolStore {
   private state: FillToolState
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
 
   constructor() {
     let raw: unknown = null
@@ -123,10 +124,7 @@ class FillToolStore {
   get = () => this.state
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   update<K extends keyof FillToolState>(key: K, patch: Partial<FillToolState[K]>) {
@@ -136,7 +134,7 @@ class FillToolStore {
     } catch {
       // Not remembered; still used.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 }
 

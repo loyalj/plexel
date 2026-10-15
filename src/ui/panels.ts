@@ -8,7 +8,7 @@
  * document is closed, so the copy is written for both.
  */
 
-export type PanelId = 'layers' | 'properties' | 'colour' | 'swatches' | 'brushes' | 'brush-settings' | 'history' | 'character' | 'paragraph' | 'separations' | 'channels' | 'patterns' | 'graphic-styles'
+export type PanelId = 'layers' | 'properties' | 'colour' | 'swatches' | 'brushes' | 'brush-settings' | 'history' | 'character' | 'paragraph' | 'separations' | 'channels' | 'patterns' | 'graphic-styles' | 'vector-brushes' | 'symbols'
 
 export interface PanelDef {
   id: PanelId
@@ -94,6 +94,18 @@ export const PANELS: PanelDef[] = [
     id: 'graphic-styles',
     title: 'Graphic Styles',
     empty: 'Named looks for shapes and text: fills, strokes and their effects, kept with the document.',
+    defaultOpen: false,
+  },
+  {
+    id: 'vector-brushes',
+    title: 'Vector Brushes',
+    empty: 'Brushes for strokes: artwork bent along a path, scattered along it, or repeated as tiles.',
+    defaultOpen: false,
+  },
+  {
+    id: 'symbols',
+    title: 'Symbols',
+    empty: 'Artwork kept once and placed as instances: edit the symbol and every instance follows.',
     defaultOpen: false,
   },
   {

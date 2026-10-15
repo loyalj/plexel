@@ -4,7 +4,9 @@ Budgets, how they're measured, and dated numbers. Every optimisation gets a
 before and an after here. The numbers come from `npm run bench`
 (`scripts/bench.mjs`), which drives the real app in Chrome on the real GPU and
 prints each figure and whether each budget was met. Set `BENCH_OUT` to a
-path to keep the run as JSON.
+path to keep the run as JSON, and `BENCH_PROFILE` to a folder for CPU
+profiles of the page and the engine while the reopened PSD is drawn (open
+them in Chrome's DevTools).
 
 ## Method
 
@@ -72,8 +74,8 @@ path to keep the run as JSON.
 
 | What | Budget | 10 Oct 2026 |
 | --- | --- | --- |
-| Uploads, RGB 8-bit | at least 500 MB/s | 650–840 MB/s |
-| A 96 MP document: first picture | within 1 s | 660–760 ms |
+| Uploads, RGB 8-bit | at least 500 MB/s | 910–950 MB/s (12 Oct, after the change in the log) |
+| A 96 MP document: first picture | within 1 s | 652–677 ms (13 Oct) |
 | A 96 MP document: every tile in view | within 3 s | 690–760 ms |
 | Panning at 100%: frame interval | within 10% of the display's | 33.4 ms against 33.3 ms |
 | Panning at 100%: CPU per frame | at most 8 ms at the 95th percentile | 0.7–1.0 ms |
@@ -88,8 +90,8 @@ path to keep the run as JSON.
 | Smudge: CPU per frame | at most 8 ms at the 95th percentile | 1.4 ms |
 | Baking a Mixer or Smudge stroke when the pen lifts | within 250 ms | 35–39 ms |
 | Select All, 96 MP | within 100 ms | 26–28 ms |
-| An anti-aliased ellipse, 96 MP | within 1 s | 736–766 ms |
-| Feathering it by 20 px | within 2 s | 1.32–1.33 s |
+| An anti-aliased ellipse, 96 MP | within 1 s | 213–234 ms (12 Oct, after the change in the log) |
+| Feathering it by 20 px | within 2 s | 728–736 ms (12 Oct) |
 | The Magic Wand, 96 MP | within 3 s | 1.74 s (10 Oct, after the change in the log) |
 | Panning with a feathered mask and marching ants: frame interval | within 10% of the display's | 33.3–33.4 ms |
 | Panning with a mask and ants: CPU per frame | at most 8 ms at the 95th percentile | 1.0–1.1 ms |
@@ -100,8 +102,8 @@ path to keep the run as JSON.
 | Panning with them: frame interval | within 10% of the display's | 33.4 ms |
 | Panning with them: CPU per frame | at most 8 ms at the 95th percentile | 3.6–5.3 ms |
 | Fitting the document with them on screen: every shape drawn | within 3 s | 374–388 ms |
-| 60,000 characters of justified area text: laid out | within 1 s | 140–144 ms (11 Oct) |
-| The same added, fitted on screen: laid out and every tile drawn | within 3 s | 1.44–1.45 s |
+| 60,000 characters of justified area text: laid out | within 1 s | 116 ms (13 Oct, every-line for the first time; see the log) |
+| The same added, fitted on screen: laid out and every tile drawn | within 3 s | 0.83–0.99 s (13 Oct) |
 | At 100% over the text: every tile in view drawn | within 1 s | 806–923 ms |
 | Panning over the text: frame interval | within 10% of the display's | 33.3–33.4 ms |
 | Panning over the text: CPU per frame | at most 8 ms at the 95th percentile | 4.7 ms (after the change in the log) |
@@ -110,8 +112,8 @@ path to keep the run as JSON.
 | Panning proofed: CPU per frame | at most 8 ms at the 95th percentile | 0.3 ms |
 | The 96 MP document converted to CMYK | within 20 s | 12.9 s (after the change in the log) |
 | The same written as a PSD (212 layers, 573 MB) | within 60 s | 32.6 s (11 Oct, after the change in the log) |
-| And opened again | within 40 s | 20.3 s |
-| And drawn, fitted, after opening | within 3 s | **3.38 s: missed** (11 Oct, measured properly; see the log) |
+| And opened again | within 40 s | 14.3–14.4 s (12 Oct) |
+| And drawn, fitted, after opening | within 3 s | 2.29–2.40 s (13 Oct, after the change in the log) |
 
 What bounds each:
 
@@ -218,6 +220,99 @@ once can hold more than 512 MB of tiles. One budget across every atlas is on
 the deferred list.
 
 ## Log
+
+- **13 Oct 2026, loading** (the pass's sixth step). The main chunk was
+  998 KB (332 KB gzipped): every importer, exporter and dialog, and the
+  text layout, whether a visit used them or not. A build reporting each
+  chunk's modules showed what was there; they now load when first used.
+  813 KB (266 gzipped), with PSD/SVG/PDF writing (49 KB), SVG reading
+  (23 KB), the layout (42 KB) and the dialogs (60 KB) in chunks of their
+  own. HarfBuzz's 910 KB of wasm was, and is, loaded only with the fonts.
+
+- **13 Oct 2026, rendering and text** (the pass's fourth and fifth steps).
+  The reopened PSD's draw, profiled: glyphs were flattened once per
+  placement (49,000 for 41 glyphs), now once per glyph and transform and
+  moved; the Layers panel's 212 thumbnails were made in the middle of the
+  first draw, now after the canvas has drawn (`EngineHost.whenDrawn`) and
+  eight at a time, with frames between; and each dispatch's parameters
+  were a queue write of their own, now held on the CPU and sent in one
+  before each submit. 2.83 s to 2.29–2.40; the dense text fitted 1.45 s to
+  0.83–0.99; the 96 MP first picture 715–785 ms to 652–677 (its two
+  thumbnails were made inside it). Text: paragraphs keep their shaping,
+  line breaks and placed lines between layouts, so an edit lays out only
+  what it changed (about 10 ms for 120 justified paragraphs, against about
+  70 afresh, `check:text`), and shaping resolves fonts once a paragraph: a
+  fresh layout of the bench's 60,000 characters 140 ms to 102. Then, from
+  profiling an edit: a rectangular frame had never been recognised as one,
+  so every-line composition (Knuth–Plass) had never run, and the earlier
+  figures here for "justified, every-line" text were single-line's. With it
+  running: 116 ms for the 60,000 characters, still well within 1 s. The bench's fresh layout now lays out a
+  deep copy, since a shallow one shares the paragraphs, and so the cache.
+  At 100% over the text, every tile drawn: 921 ms in the last run (500 to
+  1,050 over the runs since 11 Oct; close to its budget, and noisy).
+
+- **12 Oct 2026, the engine's CPU work** (the pass's third step). The
+  ellipse: each of a tile row's 1,024 sub-rows tested every edge of the
+  polygon (4,096 for a big ellipse); edges are now sorted into bands of
+  rows, 736 ms to 213–234. Feathering: tiles whose whole neighbourhood is
+  one value are known from the tiles' bookkeeping without building their
+  window, the blur's columns are swept a row at a time (memory read in
+  order, the same sums), and decoded tiles are let go once passed: 1.32 s
+  to 0.73. Expand and Contract take the most or least over a square in
+  three comparisons a pixel whatever the radius (van Herk and Gil-Werman),
+  where trying the square cost 2r: 150 to 210 ms an edge tile at 50 px
+  before, 13 ms. Reopening the PSD: rows copied as they are when the depth
+  doesn't change, and the merged image not decoded: 20.3 s to 14.3. Writing
+  the PSD (34 s) was profiled before anything was changed: two changes the
+  review proposed (`packBits` into a buffer, 16-bit samples without
+  DataView) measured no faster and weren't kept; the time is per-pixel
+  work on the CPU (log above, and ROADMAP.md).
+
+- **12 Oct 2026, the interface with two hundred layers.** Measured on a
+  production build (`vite preview`; the dev server's React is several
+  times slower and mostly measures itself): each change timed from the
+  call until the page is idle, 40 times. Choosing a tool took 16.7 ms
+  (p95 20), selecting a layer 17.4 ms, a commit 6 ms. JavaScript was a
+  small part: a trace put about 10 ms of each in Layerize, Chrome working
+  out composited layers, because each layer's thumbnail was a canvas on
+  the GPU, and a GPU canvas is a layer of its own. The thumbnails (and the
+  Brushes panel's previews, and the tip picker's) are now drawn on the CPU
+  (`willReadFrequently`): a tool chosen in 4.9 ms (p95 7.4), a layer
+  selected in 8.9 ms, a commit 6.2 ms. With it: the panels are memoised
+  and get the same action functions every render (lib/stable.ts), the
+  thumbnails' bookkeeping is worked out once per document state, the key
+  listeners are added once (not again on every commit, with every
+  command's keys parsed again), the canvas's box is read once a frame
+  while the pointer moves, and a document's overlay is sent once for
+  whatever changed it in one go.
+
+- **12 Oct 2026, the quality and performance pass, first fixes.** Every
+  budget is met.
+  - *Panning with shapes, over text and proofed* (64 to 66 ms a frame
+    since guides, against 33.3): not the GPU. The page re-rendered the
+    whole app on every engine frame: App subscribed to the engine's whole
+    state, and each `frame` message made a new one. With 200-odd layers
+    the page fell behind, and the engine only draws when the page sends a
+    view. App now follows only the engine's health (status, GPU, reason,
+    error); the status bar and the Graphics Information dialog follow the
+    frames. All three back at 33.3 ms over 120 frames.
+  - *The reopened PSD drawn fitted*: 3.38 to 3.48 s before, measured with
+    the bench's new `BENCH_PROFILE` (CPU profiles of the page and the
+    engine from the reopening until it's drawn). Three things: the CMYK
+    adjustment tables were built again (380 ms) because the reopened
+    document named an embedded copy of Generic CMYK, not the built-in (a
+    profile Plexel wrote is now recognised as its built-in, the header's
+    date and ID aside); uploads interleaved every tile's samples on the
+    CPU (850 ms), now packed by a render pass from the samples as the
+    store holds them; and outlines' segments were made through a matrix
+    that returned an array a point. 2.83 s. The rest is outlining the 192
+    shapes and 49,000 glyphs at the coarse level (about 1 s) and the
+    tiles' uploads themselves.
+  - *Uploads*: 650 to 840 MB/s before, 910 to 1,120 MB/s for RGB 8-bit,
+    RGB 16-bit and CMYK 8-bit. The first picture of the 96 MP document
+    didn't change (715 to 785 ms): it's bound by something else, not timed
+    apart yet.
+  - PSD open no longer decodes the merged composite when there are layers.
 
 - **11 Oct 2026, after guides, grids and snapping: panning with shapes,
   text and proofing.** Three runs of the bench miss three panning budgets

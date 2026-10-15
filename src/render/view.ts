@@ -30,18 +30,18 @@ export interface Canvas {
 /** x' = a·x + c·y + e, y' = b·x + d·y + f, as doc/types' Affine. */
 export type Matrix = [number, number, number, number, number, number]
 
-export const MIN_ZOOM = 1 / 100
-export const MAX_ZOOM = 128
+const MIN_ZOOM = 1 / 100
+const MAX_ZOOM = 128
 
 /** The zoom steps Ctrl+= and Ctrl+− walk through, as Photoshop's do. */
-export const ZOOM_STEPS = [
+const ZOOM_STEPS = [
   0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.0625, 0.0833, 0.125, 0.1667, 0.25, 0.3333, 0.5, 0.6667, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 24, 32, 48, 64, 96, 128,
 ]
 
-export const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
+const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
 
 /** An angle folded into −180 < r ≤ 180. */
-export const normaliseAngle = (r: number) => {
+const normaliseAngle = (r: number) => {
   const m = ((((r + 180) % 360) + 360) % 360) - 180
   return m === -180 ? 180 : m
 }
@@ -65,26 +65,9 @@ export function viewMatrix(v: View, c: Canvas): Matrix {
   return [cos, sin, -sin, cos, e, f]
 }
 
-export function invert(m: Matrix): Matrix {
-  const [a, b, c, d, e, f] = m
-  const det = a * d - b * c
-  if (!det) return [1, 0, 0, 1, 0, 0]
-  return [d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det]
-}
-
-export const apply = (m: Matrix, x: number, y: number): [number, number] => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]
-
-/** a then b: the matrix that applies `a` first. */
-export function multiply(b: Matrix, a: Matrix): Matrix {
-  return [
-    b[0] * a[0] + b[2] * a[1],
-    b[1] * a[0] + b[3] * a[1],
-    b[0] * a[2] + b[2] * a[3],
-    b[1] * a[2] + b[3] * a[3],
-    b[0] * a[4] + b[2] * a[5] + b[4],
-    b[1] * a[4] + b[3] * a[5] + b[5],
-  ]
-}
+// Affines (geom/affine.ts): multiply(b, a) applies a first, as compose does.
+import { apply, compose as multiply, invert } from '../geom/affine'
+export { apply, multiply, invert }
 
 /** The document point under a device pixel. */
 export const docPoint = (v: View, c: Canvas, x: number, y: number) => apply(invert(viewMatrix(v, c)), x, y)

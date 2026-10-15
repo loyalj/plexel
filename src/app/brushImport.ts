@@ -10,7 +10,6 @@
 import { DEFAULT_BRUSH } from '../brush/defs'
 import { tipId } from '../brush/tips'
 import { engine } from '../engine/EngineHost'
-import { AbrError, readAbr, renamePatterns } from '../io/abr'
 import { brushAssets } from './brushAssets'
 import { brushes } from './brushes'
 import { documents } from './documents'
@@ -34,6 +33,8 @@ export function pickBrushFiles(): Promise<number> {
 
 /** Imports ABR files: their presets join the user's, grouped by file. */
 export async function importBrushes(files: File[]): Promise<number> {
+  // The ABR reader is loaded the first time brushes are imported, not with the app.
+  const { readAbr, renamePatterns } = await import('../io/abr')
   let added = 0
   for (const file of files) {
     try {
@@ -49,7 +50,7 @@ export async function importBrushes(files: File[]): Promise<number> {
       else if (f.warnings.length) notify('warning', `${f.presets.length} brushes came in from “${file.name}”, with a few things that couldn’t.`, f.warnings)
       else notify('info', `${f.presets.length} brushes came in from “${file.name}”.`)
     } catch (e) {
-      notify('error', `“${file.name}” couldn’t be read as Photoshop brushes.`, [e instanceof AbrError || e instanceof Error ? e.message : String(e)])
+      notify('error', `“${file.name}” couldn’t be read as Photoshop brushes.`, [e instanceof Error ? e.message : String(e)])
     }
   }
   return added

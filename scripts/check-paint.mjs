@@ -11,7 +11,7 @@
  *
  * Run with: npm run check:paint
  */
-import { check, finish, frames, open, settle, waitUntil, waitForEngine } from './harness.mjs'
+import { check, dialogShown, finish, frames, open, pageHelpers, settle, waitForEngine, waitUntil } from './harness.mjs'
 import { decodePng, pixelAt } from './png.mjs'
 import { fileURLToPath } from 'node:url'
 
@@ -20,23 +20,14 @@ await page.goto(url)
 await waitForEngine(page)
 
 // --- helpers ---------------------------------------------------------------------------
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
+const { press } = pageHelpers(page)
 const clickMenu = async (menu, command) => {
   await page.evaluate((m) => [...document.querySelectorAll('.menu-title')].find((b) => b.textContent === m).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })), menu)
   await frames(page)
   await page.click(`[data-command="${command}"]`)
   await frames(page)
 }
-const idle = async () => {
-  await frames(page)
-  await page.evaluate(() => globalThis.plexel.engine().call('render.idle', {}))
-}
+const { idle } = pageHelpers(page)
 const rect = () => page.$eval('[data-engine-canvas]', (e) => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height } })
 const shot = async () => decodePng(Buffer.from(await page.screenshot()))
 const at = async (dx, dy, img) => {
@@ -300,7 +291,7 @@ await page.evaluate(() => delete globalThis.plexelHistoryBytes)
 
 console.log('\nsettings')
 await clickMenu('Edit', 'edit.pen-settings')
-check('Edit → Pen Settings opens', !!(await page.$('[data-dialog="pen"]')))
+check('Edit → Pen Settings opens', await dialogShown(page, 'pen'))
 await page.$eval('#pen-response', (i) => {
   const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
   set.call(i, '60')
@@ -395,7 +386,14 @@ await press('KeyB')
 check('B keeps to the Mixer Brush, the group’s last tool', (await page.$eval('[data-tool="mixer"]', (b) => b.getAttribute('aria-pressed'))) === 'true')
 
 console.log('\nSmudge')
-await page.click('[data-tool="brush"]')
+/** A tool from its group's flyout: right-click the group's slot, then the tool. */
+const pickTool = async (id) => {
+  await page.click('[data-tool-slot="brush"]', { button: 'right' })
+  await page.waitForSelector(`[data-tool-option="${id}"]`)
+  await page.click(`[data-tool-option="${id}"]`)
+  await frames(page)
+}
+await pickTool('brush')
 await setForeground(0, 0, 0)
 await setOption('opt-brush-size', 16)
 await stroke([[-150, 120], [-150, 260]])
@@ -409,7 +407,7 @@ const dragged = grey(await at(-120, 190))
 check('it drags the black along the way it went, fading', dragged < 200 && grey(await at(-120, 140)) > 245 && grey(await at(-60, 190)) > dragged, `${dragged} / ${await at(-60, 190)}`)
 
 console.log('\nDefine Brush Preset')
-await page.click('[data-tool="brush"]')
+await pickTool('brush')
 await setOption('opt-brush-size', 12)
 await stroke([[200, 150], [260, 200], [200, 250]])
 await press('KeyM')
@@ -430,7 +428,7 @@ check('the selection’s paint becomes a tip, and the Brush takes it', defined.t
 check('kept as a preset of the user’s, under Defined', await page.evaluate(() => globalThis.plexel.brushes().get().user.some((p) => p.name === 'Chevron' && p.group === 'Defined')))
 await press('Control+KeyD')
 await press('KeyB')
-await page.click('[data-tool="brush"]')
+await pickTool('brush')
 await setForeground(0, 128, 0)
 await setOption('opt-brush-spacing', 150)
 const s1 = (await steps()).length

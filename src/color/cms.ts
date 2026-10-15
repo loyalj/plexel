@@ -38,7 +38,7 @@ const SPACES: Record<number, ColourSpace> = {
   0x4c616220: 'lab',
   0x58595a20: 'xyz',
 }
-export const SPACE_SIGNATURE: Record<'rgb' | 'gray' | 'cmyk' | 'lab', number> = {
+const SPACE_SIGNATURE: Record<'rgb' | 'gray' | 'cmyk' | 'lab', number> = {
   rgb: 0x52474220,
   gray: 0x47524159,
   cmyk: 0x434d594b,
@@ -317,6 +317,11 @@ export class Transform {
 }
 
 /** Starts a colour engine from the wasm bytes, which the caller fetches or reads as its platform allows. */
-export async function startCms(wasmBinary: ArrayBuffer | Uint8Array): Promise<Cms> {
-  return new Cms(await createPxCms({ wasmBinary }))
+/**
+ * The engine, from the wasm's bytes (the checks, in Node) or its URL: given
+ * the URL, the module is compiled as it downloads (instantiateStreaming)
+ * rather than after.
+ */
+export async function startCms(wasm: ArrayBuffer | Uint8Array | { url: string }): Promise<Cms> {
+  return new Cms(await createPxCms('url' in wasm ? { locateFile: () => wasm.url } : { wasmBinary: wasm }))
 }

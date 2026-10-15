@@ -15,7 +15,7 @@
 import { writeFileSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { check, finish, frames, open, settle, waitUntil, waitForEngine } from './harness.mjs'
+import { check, finish, frames, open, pageHelpers, settle, waitForEngine, waitUntil } from './harness.mjs'
 import { decodePng, pixelAt } from './png.mjs'
 
 const { page, url } = await open({ viewport: { width: 1280, height: 900 } })
@@ -24,13 +24,7 @@ await page.goto(url)
 await waitForEngine(page)
 
 // --- helpers ---------------------------------------------------------------------------
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
+const { press } = pageHelpers(page)
 const openMenu = async (menu) => {
   await page.evaluate((m) => [...document.querySelectorAll('.menu-title')].find((b) => b.textContent === m).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })), menu)
   await frames(page)
@@ -225,8 +219,13 @@ await frames(page)
 d = await doc()
 check('at a tint: the ink scaled', fillOf(d, 'shape').tint === 0.4 && Math.abs(fillOf(d, 'shape').colour[1] - 0.36) < 1e-6, JSON.stringify(fillOf(d, 'shape')))
 await setFg('cmyk', [1, 0.2, 0, 0])
-if (!(await page.$('[data-swatch-set-fg]'))) await tap(`[data-doc-swatch="${spot.id}"] .doc-swatch-name`)
-await tap('[data-swatch-set-fg]')
+if (!(await page.$('[data-swatch-colour]'))) await tap(`[data-doc-swatch="${spot.id}"] .doc-swatch-name`)
+// The swatch's chip opens the picker; its foreground chip takes the foreground.
+await tap('[data-swatch-colour]')
+await page.waitForSelector('[data-colour-picker]')
+await tap('[data-colour-picker] [data-pick="fg"]')
+await page.keyboard.press('Escape')
+await frames(page)
 d = await doc()
 check('changing the swatch changes the fill linked to it, at its tint', Math.abs(fillOf(d, 'shape').colour[0] - 0.4) < 1e-6 && (await label()) === 'Swatch Colour')
 // A library from another app: an .ase with a Lab colour.

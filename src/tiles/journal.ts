@@ -23,6 +23,9 @@ interface Manifest {
   tiles: (number | string)[][]
 }
 
+/** The hashes of a manifest's data tiles. */
+const hashesIn = (m: Manifest) => m.tiles.filter((t) => t[2] === 'h').map((t) => String(t[3]))
+
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 const validSet = (id: string) => /^[a-z0-9]+$/i.test(id)
@@ -31,6 +34,13 @@ export class TileJournal {
   /** Tile hashes known to be in the journal, and sets already written. */
   private blobs: Set<string> | null = null
   private written = new Set<SetId>()
+  /**
+   * Each set's data tiles' hashes, for sets written or read back in this
+   * session: collect reads a manifest from storage only for a set it hasn't
+   * seen (one journalled in an earlier session), not every set on every
+   * collection.
+   */
+  private hashes = new Map<SetId, string[]>()
 
   constructor(
     private store: TileStore,
@@ -67,6 +77,7 @@ export class TileJournal {
       }
       await this.journal.write(`sets/${id}.json`, enc.encode(JSON.stringify(manifest)))
       this.written.add(id)
+      this.hashes.set(id, hashesIn(manifest))
     }
     return tilesWritten
   }
@@ -105,6 +116,7 @@ export class TileJournal {
         }
         this.store.createSet(f, entries, id)
         this.written.add(id)
+        this.hashes.set(id, hashesIn(m))
         restored.push(id)
       } catch {
         missing.push(id)
@@ -128,16 +140,23 @@ export class TileJournal {
       if (!keep.has(id)) {
         await this.journal.remove(`sets/${f}`)
         this.written.delete(id)
+        this.hashes.delete(id)
         sets++
         continue
       }
-      const raw = await this.journal.read(`sets/${f}`)
-      if (!raw) continue
-      try {
-        for (const t of (JSON.parse(dec.decode(raw)) as Manifest).tiles) if (t[2] === 'h') usedHashes.add(String(t[3]))
-      } catch {
-        // A damaged manifest keeps nothing alive.
+      let known = this.hashes.get(id)
+      if (!known) {
+        const raw = await this.journal.read(`sets/${f}`)
+        if (!raw) continue
+        try {
+          known = hashesIn(JSON.parse(dec.decode(raw)) as Manifest)
+          this.hashes.set(id, known)
+        } catch {
+          // A damaged manifest keeps nothing alive.
+          continue
+        }
       }
+      for (const h of known) usedHashes.add(h)
     }
     const blobs = await this.known()
     for (const h of [...blobs]) {

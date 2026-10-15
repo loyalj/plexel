@@ -23,7 +23,14 @@ npm run deploy       # check:fast, build, then publish dist/ to Cloudflare Pages
 npm run build:cms    # rebuild the colour engine's WebAssembly (needs Docker)
 npm run build:hb     # rebuild HarfBuzz's WebAssembly (needs Docker)
 npm run bench        # frame times, uploads and first frames on this GPU (PERFORMANCE.md)
+npm run check        # every suite, several at once, the browser ones against a production build
+npm run check:fast   # the headless ones, check:static first (types, lint, dependency rules, unused files)
 ```
+
+`npm run check` takes options after `--`: `--only static,text` for some
+suites, `--retry-failed` to run a failure again alone (one that passes then
+is reported as flaky), `--dev` to run the browser suites against the dev
+server, `--jobs N` to change how many run at once.
 
 The colour engine (LittleCMS, compiled to WebAssembly) is checked in under
 `src/color/wasm`, so `build:cms` is only needed after a change to
@@ -388,6 +395,7 @@ npm run check:browser-all
 | `check:warp` | browser | Free Transform's Distort, Perspective and Warp (a style, a dragged mesh, picked up again), a shape warped as outlines, Rasterize keeping a warp, Liquify. |
 | `check:filters` | browser | The Filter menu's submenus, Twirl, Lens Blur with an effect's blend mode, a filter layer, Document → Adjustments, Colour Lookup from a `.cube` file. |
 | `check:appearance` | browser | Effects on one fill (a shadow, an offset path) from Properties; graphic styles made, given, redefined and unlinked. |
+| `check:channels` | browser | The Channels panel: colour channels shown alone and hidden, Red or Blue alone painted and filled, an alpha channel made, painted, filled, cleared, shown as a tint and loaded, a spot channel made from the selection and shown as ink, Channel Options, reordering, colour channels and the luminosity loaded, the Magic Wand on a channel, Ctrl+2 onwards, and alpha and spot channels through PSD and back. |
 | `check:construct` | browser | Pathfinder, the Shape Builder, Live Paint, Outline Stroke, Offset Path and Simplify. |
 | `check:guides` | browser | Rulers through the real UI: Ctrl+R making room for them, a guide dragged out of each ruler with its readout, drawn on screen, moved and dragged off with the Move tool, Undo, Lock Guides and Ctrl+; ; New Guide and New Guide Layout; the Move tool snapping a shape to a guide, letting go with Ctrl, and lining up with another's top with a smart guide drawn and the readout; the grid shown and snapped to by Move and the Shape tool; Snap turned off; Ctrl- and Shift-click in the Layers panel, moving two layers together, Align from the menu and the options bar to the layers, the key layer and the canvas, Distribute Horizontal Spacing, Delete; a ruler's units from its right-click menu. |
 | `check:theme` | headless | Every palette declares the full token set, every registered theme has both modes, every token is used, contrast pairs clear their ratios, and every pasteboard is neutral grey. |

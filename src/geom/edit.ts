@@ -4,7 +4,7 @@
  * what a press landed on. Points are in the path's own coordinates; the
  * tools map the pointer into them.
  */
-import { evalCubic, segmentsOf, splitCubic, type Anchor, type PathData, type Pt } from './path'
+import { evalCubic, reverseSubpath, segmentsOf, splitCubic, type Anchor, type PathData, type Pt, type Subpath } from './path'
 
 /** An anchor, by subpath and index. */
 export interface AnchorRef {
@@ -214,4 +214,133 @@ export function anchorsIn(path: PathData, x0: number, y0: number, x1: number, y1
   const hy = Math.max(y0, y1)
   path.subpaths.forEach((s, sub) => s.anchors.forEach((a, i) => a.p[0] >= lx && a.p[0] <= hx && a.p[1] >= ly && a.p[1] <= hy && out.push({ sub, i })))
   return out
+}
+
+// --- curvature ----------------------------------------------------------------------------------
+
+/** A point plus a direction times a length. */
+const along = (p: Pt, d: Pt, l: number): Pt => [p[0] + d[0] * l, p[1] + d[1] * l]
+const unit = (x: number, y: number): Pt => {
+  const l = Math.hypot(x, y)
+  return l > 1e-12 ? [x / l, y / l] : [0, 0]
+}
+
+/**
+ * A smooth point's handles worked out from its neighbours, as the
+ * Curvature tool (and the Pen's Smart mode) makes them: along the line
+ * between its neighbours, a third of the way to each. An open path's end
+ * turns towards where the curve through the next point is heading (the
+ * neighbour's direction mirrored across the chord), so the end segment
+ * curves as the rest do; with no point beyond, it's straight. A corner
+ * keeps no handles.
+ */
+export function curvatureAnchor(s: Subpath, i: number): Anchor {
+  const a = s.anchors
+  const n = a.length
+  const me = a[i]
+  if (!me.smooth || n < 2) return { ...me, in: null, out: null }
+  const prev = s.closed || i > 0 ? a[(i - 1 + n) % n].p : null
+  const next = s.closed || i < n - 1 ? a[(i + 1) % n].p : null
+  const p = me.p
+  if (prev && next) {
+    const d = unit(next[0] - prev[0], next[1] - prev[1])
+    return { ...me, in: along(p, d, -Math.hypot(p[0] - prev[0], p[1] - prev[1]) / 3), out: along(p, d, Math.hypot(next[0] - p[0], next[1] - p[1]) / 3) }
+  }
+  // An open end: towards its neighbour, bent by where the curve goes on from there.
+  const nb = (prev ?? next)!
+  const beyond = prev ? (i - 2 >= 0 ? a[i - 2].p : null) : i + 2 < n ? a[i + 2].p : null
+  const chord = unit(nb[0] - p[0], nb[1] - p[1])
+  const len = Math.hypot(nb[0] - p[0], nb[1] - p[1]) / 3
+  let d = chord
+  if (beyond && a[prev ? i - 1 : i + 1].smooth) {
+    // The neighbour's tangent (pointing away from this end), mirrored across the chord.
+    const t = unit(beyond[0] - p[0], beyond[1] - p[1])
+    const dot = t[0] * chord[0] + t[1] * chord[1]
+    d = unit(2 * dot * chord[0] - t[0], 2 * dot * chord[1] - t[1])
+  }
+  const h = along(p, d, len)
+  return prev ? { ...me, in: h, out: null } : { ...me, in: null, out: h }
+}
+
+/** A subpath's smooth points among `around` and their neighbours given handles by the curvature rule. */
+export function recurve(s: Subpath, around: number[]): Subpath {
+  const n = s.anchors.length
+  const touch = new Set<number>()
+  for (const i of around)
+    for (const k of [i - 1, i, i + 1]) {
+      if (s.closed) touch.add(((k % n) + n) % n)
+      else if (k >= 0 && k < n) touch.add(k)
+    }
+  // Worked out from the points as they are, not from handles already changed.
+  const anchors = s.anchors.map((a, i) => (touch.has(i) ? curvatureAnchor(s, i) : a))
+  return { closed: s.closed, anchors }
+}
+
+/** recurve on one subpath of a path. */
+export function recurvePath(path: PathData, sub: number, around: number[]): PathData {
+  const s = path.subpaths[sub]
+  return s ? { ...path, subpaths: path.subpaths.map((x, k) => (k === sub ? recurve(s, around) : x)) } : path
+}
+
+// --- breaking and joining -------------------------------------------------------------------------
+
+/**
+ * Paths cut at points: a closed subpath opens there (starting and ending
+ * at it), an open one splits in two, the point on both sides (each copy
+ * keeping the handle on its own side). An open path's end isn't a cut.
+ */
+export function breakAt(path: PathData, refs: AnchorRef[]): PathData {
+  const out: Subpath[] = []
+  path.subpaths.forEach((s, sub) => {
+    const n = s.anchors.length
+    const cuts = [...new Set(refs.filter((r) => r.sub === sub).map((r) => r.i))].filter((i) => i >= 0 && i < n && (s.closed || (i > 0 && i < n - 1))).sort((a, b) => a - b)
+    if (!cuts.length) return out.push(s)
+    // A closed path is read from its first cut round to it again.
+    const order = s.closed ? [...s.anchors.slice(cuts[0]), ...s.anchors.slice(0, cuts[0] + 1)] : s.anchors
+    const at = s.closed ? cuts.map((c) => c - cuts[0]).concat(n) : [0, ...cuts, n - 1]
+    for (let k = 0; k + 1 < at.length; k++) {
+      const piece = order.slice(at[k], at[k + 1] + 1).map((a) => ({ ...a }))
+      if (piece.length < 2) continue
+      piece[0] = { ...piece[0], in: null, smooth: false }
+      piece[piece.length - 1] = { ...piece[piece.length - 1], out: null, smooth: false }
+      out.push({ closed: false, anchors: piece })
+    }
+  })
+  return { ...path, subpaths: out }
+}
+
+/** An open subpath turned so `end` is its last point. */
+const endingAt = (s: Subpath, end: 'start' | 'end'): Subpath => (end === 'end' ? s : reverseSubpath(s))
+
+/**
+ * Two open ends joined: `a`'s end `aEnd` to `b`'s end `bEnd`, by a straight
+ * segment, or with `merge` into one point (a's position, a's handle
+ * arriving, b's leaving). Returns the one open subpath they make.
+ */
+export function joinSubpaths(a: Subpath, aEnd: 'start' | 'end', b: Subpath, bEnd: 'start' | 'end', merge: boolean): Subpath {
+  const first = endingAt(a, aEnd).anchors.map((x) => ({ ...x }))
+  const second = reverseIfNeeded(b, bEnd).anchors.map((x) => ({ ...x }))
+  if (merge) {
+    const l = first[first.length - 1]
+    first[first.length - 1] = { p: l.p, in: l.in, out: second[0].out, smooth: false }
+    return { closed: false, anchors: [...first, ...second.slice(1)] }
+  }
+  return { closed: false, anchors: [...first, ...second] }
+}
+/** An open subpath turned so `end` is its first point. */
+const reverseIfNeeded = (s: Subpath, end: 'start' | 'end'): Subpath => (end === 'start' ? s : reverseSubpath(s))
+
+/** An open subpath closed: by a straight segment from its last point to its first, or with `merge` the two made one point. */
+export function closeSubpath(s: Subpath, merge: boolean): Subpath {
+  const anchors = s.anchors.map((x) => ({ ...x }))
+  if (merge && anchors.length > 2) {
+    const l = anchors.pop()!
+    anchors[0] = { p: anchors[0].p, in: l.in, out: anchors[0].out, smooth: false }
+  }
+  return { closed: true, anchors }
+}
+
+/** Each subpath of a path as a path of its own. */
+export function separate(path: PathData): PathData[] {
+  return path.subpaths.map((s) => ({ fillRule: path.fillRule, subpaths: [s] }))
 }

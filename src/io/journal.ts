@@ -28,7 +28,7 @@ export interface JournalStore {
   list(dir: string): Promise<string[]>
 }
 
-export const JOURNAL_VERSION = 1
+const JOURNAL_VERSION = 1
 
 export interface FileRef {
   /** The key the file handle is stored under in IndexedDB, when there is one. */

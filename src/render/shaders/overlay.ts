@@ -47,6 +47,8 @@ fn fs(in: V) -> @location(0) vec4f {
   if (in.ink == 8u) { return vec4f(U.grid.rgb, U.grid.a * 0.35); }
   // The pixel grid: a faint gray that shows on light and dark alike.
   if (in.ink == 9u) { return vec4f(0.5, 0.5, 0.5, 0.28); }
+  // The pasteboard round a document's artboards: a neutral dark gray, as Photoshop's; what runs past an artboard that doesn't clip shows through, dimmed.
+  if (in.ink == 10u) { return vec4f(0.16, 0.16, 0.17, 0.72); }
   let on = (u32(floor((in.dist + U.time) / 4.0)) & 1u) == 0u;
   return select(vec4f(1.0, 1.0, 1.0, 1.0), vec4f(0.0, 0.0, 0.0, 1.0), on);
 }

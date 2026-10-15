@@ -42,7 +42,7 @@ export function parseShortcut(text: string): Shortcut | null {
 export const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 
 /** Keys matched by where they are as well as what they type, so Shift or Alt (which change what they type) still find them. */
-export const KEY_AT: Record<string, string> = {
+const KEY_AT: Record<string, string> = {
   BracketLeft: '[',
   BracketRight: ']',
   Semicolon: ';',

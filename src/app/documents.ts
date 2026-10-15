@@ -17,6 +17,7 @@ import { commit as commitHistory, initHistory, jumpTo, redo, trimPast, undo, typ
 import type { Doc, NodeId } from '../doc/types'
 import { neighbourOf, placeOf } from '../doc/tree'
 import type { FileRef } from '../io/journal'
+import { Listeners } from '../lib/listeners'
 
 export type MaskTarget = false | 'pixel' | 'vector'
 
@@ -51,6 +52,11 @@ export interface OpenDoc {
    * document holding it and its node. Save puts the contents back there.
    */
   parent: { key: string; node: NodeId } | null
+  /**
+   * For a symbol opened to edit (Edit Symbol): the document it's in and its
+   * id. What's done here goes back there as it's done (app/symbols.ts).
+   */
+  symbolOf: { key: string; symbol: string } | null
 }
 
 export interface DocsState {
@@ -59,7 +65,7 @@ export interface DocsState {
 }
 
 /** Edits under the same key this close together are one step: one drag of a slider is one undo. */
-export const COALESCE_MS = 600
+const COALESCE_MS = 600
 
 export const isDirty = (d: OpenDoc) => d.history.present !== d.saved
 
@@ -70,23 +76,20 @@ export function newId(prefix = ''): string {
   return prefix + [...bytes].map((b) => b.toString(36).padStart(2, '0')).join('').slice(0, 12)
 }
 
-export class DocumentStore {
+class DocumentStore {
   private state: DocsState = { docs: [], active: null }
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   private lastCommit: { doc: string; key: string; at: number } | null = null
 
   getState = () => this.state
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   private set(next: DocsState) {
     if (next === this.state) return
     this.state = next
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   private update(key: string, fn: (d: OpenDoc) => OpenDoc) {
@@ -113,7 +116,7 @@ export class DocumentStore {
    * matches its file as it arrives: a file just opened does, a new
    * document doesn't, and a restored one says which it was.
    */
-  add(o: { key?: string; doc: Doc; file: FileRef | null; saved: boolean; folded?: NodeId[]; label?: string; parent?: OpenDoc['parent'] }): string {
+  add(o: { key?: string; doc: Doc; file: FileRef | null; saved: boolean; folded?: NodeId[]; label?: string; parent?: OpenDoc['parent']; symbolOf?: OpenDoc['symbolOf'] }): string {
     const key = o.key ?? newId('d')
     const entry: OpenDoc = {
       key,
@@ -127,6 +130,7 @@ export class DocumentStore {
       quickMask: false,
       lastSelection: null,
       parent: o.parent ?? null,
+      symbolOf: o.symbolOf ?? null,
     }
     this.set({ docs: [...this.state.docs, entry], active: key })
     return key
@@ -194,6 +198,11 @@ export class DocumentStore {
       const history = trimPast(d.history, keep)
       return history === d.history ? d : { ...d, history }
     })
+  }
+
+  /** Nothing to save: a symbol being edited, whose changes are already in its document. */
+  markClean(key: string) {
+    this.update(key, (d) => (d.saved === d.history.present ? d : { ...d, saved: d.history.present }))
   }
 
   /** After a save: the file now matches this state. */

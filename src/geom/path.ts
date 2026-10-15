@@ -134,7 +134,7 @@ export function subCubic(c: Cubic, t0: number, t1: number): Cubic {
 
 export const reverseCubic = (c: Cubic): Cubic => [c[6], c[7], c[4], c[5], c[2], c[3], c[0], c[1]]
 
-export function transformCubic(c: Cubic, m: Mat): Cubic {
+function transformCubic(c: Cubic, m: Mat): Cubic {
   const out = [...c] as Cubic
   for (let i = 0; i < 8; i += 2) {
     out[i] = m[0] * c[i] + m[2] * c[i + 1] + m[4]
@@ -227,6 +227,8 @@ export function linesFor(c: Cubic, tol: number): number {
 export interface Polyline {
   pts: number[]
   closed: boolean
+  /** Which points (by index) are the path's corners: anchors whose two sides don't continue each other. For dashes aligned to corners. */
+  corners?: number[]
 }
 
 /**
@@ -240,10 +242,14 @@ export function flattenPath(path: PathData, tol: number, m?: Mat): Polyline[] {
     if (!s.anchors.length) continue
     const first = m ? applyMat(m, ...s.anchors[0].p) : s.anchors[0].p
     const pts = [first[0], first[1]]
-    for (const c0 of segmentsOf(s)) {
+    const segs = segmentsOf(s)
+    // Each anchor's point index, for marking the corners.
+    const at: number[] = [0]
+    for (const c0 of segs) {
       const c = m ? transformCubic(c0, m) : c0
       if (isLine(c)) {
         pts.push(c[6], c[7])
+        at.push(pts.length / 2 - 1)
         continue
       }
       const n = linesFor(c, tol)
@@ -251,13 +257,53 @@ export function flattenPath(path: PathData, tol: number, m?: Mat): Polyline[] {
         const [x, y] = evalCubic(c, i / n)
         pts.push(x, y)
       }
+      at.push(pts.length / 2 - 1)
+    }
+    const corners: number[] = []
+    const k = segs.length
+    for (let j = 0; j < s.anchors.length && k; j++) {
+      // The segment arriving at anchor j and the one leaving it; an open path's ends aren't corners.
+      const inSeg = j > 0 ? segs[j - 1] : s.closed ? segs[k - 1] : null
+      const outSeg = j < k ? segs[j] : null
+      if (!inSeg || !outSeg) continue
+      const ti = endTangent(inSeg)
+      const to = startTangent(outSeg)
+      if (ti && to && ti[0] * to[0] + ti[1] * to[1] < Math.cos((2 * Math.PI) / 180)) corners.push(j === 0 || (s.closed && j === k) ? 0 : at[j])
     }
     // A closed subpath's closing segment ends where it began; that point
     // is the start again, so it's dropped.
     if (s.closed && pts.length >= 4 && Math.abs(pts[pts.length - 2] - pts[0]) < 1e-9 && Math.abs(pts[pts.length - 1] - pts[1]) < 1e-9) pts.length -= 2
-    out.push({ pts, closed: s.closed })
+    out.push(corners.length ? { pts, closed: s.closed, corners } : { pts, closed: s.closed })
   }
   return out
+}
+
+/** A cubic's direction where it ends, and where it starts: through its nearest control point that isn't on the end. */
+function endTangent(c: Cubic): Pt | null {
+  for (const [x, y] of [
+    [c[4], c[5]],
+    [c[2], c[3]],
+    [c[0], c[1]],
+  ]) {
+    const dx = c[6] - x
+    const dy = c[7] - y
+    const l = Math.hypot(dx, dy)
+    if (l > 1e-9) return [dx / l, dy / l]
+  }
+  return null
+}
+function startTangent(c: Cubic): Pt | null {
+  for (const [x, y] of [
+    [c[2], c[3]],
+    [c[4], c[5]],
+    [c[6], c[7]],
+  ]) {
+    const dx = x - c[0]
+    const dy = y - c[1]
+    const l = Math.hypot(dx, dy)
+    if (l > 1e-9) return [dx / l, dy / l]
+  }
+  return null
 }
 
 /** How much a transform stretches anything at most: its largest singular value. */

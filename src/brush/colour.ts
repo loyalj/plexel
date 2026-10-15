@@ -10,8 +10,8 @@
  */
 import type { ColourMode } from '../doc/types'
 import { adjustedCmyk, cmykToRgbT, type CmykTables } from '../color/cmykAdjust'
+import { clamp01 as clamp } from '../lib/num'
 
-const clamp = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 
 export function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
   const max = Math.max(r, g, b)
@@ -46,7 +46,7 @@ export function hsvToRgb(h: number, s: number, v: number): [number, number, numb
 }
 
 /** An RGB colour with hue turned by `dh` (turns), saturation and brightness moved by `ds` and `db`. */
-export function jitterRgb(rgb: number[], dh: number, ds: number, db: number): number[] {
+function jitterRgb(rgb: number[], dh: number, ds: number, db: number): number[] {
   const [h, s, v] = rgbToHsv(rgb[0], rgb[1], rgb[2])
   return hsvToRgb(h + dh, clamp(s + ds), clamp(v + db))
 }

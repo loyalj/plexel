@@ -31,7 +31,7 @@
 import { cursorLoops } from '../brush/outline'
 import { pointer } from '../app/pointer'
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { engine, type EngineState } from '../engine/EngineHost'
+import { engine, type EngineHealth } from '../engine/EngineHost'
 import { formatShortcut, parseShortcut } from '../input/shortcuts'
 import { keyOf } from '../commands'
 import type { RecentFile } from '../io/handles'
@@ -40,7 +40,7 @@ import { tools, TOOL_BY_ID } from '../tools'
 import { documents } from '../app/documents'
 import { applyResponse, brushes, penSettings } from '../app/brushes'
 import { painting, pickColour } from '../app/painting'
-import { canvasCaptured, guideAt, hoverTool, pressTool, sessions, type Gesture, type Pointer } from '../app/canvasTools'
+import { canvasCaptured, guideAt, hoverTool, isGestureTool, moveCursor, pressTool, sessions, type Gesture, type Pointer } from '../app/canvasTools'
 import { guidePrefs } from '../app/guidePrefs'
 import { readout } from '../app/readout'
 import { Rulers } from './Rulers'
@@ -56,9 +56,14 @@ import { retouch } from '../app/retouch'
 import { clearToolOverlay, setToolOverlay } from '../app/overlay'
 import type { PenSample } from '../brush/stroke'
 import { RecentList } from './docDialogs'
+import { previewing } from '../app/previewing'
+import { TileHome } from './TileHome'
+import { ArtboardLabels } from './ArtboardLabels'
+import { ColourHud, colourHud } from './ColourHud'
+import { JobBar } from './JobBar'
 
 interface Props {
-  state: EngineState
+  health: EngineHealth
   hasDoc: boolean
   /** A document is open and in front, so gestures have something to move. */
   active: boolean
@@ -84,6 +89,8 @@ type Drag =
   | { kind: 'tool'; id: number; gesture: Gesture | null; ready: boolean; last: Pointer | null; ended: Pointer | null }
   /** H held and a press: the whole document, with a frame for where to zoom back in. */
   | { kind: 'bird'; id: number; key: string; from: View; corners: [number, number][] }
+  /** Shift+Alt and a right-drag: the colour picker at the pointer (ui/ColourHud.tsx). */
+  | { kind: 'hue'; id: number }
   /** Alt and a right-drag: the brush's size and hardness, from where the drag began. */
   | { kind: 'size'; id: number; x: number; y: number; size: number; hardness: number | null; at: { clientX: number; clientY: number } }
 
@@ -121,7 +128,7 @@ function readoutAt(el: HTMLCanvasElement, r: { x: number; y: number }): { left: 
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || (t instanceof HTMLInputElement && t.type !== 'checkbox' && t.type !== 'range'))
 
-export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOpenRecent, onContextMenu, onRulerMenu, children }: Props) {
+export function Viewport({ health: state, hasDoc, active, canRecent, onNew, onOpen, onOpenRecent, onContextMenu, onRulerMenu, children }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const drag = useRef<Drag | null>(null)
   /**
@@ -189,6 +196,11 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
         drag.current = null
         setDragging(null)
       }
+      if (e.key === 'Escape' && drag.current?.kind === 'hue') {
+        colourHud.end(true)
+        drag.current = null
+        setDragging(null)
+      }
       if (e.key === 'Escape' && drag.current?.kind === 'tool') {
         drag.current.gesture?.cancel()
         drag.current = null
@@ -219,10 +231,23 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
     }
   }, [])
 
+  /**
+   * The canvas's box on the page, read once a frame: a pointer move, its
+   * coalesced pen samples and the hover work after it all ask, and each
+   * read is a layout query. Forgotten at the next frame, so any change of
+   * layout is seen.
+   */
+  const rectCache = useRef<DOMRect | null>(null)
+  const canvasRect = (): DOMRect => {
+    if (!rectCache.current) {
+      rectCache.current = canvas.current!.getBoundingClientRect()
+      requestAnimationFrame(() => (rectCache.current = null))
+    }
+    return rectCache.current
+  }
   /** A pointer event's position in the whole canvas's device pixels. */
   const fullPoint = (e: { clientX: number; clientY: number }): [number, number] => {
-    const el = canvas.current!
-    const r = el.getBoundingClientRect()
+    const r = canvasRect()
     const k = engine().fullCanvasSize().width / Math.max(1, r.width)
     return [(e.clientX - r.left) * k, (e.clientY - r.top) * k]
   }
@@ -322,9 +347,27 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
       const [x, y] = docPoint(views().front()!, engine().canvasSize(), ...p)
       shift.current = copyShift(documents().active()?.history.present ?? null, x, y)
     }
-    const pan = e.button === 1 || space || tool === 'hand'
+    // While a dialog previews on the canvas, the canvas only moves the view.
+    const preview = previewing.get()
+    const pan = e.button === 1 || space || tool === 'hand' || (preview && e.button === 0)
+    // Shift+Alt and the right button (Ctrl+Option+Cmd and a drag on a Mac): the colour picker at the pointer.
+    if (!preview && !space && (paints || tool === 'picker') && colourHud.wants(e, isMac())) {
+      e.preventDefault()
+      noContextMenu.current = true
+      try {
+        ;(e.target as Element).setPointerCapture(e.pointerId)
+      } catch {
+        // As below.
+      }
+      const vp = (e.currentTarget as Element).closest('.viewport')?.getBoundingClientRect() ?? (e.currentTarget as Element).getBoundingClientRect()
+      if (colourHud.start(e.clientX, e.clientY, vp)) {
+        drag.current = { kind: 'hue', id: e.pointerId }
+        setDragging('hue')
+        return
+      }
+    }
     // Alt and the right button (Ctrl+Option and a drag on a Mac): size the brush.
-    const sizing = (e.button === 2 && e.altKey) || (isMac() && e.button === 0 && e.ctrlKey && e.altKey)
+    const sizing = !preview && ((e.button === 2 && e.altKey) || (isMac() && e.button === 0 && e.ctrlKey && e.altKey))
     if (sizing && (paints || tool === 'quick') && !space) {
       e.preventDefault()
       noContextMenu.current = true
@@ -387,7 +430,7 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
     }
     const front = documents().getState().active
     const session = sessions().get()
-    const toolGesture = !pan && (canvasCaptured() || (session && session.key === front) || ['move', 'marquee', 'lasso', 'quick', 'wand', 'crop', 'pen', 'direct', 'shape', 'builder', 'livepaint', 'type', 'gradient', 'bucket', 'patch'].includes(tool))
+    const toolGesture = !pan && (canvasCaptured() || (session && session.key === front) || isGestureTool(tool))
     // The Clone Stamp and the Healing Brush: Alt-click sets where they copy from, rather than picking a colour.
     if (!pan && !toolGesture && (paints === 'clone' || paints === 'heal') && e.altKey && front) {
       const [x, y] = toolPoint(...p)
@@ -417,6 +460,10 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
+    if (drag.current?.kind === 'hue' && drag.current.id === e.pointerId) {
+      colourHud.move(e.clientX, e.clientY)
+      return
+    }
     const sizing = drag.current?.kind === 'size' ? drag.current : null
     if (sizing && sizing.id === e.pointerId) {
       // The tip's edge follows the pointer: its radius on screen grows by what the drag moved.
@@ -432,15 +479,14 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
     if (!drag.current) choosePane(e)
     showCursor(e)
     const front = documents().getState().active
-    if (front && views().front()) {
-      const q = pointerOf(e)
-      pointer.set({ key: front, x: Math.floor(q.x), y: Math.floor(q.y) })
-    }
+    // Where the pointer is in the document, once for everything that follows it.
+    const at = views().front() ? pointerOf(e) : null
+    if (front && at) pointer.set({ key: front, x: Math.floor(at.x), y: Math.floor(at.y) })
     const d = drag.current
-    if (!d && active && views().front()) hoverTool(pointerOf(e))
-    if (!d && active && views().front()) {
+    if (!d && active && at) {
+      hoverTool(at)
       const doc = documents().active()
-      const g = tool === 'move' && !space && doc ? guideAt(doc, pointerOf(e)) : -1
+      const g = tool === 'move' && !space && doc ? guideAt(doc, at) : -1
       setOverGuide(g >= 0 ? doc!.history.present.guides[g].axis : null)
     }
     if (!d || d.id !== e.pointerId) return
@@ -479,6 +525,7 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
     const d = drag.current
     if (!d || d.id !== e.pointerId) return
     if (d.kind === 'size') setHud(null)
+    if (d.kind === 'hue') colourHud.end()
     if (d.kind === 'bird') {
       // Back to the zoom it came from, centred where the frame is.
       const v = views().get(d.key)
@@ -510,11 +557,13 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
     if (active && tool === 'rotate' && !space) views().rotate(0)
   }
 
+  const controlCursor = useSyncExternalStore(moveCursor.subscribe, moveCursor.get)
+  const preview = useSyncExternalStore(previewing.subscribe, previewing.get)
   const cursor = !active
     ? undefined
     : dragging === 'pan'
       ? 'grabbing'
-      : space
+      : space || preview
         ? 'grab'
         : tool === 'zoom'
           ? alt
@@ -526,7 +575,9 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
               ? overGuide === 'x'
                 ? 'col-resize'
                 : 'row-resize'
-              : TOOL_BY_ID.get(tool)?.cursor
+              : tool === 'move' && controlCursor
+                ? controlCursor
+                : TOOL_BY_ID.get(tool)?.cursor
 
   // The keys as they are now: yours, if you've changed them.
   const k = (id: string) => {
@@ -559,7 +610,7 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
             noContextMenu.current = false
             return
           }
-          if (drag.current || !onContextMenu) return
+          if (drag.current || !onContextMenu || previewing.get()) return
           onContextMenu(e.clientX, e.clientY)
         }}
       />
@@ -610,6 +661,10 @@ export function Viewport({ state, hasDoc, active, canRecent, onNew, onOpen, onOp
         </div>
       )}
       {children}
+      {hasDoc && <TileHome />}
+      {hasDoc && <ArtboardLabels />}
+      <ColourHud />
+      <JobBar />
       {state.status === 'starting' && state.reason && (
         <div className="viewport-notice" role="status">
           The graphics device was lost ({state.reason}). Getting a new one.

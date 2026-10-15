@@ -3,6 +3,13 @@
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 
+# The built-in fonts (2 MB of Inter and Noto) keep their names, since the
+# font library knows them by their paths: a week without asking, then
+# revalidated in the background, so a visit never waits on them and a
+# changed font still arrives within days.
+/fonts/*
+  Cache-Control: public, max-age=604800, stale-while-revalidate=2592000
+
 # The page itself needs no rule. It is the one unhashed file, and Pages
 # already serves it at / with max-age=0, must-revalidate. A rule for
 # /index.html would never match, because Pages redirects that path to /.

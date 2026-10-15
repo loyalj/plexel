@@ -15,19 +15,19 @@ import { freshName, placeOf } from '../doc/tree'
 import type { Doc, DocNode, LayerFx, NodeId } from '../doc/types'
 import { engine } from '../engine/EngineHost'
 import { FILTER_BY_ID } from '../filters/defs'
+import { channelTarget, planesTarget } from './channels'
 import { documents, newId, type OpenDoc } from './documents'
 import { notify } from './notices'
 import { hold } from './pixels'
+import { isCancelled, runJob } from './jobs'
+import { whereNew } from '../doc/tree'
 
 const store = () => documents()
 const active = () => store().active()
 
 /** Where a new layer goes: above the selected one, in its group; otherwise at the top. */
 export function placeForNew(d: OpenDoc): { parent: NodeId; index: number } {
-  const doc = d.history.present
-  const place = d.selected ? placeOf(doc, d.selected) : null
-  if (place?.slot === 'children') return { parent: place.parent, index: place.index + 1 }
-  return { parent: doc.root, index: doc.nodes[doc.root].children?.length ?? 0 }
+  return whereNew(d.history.present, d.selected)
 }
 
 /** Layer → New Adjustment Layer → (one of ADJUSTMENT_DEFS): above the selected layer, chosen. */
@@ -135,17 +135,23 @@ export async function applyFilter(id: string, params: Record<string, unknown>, l
   if (!d || !node || !def) return
   if (node.locked.all || node.locked.pixels) return notify('info', `“${node.name}” is locked against painting. Unlock it in the Properties panel.`)
   const effect = filterNode(id, params)
-  if (live) {
+  if (channelTarget(d)) return notify('info', `${def.label} works on a layer’s pixels; filters on an alpha or spot channel aren’t there yet. Pick a layer in the Layers panel.`)
+  // On some colour channels it's applied for good: a live filter would change them all.
+  const planes = planesTarget(d)
+  if (live && !planes) {
     store().commit((x) => addEffect(x, node.id, effect), { key: d.key, label: def.label })
     return
   }
   if (node.kind !== 'pixel') return notify('info', 'A filter applied for good needs a pixel layer; on anything else, it’s added as a live filter.')
   try {
-    const set = await engine().call('render.bake', { key: d.key, node: node.id, effects: [effect], selection: d.history.present.selection?.tiles ?? null })
+    let set = await runJob(def.label, (job) => engine().call('render.bake', { key: d.key, node: node.id, effects: [effect], selection: d.history.present.selection?.tiles ?? null, job }))
+    // Only the colour channels targeted: the rest put back.
+    if (planes) set = await engine().call('fill.keepPlanes', { before: node.props.tiles, after: set, planes })
     const release = set ? hold([set]) : () => {}
     store().commit((x) => setTiles(x, node.id, set), { key: d.key, label: def.label })
     release()
   } catch (e) {
+    if (isCancelled(e)) return
     notify('error', `${def.label} didn’t work.`, [e instanceof Error ? e.message : String(e)])
   }
 }
@@ -163,17 +169,22 @@ export async function applyAdjustment(id: string, params: Record<string, unknown
   if (!d || !node || !def) return
   if (node.locked.all || node.locked.pixels) return notify('info', `“${node.name}” is locked against painting. Unlock it in the Properties panel.`)
   const effect = makeNode('adjustment', newId('a'), def.label, { adjustment: id, params })
-  if (live) {
+  if (channelTarget(d)) return notify('info', `${def.label} works on a layer’s pixels; adjustments on an alpha or spot channel aren’t there yet. Pick a layer in the Layers panel.`)
+  const planes = planesTarget(d)
+  if (live && !planes) {
     store().commit((x) => addEffect(x, node.id, effect), { key: d.key, label: def.label })
     return
   }
   if (node.kind !== 'pixel') return notify('info', 'An adjustment applied for good needs a pixel layer; on anything else, it’s added live, in the layer’s effects.')
   try {
-    const set = await engine().call('render.bake', { key: d.key, node: node.id, effects: [effect], selection: d.history.present.selection?.tiles ?? null })
+    let set = await runJob(def.label, (job) => engine().call('render.bake', { key: d.key, node: node.id, effects: [effect], selection: d.history.present.selection?.tiles ?? null, job }))
+    // Only the colour channels targeted: the rest put back.
+    if (planes) set = await engine().call('fill.keepPlanes', { before: node.props.tiles, after: set, planes })
     const release = set ? hold([set]) : () => {}
     store().commit((x) => setTiles(x, node.id, set), { key: d.key, label: def.label })
     release()
   } catch (e) {
+    if (isCancelled(e)) return
     notify('error', `${def.label} didn’t work.`, [e instanceof Error ? e.message : String(e)])
   }
 }
@@ -186,7 +197,7 @@ export async function applyLiveFilters() {
   const doc = d.history.present
   const effects = node.effects.map((id) => doc.nodes[id]).filter((e): e is DocNode => !!e && e.visible)
   try {
-    const set = await engine().call('render.bake', { key: d.key, node: node.id, effects, selection: null })
+    const set = await runJob('Apply Live Filters', (job) => engine().call('render.bake', { key: d.key, node: node.id, effects, selection: null, job }))
     const release = set ? hold([set]) : () => {}
     store().commit(
       (x) => {
@@ -200,6 +211,7 @@ export async function applyLiveFilters() {
     // An effect's row may have been the selection; the layer it was on is now.
     store().select(node.id, d.key)
   } catch (e) {
+    if (isCancelled(e)) return
     notify('error', 'The live filters couldn’t be applied.', [e instanceof Error ? e.message : String(e)])
   }
 }

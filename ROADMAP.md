@@ -13,7 +13,7 @@ of every phase, and whenever something is deferred or decided.
   Krita and Inkscape alongside): the gap map, https://claude.ai/artifact/QpD1KdqmsSdcaXcLjoBdGd (updated after
   each phase).
 
-Last updated: 12 October 2026, after vector construction (the last of the four phases asked for).
+Last updated: 13 October 2026: the six gaps done, freehand vector tools too; then panels and controls from the third brainstorm, and eight more from the brainstorms (shortcut sets, long jobs, zooming to things, the colour picker at the pointer, your toolbar, defaults, preview dialogs, Tiled View's frame).
 
 ## Where it stands
 
@@ -40,30 +40,31 @@ Last updated: 12 October 2026, after vector construction (the last of the four p
 | Filters | From the brainstorm: thirty filters in Photoshop's submenus, Selective Colour, Photo Filter, Colour Lookup, Colour Grading, Hue/Saturation by range, filter layers, Document → Adjustments | Done |
 | Appearance | From the brainstorm: effects per fill and stroke, graphic styles | Done |
 | Construction | From the brainstorm: Pathfinder, the Shape Builder, Live Paint, Outline Stroke, Offset Path, Join, Simplify, Smooth | Done |
-| 15+ | Chosen from the gap map | **Next** |
+| Quality | The quality and performance pass (below) | Done |
+| Gaps | Channels, the Pen's editing, stroke profiles, the Width tool, vector brushes, Image Trace (below) | All six done: Channels, the Pen's editing, stroke features, the Width tool, vector brushes and Image Trace; **freehand vector tools next** |
+| Boards | Artboards (the Artboard tool, presets, backgrounds, clipping, export each) and symbols (the Symbols panel, Edit Symbol live, Break Link) | Done |
+| Flow | Shortcut sets, long jobs' progress and cancel, Zoom to Selection and Layer, the colour picker at the pointer, Edit Toolbar, defaults reset by a double-click, undimmed movable preview dialogs, Tiled View's frame | Done |
+| Panels | From the third brainstorm: a column's height shared, sizes as proportions, tabs in a » menu, ⓘ hints for sentences, a type and spacing scale, scrubbing labels, slider bars, segmented choices | Done |
+| 15+ | Chosen from the gap map | Later |
 
-All forty-three check suites pass (`npm run check`, about ten minutes):
+All forty-nine check suites pass (`npm run check`, seven to fourteen minutes as the machine allows):
 `doc`, `io`, `color`, `print`, `tiles`, `render-ref`, `images`, `brush`,
 `select`, `segment`, `matte`, `retouch`, `adjust`, `geom`, `snap`, `text`,
-`commands`, `interchange`, `theme` headless; `engine`, `shell`, `files`,
+`commands`, `interchange`, `theme`, `static` headless; `engine`, `shell`, `files`,
 `pixels`, `gpu`, `canvas`, `paint`, `tools`, `effects`, `vectors`, `type`,
-`proof`, `clipboard`, `fills`, `ux`, `guides`, `workflow`, `tiled`, `healing`, `warp`, `filters`, `appearance`, `construct`,
+`proof`, `clipboard`, `fills`, `ux`, `guides`, `workflow`, `tiled`, `healing`, `warp`, `filters`, `appearance`, `construct`, `channels`, `panels`, `flow`, `boards`, `artboards`,
 `interchange-browser` in Chrome.
 The browser suites also pass against `vite preview` of a production build.
-Every budget in PERFORMANCE.md is met but four. The 96 MP PSD reopened
-and drawn fitted takes 3.4 to 3.7 s against 3 s; it was never met, as the
-bench had measured it wrongly (107 ms) until phase 14. And since the run
-after guides and snapping, panning with the two hundred shapes, over the
-dense text and proofed run at half the display's rate, waiting on the GPU
-(about 0.3 ms of CPU a frame). Taking guides and grids out of the overlay
-didn't change it, so the shapes' drawing is the suspect (PERFORMANCE.md,
-log).
+Every budget in PERFORMANCE.md is met (12 October 2026, after the first
+fixes of the quality and performance pass: the pan regression was the page
+re-rendering every frame, and the reopened PSD now draws in 2.83 s).
 
 First deployed on 11 October 2026, after phase 7, to the Cloudflare Pages
 project `plexel` (https://plexel.pages.dev). Phase 10 was deployed on 11
 October 2026, with phases 8 and 9, and phase 11 the same day. Guides,
 grids and snapping were deployed on 11 October 2026, and the options bar
-across the window on 12 October; tiled documents and retouching on 12 October too.
+across the window on 12 October; tiled documents and retouching on 12 October too. The
+quality and performance pass was deployed on 13 October 2026, and Channels the same day; transform controls on shapes and the Pen's editing that evening, and stroke features after them. Then, the same day: the Width tool, vector brushes, WebP, the lasso's Photoshop habits, Save for Web, EPS, colour chips, the grouped toolbar, Image Trace and the freehand tools; then panels and controls; then shortcut sets, long jobs, zooming to things, the colour picker at the pointer, your toolbar, defaults, preview dialogs and Tiled View's frame. Artboards and symbols were deployed on 14 October 2026.
 `npm run deploy` publishes each new version, served at
 https://plexel.dblpl.us (attached to the project on 10 October 2026). (The project was
 created with
@@ -76,6 +77,845 @@ Renamed from Pixlayer to Plexel on 11 October 2026. Files keep the
 still open. Settings saved in the browser under the old name aren't carried
 over. The first deployment went to a Pages project called `pixlayer`
 (https://pixlayer.pages.dev), which is no longer deployed to.
+
+## Artboards and symbols (done)
+
+Asked for on 14 October 2026, the first of the five biggest gaps, done the
+same day.
+
+- Decided: an artboard is a group at the top level with an `artboard`
+  (size, background, clip), its corner its translation, so every existing
+  edit (moving, Canvas Size, Crop, the Layers panel, PSD's groups) works on
+  it; a symbol is a document of its own (as a smart object's contents) and
+  an instance a `symbol` node; both expanded into plain layers for the
+  engine, the exporters and picking (`doc/expand.ts`), so the renderer is
+  untouched. Edit Symbol in a tab, live (one coalesced step a run in the
+  document; the tab follows the document's undo), as smart objects open.
+- Done: `doc/artboards.ts`, `doc/symbols.ts`, `doc/expand.ts`, the tree's
+  `whereNew` (one place for where a new layer goes, artboards included);
+  `app/artboards.ts` (New, from Layers, Release, the commit that grows the
+  canvas and moves the view with it, export documents), `app/artboardTool.ts`,
+  `app/symbols.ts`; the Artboard tool in Move's slot; the pasteboard (an
+  overlay ink); artboard names on the canvas; Properties for artboards and
+  instances; the Symbols panel; New Document's Artboard; Export's All
+  artboards, Selected, Whole canvas (a zip); the Move tool moving layers
+  between artboards; instances in Free Transform, Rasterize (the engine
+  rasterizing a group), copy and paste; Illustrator's set has the Artboard
+  tool on Shift+O.
+- Checks: new `check:artboards` (headless) and `check:boards` (browser);
+  check:ux (Move's slot now holds the Artboard tool).
+- Left: PSD artboards read and written as Photoshop's (written as groups
+  now); a page per artboard in one PDF; guides per artboard and Paste on All
+  Artboards; editing a symbol in place on the canvas (isolation mode) and
+  per-instance overrides; shared symbol libraries; 9-slice scaling; the
+  pasteboard drawn under layers rather than over (overflow shows dimmed).
+
+## Eight more from the brainstorms (done)
+
+Asked for on 13 October 2026, done the same day:
+
+- **Shortcut sets** (28): `input/keySets.ts`, Photoshop's (the registry's),
+  Affinity's (the same keys: Affinity Photo follows Photoshop's for what
+  Plexel has) and Illustrator's (its tools, Free Transform on E, Create
+  Outlines, Hide, Swap). Chosen in Edit → Keyboard Shortcuts' Set menu,
+  applied through `assignKey`; the menu names the set the keys match.
+- **Progress and cancel for long jobs** (17): a `job` id on the call,
+  `progress` messages and `job.cancel` (`engine/jobs.ts`, `app/jobs.ts`),
+  a bar over the canvas with Cancel and Esc (`ui/JobBar.tsx`). Content-aware
+  fill (its worker terminated), PSD import (per layer, yielding so the
+  cancel lands), filters and adjustments applied for good and Apply Live
+  Filters (the result dropped).
+- **Zoom to Selection and Zoom to Layer** (32), and a double-click on a
+  layer's thumbnail (`app/zoomTo.ts`, `views().fitBox`).
+- **The colour picker at the pointer** (35): Shift+Alt and a right-drag
+  (Ctrl+Option+Cmd on a Mac) with a painting tool or the Colour Picker
+  (`ui/ColourHud.tsx`); Esc puts the colour back.
+- **Edit → Toolbar…** (42): order, hidden slots under a "…" slot, one, two
+  or automatic columns (`ui/toolbarPrefs.ts`, `ui/ToolbarDialog.tsx`).
+- **Defaults marked, double-click to reset** (third round's 20): the shared
+  controls' `defaultValue`; parameters' defaults, Properties' opacity,
+  fill, density, feather and knockout, a stroke's settings, a shape's
+  corners, the type panels' numbers.
+- **Filter dialogs undimmed and movable** (asked for): `Dialog
+  floating="preview"` for filters, adjustments, Layer Style, Offset Path
+  and Simplify; the canvas pans under them and the rest of the interface
+  waits; every dialog moves by its title bar and opens where it was left.
+  Found on the way: a floating dialog didn't close on Esc once the focus
+  left it, so now it does from anywhere.
+- **Tiled View's frame and a way back** (asked for): the document framed
+  in the accent (overlay style `frame`), and **Back to the document** when
+  it's mostly out of view (`ui/TileHome.tsx`).
+- Checks: new `check:flow`; check:commands (sets, the toolbar's prefs).
+
+Left: Affinity Designer's own vector keys as a set of their own (they clash
+with Photo's); a toolbar slot split into its tools, as Photoshop allows;
+a cancel that stops a bake's GPU work part way; dialogs remembering their
+settings as well as their place (the third round's 25).
+
+## Panels and controls, from the third brainstorm (done)
+
+Asked for on 13 October 2026: brainstorm 25 ideas for how Plexel feels
+to use, with panels a known problem (scroll bars inside scroll bars, tab
+bars half covered by the group below, sentences everywhere). Eight chosen
+(1, 5, 7, 9, 14, 15, 17, 18) and done the same day:
+
+- **One scroll level a column** (1): a docked column's groups share its
+  height. Each takes the height of what's in it while there's room (the
+  last the room left); when there isn't, `useLevel` holds every group to
+  one height, the most that lets them all fit, so short panels stay whole
+  and long ones scroll inside themselves. A group never shrinks past its
+  tab bar and a strip (72 px). The Layers, History and Brushes lists
+  scroll on their own, their buttons kept in view.
+- **Sizes as proportions** (5): a divider between two groups trades height
+  between them, and from then on every group in the column has a share,
+  flex-grown from zero, so the column keeps its look at any window size.
+  Double-click fits them again. `layout.ts` `setColumnHeights`,
+  `fitColumn`; heights saved before read as shares.
+- **Tabs that don't fit go into a » menu** (7), the front tab kept.
+- **ⓘ hints for sentences** (9): `Hint` and `Label`, `Field`'s and
+  `Dialog`'s `hint`; every `field-note` became a hint, a `field-meta`
+  fact or a short `field-empty`; empty panels say "No document open" (what
+  a panel is for is its tab's tooltip); the browser's `title` tooltips on
+  elements became the app's (`data-tip`).
+- **A type and spacing scale** (14): tokens on `:root`, the stylesheet's
+  text sizes and gaps put onto them, paddings on the scale too; Compact
+  redefines the larger steps.
+- **Scrubbing labels** (15): every shared number field's label, the
+  options bar's, and plain number fields in dialogs (`installLabelScrub`).
+- **Slider bars** (17): `SliderField`, a range input drawn as the bar with
+  the label and the number on it; every slider in panels and dialogs.
+- **Segmented choices** (18): `Segmented`; parameters with up to three
+  short choices, a stroke's Align, Corners and Ends, fill rule, corner
+  style, the paint's kind, Knockout, Direction, Composer, Image Trace's
+  mode, Interface's Density, Contrast and Motion.
+- Checks: new `check:panels`; check:ux, check:vectors, check:canvas,
+  check:fills moved from menus to the buttons.
+
+The other seventeen, kept for later: a panel's least height kept and the
+least used folded when a column runs out (2), double-click a tab to solo
+its group (3), panels filling the room left by kind (4), larger drop
+targets with words (6), Tab and Shift+Tab made easier to find (8), a Show
+Hints setting (10), collapsible sections inside panels (11), labels and
+controls on one grid (12), empty states with one action button (13),
+arithmetic and units in number fields (16), recent colours in the chip
+picker (19), double-click to reset a control, with a mark when it isn't
+the default (20), the command palette for panels and settings too (21), a
+task bar by the selection (22), notices that fade with Undo (23), hover
+previews of blend modes, brushes and swatches (24), dialogs that reopen
+where and as they were left (25).
+
+## Image Trace, then freehand vector tools (done)
+
+Asked for on 13 October 2026, in this order: Image Trace (the last of the
+six gaps), then a Paintbrush for vector brushes and freehand drawing
+tools. And keep the toolbar from running off the bottom as tools are
+added.
+
+The toolbar (done 13 October 2026): one slot per group of tools that share
+a key, as Photoshop's (`ui/Toolbar.tsx` `TOOL_SLOTS`), the group's last
+tool showing with a corner triangle; a flyout on right-click, a held press
+or the triangle; Alt-click for the next; two columns when one doesn't fit
+(a ResizeObserver), scrolling past that. 31 tools in 19 slots. New tools
+join a group where Photoshop or Illustrator put them, so the bar only
+grows by a slot for a new kind of tool. Checks: check:ux (slots, the
+flyout, holding, Alt-click, two columns in a short window), check:paint.
+
+Image Trace (done 13 October 2026), the last of the six gaps:
+- Decided: filled shapes, abutting (each boundary between two regions
+  fitted once and shared, so no gaps and no overlaps), one shape per colour
+  in a group above the layer, the layer hidden; a dialog beside the canvas
+  with Illustrator's presets for fills and the settings that matter
+  (mode, threshold or count, paths, corners, noise, blur, ignore white),
+  traced live in a worker (`trace/worker.ts`) with counts.
+- Checks: check:geom (a square's corners and area exact, a circle smooth
+  and within 3%, the circle and the hole round it one curve, noise,
+  transparency, Ignore White, colours abutting to the image's area, gray
+  levels, shrinking), check:vectors (traced from Layer → Image Trace,
+  previewed, committed as one step, the image hidden, undo).
+- Left: Illustrator's centerline tracing (Line Art, Technical Drawing: the
+  shapes' middle lines as strokes); a live trace object that keeps its
+  image and settings (the trace is shapes, and the image stays beside it,
+  hidden); tracing by custom palettes or document swatches; overlapping
+  ("stacked") shapes.
+
+Freehand vector tools (done 13 October 2026):
+- Decided: Illustrator's three, in one toolbar slot on N (Photoshop's B is
+  the raster brushes): the Pencil, the Paintbrush (stroked with the chosen
+  vector brush, plain for Basic) and the Blob Brush (filled shapes joining
+  the same-coloured plain shapes they touch, in the same group). Fidelity
+  in screen pixels. Edit selected (redraw between two places on the
+  selected path, or carry on from an open end), Keep selected, Fill, Close
+  when near; the Blob Brush's size ([ ]) and Merge only with selection.
+- Done: `geom/freehand.ts` (fitting, nearest place, splicing, extending;
+  the fitter shared with Image Trace, which gained smooth joins too),
+  `app/freehand.ts`, the options bar. Checks: check:geom (fitting within
+  the fidelity, fewer anchors when smoother, closing, splicing both ways,
+  on a closed path, extending), check:vectors (N and Shift+N, a wave, a
+  closed ring, a redraw, the Paintbrush with a brush, the Blob Brush
+  joining and not, [ ]).
+- Left: pen pressure (a width profile from it, for calligraphic strokes);
+  the Smooth tool and Path Eraser; the Blob Brush joining across groups or
+  erasing (Illustrator's Eraser on shapes).
+
+## Colour chips (done)
+
+Asked for on 13 October 2026: no more "Use Foreground" buttons; a colour
+chip opens a small colour picker. Done the same day: `ui/ColourChip.tsx`
+(a saturation and brightness square, a hue strip, the Colour panel's
+models and hex, chips for the foreground, background and swatches; live,
+one step through the caller's coalesce key; Esc, Enter or a click outside
+closes it). It replaced the buttons in colour parameters (filters, fill
+dialog, paints), both gradient stop editors and the swatch options, and
+the browser's colour inputs (inks, alpha tints, guide colours, Save for
+Web's matte). Checks: check:vectors (the fill's chip), check:channels (an
+ink by hex; Esc leaves the dialog open), check:proof (a swatch from the
+foreground).
+
+## Asked for by users (done)
+
+Asked for on 13 October 2026 from three users' lists (Photoshop and
+Affinity users: WebP output, layer masking, the lasso, Save for Web, the
+Pen, layers, blend modes, adjustment layers, print output). Most were
+already there; four gaps, in this order, then back to the six gaps:
+
+1. **WebP export** (done 13 October 2026): lossy at a quality or
+   lossless, with transparency and the profile (put into the file by
+   `io/webp.ts`, since Chrome's encoder leaves it out); WebP opens and
+   imports too. Checks: check:images (the container), check:canvas
+   (exported, lossless, opened again).
+2. **The lasso's Photoshop habits** (done 13 October 2026): Alt as the
+   button comes up carries the Lasso on in straight sides, Alt let go
+   closes; Alt-drag freehand and Shift 45° in Polygonal mode; Backspace
+   the last corner back (Polygonal, the carried-on Lasso, Magnetic, which
+   also takes Alt-click straight sides). Sessions take keys first
+   (`Session.takeKey`). Checks: check:tools, check:fills.
+3. **Save for Web** (done 13 October 2026): Original, Optimized, 2-Up and
+   4-Up panes that pan together, each file's size and download time;
+   JPEG, PNG-24, PNG-8 (`io/quantize.ts`: median cut, dithering, one-bit
+   transparency; `encodePngIndexed`) and WebP; the size it's made at;
+   sRGB and the profile; remembered. The engine keeps the composite while
+   the document is the same (`image.optimize`). Checks: check:images
+   (palette, dithering, indexed PNG), check:canvas (4-Up, PNG-8 at half
+   size saved). Left: GIF (PNG-8 does its job), metadata beyond the
+   profile, a progressive JPEG (the browser's encoder makes baseline
+   only).
+4. **EPS export** (done 13 October 2026): `io/eps/write.ts`, EPSF 3.0 at
+   PostScript Level 3 with the PDF writer's host: device colours (EPS has
+   no profiles), Separation spaces for spot inks (and the DSC custom-colour
+   comments), shfill gradients, text as outlines; flattened up to the last
+   root layer that isn't opaque vectors, since PostScript has no
+   transparency, the clear parts colour-keyed; spot channels overprinting.
+   Checks: check:interchange draws the files with Ghostscript compiled to
+   WebAssembly (`@jspawn/ghostscript-wasm`, AGPL, a dev dependency only,
+   never shipped): colours, shadings, the flattened image's clear parts,
+   CMYK inks, the spot plate. Left: a TIFF preview in the EPS header (most
+   tools draw EPS themselves now), live text with embedded fonts.
+
+## Vector brushes (done)
+
+Fifth of the six gaps, started 13 October 2026.
+
+Decided before starting (13 October 2026):
+- **Three kinds, as Illustrator's**: an **art** brush bends one piece of
+  artwork along the whole path (stretched to fit, scaled in proportion, or
+  stretched between two guides so its ends keep their shape); a
+  **scatter** brush puts copies along it (size, spacing, scatter off the
+  path and rotation, each a range, varied the same way every time;
+  rotation following the path or the page); a **pattern** brush repeats a
+  side tile bent along it, with start, end and corner tiles if given
+  (corners where the path turns sharply; tiles stretched to fit, or kept
+  their length with space added).
+- **A stroke takes a brush**: a stroke item holds the brush itself (copied
+  in, as a graphic style's appearance is), so a shape draws the same
+  anywhere, copied, pasted or in another document. The stroke's width is
+  the brush's height on the path (times the brush's scale), its profile
+  varies it, its opacity, blend and effects are the whole brush's;
+  dashes, arrowheads, corners and ends don't apply.
+- **Artwork** is filled regions in their own paints, made from selected
+  shapes (fills, and strokes as their outlines). **Colorization** as
+  Illustrator's: None (its own colours), Tints (the stroke's colour, lighter
+  where the art is lighter), Tints and Shades (darker too) and Hue Shift
+  (the art's key colour becomes the stroke's, the rest turned with it).
+- **The document keeps a brush library** (Window → Vector Brushes), with
+  built-in brushes listed after it; a built-in one edited in Brush Options
+  is kept in the document under its id. Editing a brush's options offers
+  to change the strokes using it.
+- **Drawing**: each part bent through the path (the envelope code's
+  `warpLines`), into one item with several paints, laid together so the
+  stroke's opacity is the whole brush's. SVG and PDF get the parts as
+  filled paths; PSD keeps the pixels and says so. Outline Stroke on a
+  brush stroke makes its parts shapes, grouped.
+
+The work (done 13 October 2026):
+- [x] Model, reading, the library and built-ins (doc/vectorBrush.ts,
+  vector/brushLibrary.ts).
+- [x] Geometry: art, scatter, pattern, colorization (vector/brush.ts).
+- [x] Drawing (outline parts, the graph, the reference), reach, picking.
+- [x] The panel, Brush Options, Properties, commands; Outline Stroke.
+- [x] SVG, PDF, PSD.
+- [x] Checks (check:geom, check:vectors, check:interchange, check:gpu,
+  check:commands), ARCHITECTURE.md (Geometry), MANUAL.md chapter 8,
+  CHANGELOG, the gap map.
+
+Left, with reasons:
+- **Bristle brushes** (Illustrator's painterly vector brush): they're a
+  raster look made of many translucent strokes; the raster brushes cover
+  that.
+- **A Paintbrush tool** that draws freehand paths with a brush: brushes go
+  on paths the Pen, the shapes and text make for now; freehand drawing
+  with curve fitting (Simplify's) is a tool of its own, worth doing next to
+  this.
+- Pattern brushes' inner and outer corner tiles are one corner tile, and
+  Illustrator's automatic corners (made from the side tile) aren't made:
+  without a corner tile the side tiles bend round.
+- Art and pattern brushes overlapping at sharp turns fold as Illustrator's
+  do; its "overlap: adjust" option isn't there.
+- Brush libraries as files (Illustrator's .ai brush libraries) aren't
+  read; brushes travel in documents.
+
+## The Width tool (done)
+
+Fourth of the six gaps, started 13 October 2026.
+
+Decided before starting (13 October 2026):
+- **In the Pen's group** (P, Shift+P to reach it; Photoshop's W is the
+  Magic Wand, so not Illustrator's Shift+W): it edits the width
+  points of a shape's topmost stroke (the profile stroke features made),
+  on the selected shapes, or on any stroked shape the press lands on
+  (which it then selects). Vector layers; compounds and text later.
+- **On the canvas**, as Illustrator's: hovering the stroke shows where a
+  point would go, across the stroke; each width point shows as a line
+  across the stroke, its centre a point, its two edges handles. Dragging
+  the stroke adds a point there and widens it; dragging an edge widens
+  both sides in proportion (Alt: that side only); dragging the centre
+  slides the point along the path between its neighbours (Alt: a copy);
+  Shift-click selects several, and dragging one edge widens them all;
+  Delete removes the selected; double-click opens Width Point Edit (each
+  side and the whole width, in pixels).
+- **The model stays the profile's points**: a share of the stroke's width
+  each side, at a share of each subpath's length, so a path of several
+  subpaths takes the same profile on each, as the stroke draws it. The
+  first point added to a uniform stroke brings the ends with it at full
+  width. A closed path's points at its start and end are the same place:
+  one shows, and edits go to both. A profile left all at full width is
+  uniform again.
+- **Properties**: the profile's Flip Along and Flip Across, and profiles
+  saved under a name of your own, kept by the browser, listed after the
+  presets.
+
+The work (done 13 October 2026):
+- [x] Profile edits and measuring along a path (geom/width.ts).
+- [x] The tool: hover, overlay, the drags, Delete, double-click.
+- [x] Width Point Edit; Properties' flips and saved profiles.
+- [x] Checks (check:geom, check:vectors), ARCHITECTURE.md (Geometry),
+  MANUAL.md chapter 8, CHANGELOG, the gap map.
+
+Left, with reasons:
+- Compound shapes' and text's strokes: their outlines are worked out from
+  other nodes, so a press can't be placed on one path; later, with the
+  outline kept per node.
+- One profile per stroke, shared by its subpaths (as the stroke draws it):
+  Illustrator keeps width points per path, which a path of one subpath
+  matches exactly.
+- Illustrator's "Adjust adjoining width points" and Shift-drag spreading
+  the neighbours along: points move one at a time.
+- Saved profiles live in the browser, not in the document or a library
+  file.
+
+## Stroke features (done)
+
+Third of the six gaps, started 13 October 2026.
+
+Decided before starting (13 October 2026):
+- **Width profiles** are width points along each subpath: where (0..1 of
+  its length) and how wide each side is there (a share of the stroke's
+  width), eased between points, as Illustrator's are. Presets give the
+  points (Uniform, Taper Both, Taper Start, Taper End, Bulge, Pinch,
+  Brush); the Width tool (the next gap) will move and add them on the
+  canvas, so the model is the points, not the preset's name. The outline
+  takes each point's own half-widths, both sides, joins and caps included.
+- **Arrowheads** at either end of open paths: a shape (triangle, open,
+  stealth, circle, square, diamond, bar) and a scale of the stroke's width,
+  filled with the stroke's paint; the line stops short under a filled head
+  so it can't show past the tip. Closed paths have none.
+- **Dashes aligned to corners**, as Illustrator's: the path cut at its
+  corners (anchors whose two sides don't continue each other) and ends,
+  and the pattern stretched on each run to a whole number of repeats,
+  half a dash either side of every corner, so corners and ends are always
+  dashed. Corners come from the flattening (flattenPath marks them).
+- **Scale Strokes** is Illustrator's preference, in the Move tool's and
+  Free Transform's options: on (the default), a shape's strokes scale with
+  it, as now; off, Free Transform and the transform controls change the
+  strokes' widths and dashes by the opposite amount, so they look as wide
+  as before. Kept by the browser. Non-uniform scaling keeps the stroke as
+  the shape's transform draws it (wider one way), as before.
+- **In files**: SVG and PDF get a stroke with a profile, arrowheads or
+  aligned dashes as its outline, filled (exact; plain strokes stay
+  strokes). PSD's shape strokes can't hold them: the stroke is written
+  plain and that's said.
+
+The work (done 13 October 2026):
+- [x] Model and reading; presets.
+- [x] The outline: profiles, arrowheads, aligned dashes; reach.
+- [x] Properties: profile, arrowheads (each end, size), align dashes.
+- [x] Scale Strokes.
+- [x] SVG, PDF and PSD.
+- [x] Checks (check:geom, check:vectors, check:interchange), ARCHITECTURE.md
+  (Geometry), MANUAL.md chapter 8, CHANGELOG, the gap map.
+
+Left, with reasons:
+- Editing the profile's points by hand: the Width tool, done after this.
+- Scale Strokes off with a non-uniform scale keeps the stroke as the
+  shape's transform draws it (wider one way); and it unlinks a shape from
+  its graphic style, since its strokes change (Illustrator's rule).
+- Arrowheads on dashes' ends, and Illustrator's "tip beyond the end"
+  placement: heads go at the path's own ends, tip on the end.
+- Profiles on text strokes go along each glyph's contour, as they do in
+  Illustrator once outlined.
+
+## The Pen's editing (done)
+
+Second of the six gaps, started 13 October 2026.
+
+Decided before starting (13 October 2026):
+- **Points across several shapes.** The selected points are kept per
+  shape (by node id), not for one target: Direct Selection's box takes the
+  points of every visible, unlocked shape it reaches, and those shapes
+  become the selected layers; Shift-click adds another shape's point; a
+  drag moves every selected point, each in its own shape's coordinates, as
+  one step; Delete, Convert, Join and Break work on all of them. Every
+  selected shape shows its outline and points. The Pen still draws on one
+  path (the key layer's).
+- **The Curvature tool** (in the Pen's group, Shift+P): clicks place
+  smooth points, the curve through them worked out from their neighbours
+  as Illustrator's does (each smooth point's handles along the line
+  between its neighbours, a third of the way to each; an open end's
+  turned towards the next point's); Alt-click places a corner. On a path:
+  click a segment to add a smooth point, drag a point to move it with the
+  curve following, double-click a point to make it a corner or smooth,
+  Delete removes it.
+- **"Smooth-curve display like Affinity's"**, read as Affinity's Smart
+  pen mode and its point display: a **Smart** option for the Pen, which
+  makes each clicked point smooth with its handles worked out as the
+  Curvature tool's (a drag still pulls them out by hand), the rubber band
+  showing the curve as it will be; and smooth points drawn round, corners
+  square, as Affinity draws them.
+- **Joining and breaking.** Path → Join: two selected end points (of one
+  shape or two) joined by a straight segment, or merged into one point
+  where they meet; with shapes selected and none of their points, their
+  open paths joined end to end into one shape, nearest ends first (one
+  shape's own ends, as before). Path → Break at Points cuts the paths at
+  the selected points (a closed path opens there); Path → Separate makes
+  each subpath a shape of its own.
+
+The work (done 13 October 2026):
+- [x] Points across several shapes: the selection, the box, drags, Delete,
+  the overlay. (Alt-click converts one point, as before.)
+- [x] Round and square points.
+- [x] The curvature rule; the Curvature tool; the Pen's Smart mode.
+- [x] Join, Break at Points, Separate.
+- [x] Checks (check:geom for the rules, check:vectors through the UI),
+  ARCHITECTURE.md, MANUAL.md chapter 8, CHANGELOG, the gap map.
+
+Left, with reasons:
+- Dragging a whole segment's curve with the Curvature tool or Direct
+  Selection (Illustrator's segment reshaping): a drag on a segment moves
+  its two ends, as before.
+- Separate gives the new shapes the look but not the masks or effects of
+  the one they came from (a mask can't be shared); they stay on the first.
+- The Pen still draws into one path (the key layer's); points of several
+  shapes are for Direct Selection, Delete, Join and Break.
+- Smart and the Curvature tool recompute the handles of smooth points next
+  to the one changed, hand-made ones included, as Illustrator's Curvature
+  tool does.
+
+## Transform controls on shapes (done)
+
+Asked for on 13 October 2026, between Channels and the Pen's editing: with
+the Move tool, selected shape layers (one or several) show Free
+Transform's box and handles. Done the same day: a drag on a handle or just
+outside a corner is a Free Transform for that drag, committed on release;
+Free Transform works on several layers (one box, the same affine; no
+warps); the cursor follows the handle under it. `check:vectors` drives it.
+Not now: the same for text, pixel and smart-object layers (Photoshop's
+Show Transform Controls as an option), and the box following the layers
+during a move (it hides, and comes back where they end up).
+
+## Channels (done)
+
+First of the six gaps, asked for on 13 October 2026.
+
+Decided before starting (13 October 2026):
+- **A channel is coverage, as now.** `DocChannel` gains a kind (alpha or
+  spot; absent is alpha). An alpha channel keeps how it shows: a tint
+  (sRGB, red by default), its opacity (50%), and whether the tint marks
+  what's masked (the default) or what's selected. A spot channel keeps its
+  ink: a name (the channel's), a colour in its own space as swatches keep
+  theirs, and its solidity. Its tiles are the ink's amount (1 full ink),
+  so a missing tile is no ink, as a missing coverage tile is nothing.
+- **What's shown and what's edited are view state** (app/channels.ts), per
+  open document, not in the history or the file, as in Photoshop: which
+  colour channels are shown, which alpha and spot channels are shown
+  (spots shown, alphas hidden, until changed), and the target: all colour
+  channels, some of them, or one alpha or spot channel. A click on a row
+  targets it and shows it alone (a colour channel, or an alpha or spot
+  channel with the colour hidden); Shift-click adds; the eyes only show
+  and hide. Selecting a layer targets the colour channels again, so a
+  layer is never left unpaintable by a channel picked long ago.
+- **The display.** Colour channels hidden are a mask in the display pass,
+  as the Separations panel's inks already are (one colour channel alone is
+  shown in gray, as Photoshop shows it); with none shown, the canvas is
+  paper. Alpha and spot channels shown are drawn by the screen pass from
+  their coverage at the level shown, rendered into the selection's atlas
+  as the selection's is: an alpha as its tint (or, with the colour hidden,
+  as gray), a spot as its ink over the image (multiplied, then towards the
+  ink by its solidity). At most four at once.
+- **Painting a channel** is painting a gray target, as Quick Mask paints
+  the selection: brushes, the Eraser (paints the background), Fill,
+  Delete, the Gradient tool and the Paint Bucket. On a spot channel black
+  is ink, as in Photoshop. Strokes on a channel go to the engine as a node
+  of their own (`#channel:<id>`), drawn live wherever the channel shows.
+- **Painting some colour channels**: the stroke kernel keeps the planes
+  not targeted (and alpha) as they were, on the GPU and in the CPU
+  reference, live and baked; fills, Delete and filters applied for good
+  go through one engine call that keeps the untargeted planes of the
+  tiles they changed. The Eraser paints the background, as in Photoshop.
+- **Thumbnails** from the engine: the composite and each colour channel
+  from the composite at a small level, alpha and spot channels from their
+  coverage.
+- **Loading a channel as the selection** (Ctrl-click a row): an alpha or
+  spot channel as now; a colour channel by its brightness (CMYK by its
+  ink), and the composite by its luminosity (Ctrl+Alt+2).
+- **PSD**: alpha and spot channels read from the composite's extra
+  channels (names from resources 1045 and 1006, display from 1077 or 1007;
+  the merged transparency told apart), even when the file has layers (the
+  extra channels only are decoded); written the same way.
+- **PDF**: each spot channel an image in its Separation colour space,
+  drawn over the page with overprint, so it makes its own plate. A spot
+  swatch of the same name shares the colour space.
+- **The Separations panel** lists spot channels too, shown or hidden there
+  and read under the pointer.
+
+The work (done 13 October 2026):
+- [x] Model, serialisation, the channel view and target store, commands
+  (New Channel, New Spot Channel, Channel Options, Duplicate and Delete
+  Channel in Document → Channels; Load Luminosity; Ctrl+2 to Ctrl+9).
+- [x] The Channels panel: composite, colour, alpha and spot rows, eyes,
+  thumbnails, rename, reorder by dragging, Options and New Spot Channel
+  dialogs.
+- [x] The display: colour channels in the display pass; alpha and spot
+  channels in the screen pass.
+- [x] Painting and filling an alpha or spot channel; the Magic Wand and the
+  Paint Bucket reading one (`readCover8`).
+- [x] Painting and filling some colour channels; filters and adjustments
+  applied for good to them (a live filter is applied for good there).
+- [x] Loading colour channels and the composite as the selection.
+- [x] PSD in and out; PDF out; the Separations panel.
+- [x] Checks: new `check:channels` (browser, with a PSD round trip);
+  `check:doc` (spot channels and options, damaged ones),
+  `check:interchange` (Photoshop's spot fixture, names and display info
+  round trips, a flat read decoding only the extra channels, spot channels
+  in PDF), `check:gpu` (a stroke on some colour channels against the CPU
+  reference), `check:fills` (the panel's new rows). ARCHITECTURE.md
+  (Channels), MANUAL.md chapter 20, CHANGELOG, the gap map.
+
+Decided on the way:
+- With a channel targeted and nothing selected, Delete clears the channel
+  (to the background colour) rather than deleting the selected layer; and
+  clicking a layer in the Layers panel, even the one already selected,
+  targets the colour channels again.
+- New Spot Channel shows the colour as well, so the ink shows over the
+  picture; New Channel shows the new alpha alone, ready to paint.
+- A channel targeted that disappears (deleted, or its making undone) gives
+  back the colour channels, shown, rather than a canvas of paper.
+- PSD's channel names leave out the merged transparency; a file whose
+  names count it is read too.
+
+Left, with reasons:
+- Filters and adjustments on an alpha or spot channel (blurring an alpha
+  is common): the render graph filters layers; a channel would need to go
+  through it as a gray layer of its own. Asked for with Calculations and
+  Apply Image, which need the same.
+- Split Channels, Merge Channels, Merge Spot Channel: rare, and each is a
+  document conversion of its own.
+- Smudge, the Mixer, the Clone Stamp and the healing tools on an alpha or
+  spot channel: they sample a layer; refused with a reason.
+- More than four alpha and spot channels on the canvas at once: the screen
+  pass's uniform holds four.
+- Spot channels at a tint in vector paints, and spot swatches shown as
+  their own plates in Separations: shapes still show spot swatches through
+  their process colour on screen (PDF already prints them on their plates).
+- check:paint's CMYK 16-bit stroke failed twice in one full run (once
+  retried alone against the same server) and passed in six runs since,
+  alone and under load: watched, not yet explained. check:warp's first
+  step (a red square) timed out once under load on 13 October, passing alone.
+
+## The quality and performance pass (done)
+
+Asked for on 12 October 2026, from a read-only review of the whole code
+(rendering, tiles and the engine, the interface, the document and commands,
+tooling). The code's hygiene is good (strict, almost no `any`, no runtime
+cycles between `app/` and `ui/`); this is structure and hot paths. Each
+item ticks off here when done, with its before and after in PERFORMANCE.md
+where it's measured. Worked in this order:
+
+**1. The panning regression and other first fixes** (done 12 October 2026)
+- [x] App subscribes to the whole engine state (`App.tsx:230`) and every
+  `frame` message makes a new one (`EngineHost.ts:430`), so the whole app,
+  the 200-row Layers panel with it, re-renders each engine frame: the
+  likely cause of the three pan budgets missed since guides (the engine
+  only draws when the page sends a view, so a slow page halves the rate).
+  Split per-frame figures into a store only the status bar reads; then
+  re-run the bench. *All three pans back at 33.3 ms.*
+- [x] Tile collection only waits for selection work (`worker.ts:342`);
+  conversion, PSD write, retouching and decoding make unheld tiles across
+  `await`s (`tiles/convert.ts`). One store-wide work-in-progress guard.
+  *Every call but tiles.gc is guarded (engine/work.ts).*
+- [x] PSD open decodes the merged composite it doesn't use when there are
+  layers (`psdHost.ts:83`, no `{composite: false}`).
+- [x] The reopened PSD drawn fitted (3.4 s against 3). *Profiled first:
+  the CMYK tables built again for an embedded copy of Generic CMYK (now
+  recognised as the built-in), uploads interleaved on the CPU (now packed
+  on the GPU), a matrix through arrays in outlines' segments. 2.83 s.*
+
+**2. The interface's renders** (done 12 October 2026, but for the two noted)
+- [x] A small `createStore` with selectors for the 33 hand-made listener
+  stores, so subscriptions can be narrow. *`Listeners` (lib/listeners.ts)
+  in all 33; narrow reads go with the options bar's split (7).*
+- [x] The command context is rebuilt on every commit (a 420-line
+  `useMemo`), with every shortcut parsed again and the key listeners
+  re-attached: read the stores lazily, keep the key handler in a ref.
+  *The key listeners are added once and parse keys only after a change; the
+  context itself is still rebuilt (split with App.tsx in 7).*
+- [x] Panels: content made as new JSX each App render, no `memo` anywhere;
+  the Layers panel's actions into a module, panels subscribing for
+  themselves, a memoised layer row; `useThumbs` memoised on the document
+  (it's O(n²) and stringifies the profile every render). *Panels
+  memoised with stable actions; `useThumbs` once per document state. The
+  big cost was elsewhere: each thumbnail a GPU canvas, a composited layer
+  each (PERFORMANCE.md, log). A tool chosen with 200 layers: 16.7 ms to
+  4.9.*
+- [ ] A memoised layer row, so selecting a layer draws two rows, not two
+  hundred (8.9 ms with 200 layers now).
+- [x] Pointer moves: the canvas's rect read once (a ResizeObserver), not
+  several `getBoundingClientRect`s per event and per pen sample. *Read
+  once a frame; the document point once a move.*
+- [ ] Coalesced points to the lasso and the Pen's gestures.
+- [x] Overlay sends coalesced to one per frame. *One per microtask.*
+- [x] Found on the way: the session readout (the Polygonal Lasso's corners,
+  Free Transform's size) was kept current by App's re-renders every frame;
+  it now follows the tool overlay.
+
+**3. The engine's CPU work** (done 12 October 2026, but for the helper pool)
+- [x] Expand/Contract: van Herk/Gil-Werman, constant per pixel (it's
+  O(radius)). *The same results; an edge tile at 50 px 150 to 210 ms
+  before, 13 ms now; at 256 px 3.6 s, 60 ms.*
+- [x] Combine and invert: pass tiles through when the other side is all 0
+  or all 1, rather than re-encoding them into new slots.
+- [x] Feather: skip tiles whose neighbours are all one value; a blur loop
+  without per-read closures and clamps; off-canvas zeroing only on edge
+  tiles; `CoverReader` keeping three tile rows, not every tile. *1.32 s to
+  0.73.*
+- [x] The ellipse and polygons: an active edge list (each sub-row now tests
+  every edge, up to 4,096). *Edges by band of rows: 750 ms to about 220.*
+- [x] PSD write: profiled (`BENCH_PROFILE` now covers the write): of 34 s,
+  converting the rasterized shapes' read-back tiles to samples 6.4 s,
+  `packBits` 5.9 s, the composite's quantising 3.2 s, layers' rows (CMYK
+  inverted) 2.8 s, rendering about 3 s. `packBits` into a buffer and
+  `DataView`-free 16-bit samples measured no faster, and were left as
+  they were. *What's left is per-pixel work: the GPU quantising before
+  readback, or the helper pool below; within its budget (60 s) meanwhile.*
+- [x] PSD read: plain row copies when the depth doesn't change. *With the
+  composite left undecoded: 20.3 s to 14.3.*
+- [x] CMYK conversion: the output's gamma applied in place (it made a copy
+  each time). *A table for it is left out: the curve is too steep near
+  nought to interpolate within a 16-bit step.*
+- [x] Autosave: an in-memory index of each set's tiles (every change reads
+  every set's manifest from storage).
+- [x] PSD open: the file's bytes handed to the worker, not copied
+  (`EngineHost.call` takes buffers to give).
+- [ ] ~~Results transferred whatever their typed array~~: left as it is. A
+  handler returning an array it keeps (a cache) would have it detached;
+  nothing measured costs.
+- [ ] The helper worker pool ARCHITECTURE.md describes, for conversion, PSD
+  open and save and feathering, so the canvas keeps drawing meanwhile;
+  `packBits` and the read-back conversion in parallel there.
+
+**4. Rendering** (done 13 October 2026: what measured; the rest left, below)
+
+Decided (13 October 2026): only what a measurement shows. Every frame
+budget is met with under a millisecond of CPU a frame panning, so the
+items that would save microseconds a frame are left, with their reasons.
+- [x] What the reopened PSD's draw spent, profiled: vectors 1 s (outlining
+  0.35 s, mostly flattening the text's glyphs; each tile's segments
+  0.6 s), the Layers panel's thumbnails 0.2 s in the middle of it, the
+  rings' small writes 0.23 s. *Each glyph is flattened once for each size
+  and angle it's set at, then moved (49,000 placements of 41 glyphs were
+  49,000 flattenings); thumbnails wait for the canvas and come a few at a
+  time (`EngineHost.whenDrawn`); rings hold small writes and send them in
+  one before each submit. 2.83 s to 2.29–2.40; the dense text fitted 1.45 s
+  to 0.83–0.99.*
+- [x] Ring writes staged and flushed once before submit (one
+  `writeBuffer` per put now). *Writes up to 4 KB, in the parameter and
+  window rings; uploads aren't (each is a tile).*
+- [x] The 96 MP first picture (about 750 ms): timed. *The thumbnails of its
+  two layers were made in the middle of it; now after. 652–677 ms; what's
+  left is the uploads themselves (the GPU path, and the CPU fallback for
+  work outside frames).*
+- [ ] Outlines at coarse levels: reuse a finer level's geometry. Left: with
+  glyphs flattened once each, outlining is a small part of the draw, and
+  drawing coarse first means the finer outline isn't there yet to reuse.
+- [ ] Fewer passes per stroked shape (one compute pass per tile's
+  dispatches, dispatch over the shape's box, raster, paint and over fused).
+  Left: the GPU keeps up with the display panning over two hundred shapes.
+- [ ] Readback staging buffers pooled; texture views and the screen's bind
+  group cached; `lutBuffers` not stringifying the look each frame; scratch
+  arrays reused per tile; caches indexed by scene and node for `forget`.
+  Left: microseconds a frame.
+- [ ] Wait-then-next-frame in the worker (`worker.ts:304`). Left: no frame
+  measured late for it.
+
+**5. Text** (done 13 October 2026)
+- [x] Layout cached per paragraph (untouched paragraphs keep their
+  identity): one keystroke in 60,000 characters lays out everything again
+  now, about 145 ms. *Shaping, segments, line ends and each line's glyphs
+  kept by paragraph (text/layout.ts, paraCache), for the same fonts and
+  styles: 120 justified paragraphs laid out again after an edit in about
+  10 ms, against about 70 laying them out afresh (`check:text` holds it to
+  the same result, and to less than three quarters). The 145 first
+  reported was a first layout, before the JIT had warmed; and the cache did
+  nothing for frames until the fix below.*
+- [x] Found on the way, from profiling the edit: a rectangular frame was
+  never taken for one (`isRect` wanted four points; a closed path comes
+  back to its first, so five), so since phase 9 area text never used the
+  every-line composer (Knuth–Plass) whatever it was set to, and was broken
+  line by line as a shaped frame. `check:text`'s comparison of the two
+  composers allowed them to be equal, and they were; it now wants
+  every-line less ragged. Text in existing documents may break
+  differently: as it was meant to.
+- [x] Shaping: the font resolved once per run, not a sorted key per
+  character; the mark test only above U+0300. *Fresh layout of the bench's
+  60,000 characters 140 ms to 102.* Found on the way: characters set in a
+  fallback font each made an item of their own (a new face entry each),
+  so a run of them was shaped a character at a time, without kerning or
+  ligatures between them; one entry per fallback face now.
+- [ ] A new font lays out only the text that wanted it. Left: the page's
+  work while fonts arrive measured about 1% of the reopening.
+- [x] Caret positions from cached prefix lengths, not joining every run.
+  *Paragraphs' lengths kept by paragraph.*
+
+**6. Loading** (done 13 October 2026)
+- [x] The test handle (`main.tsx:45`) made lazy, so importers and
+  exporters leave the 998 KB main chunk; then PSD, SVG, PDF, the brush and
+  swatch importers and the dialogs loaded on demand. *Measured by module
+  first (a build reporting each chunk's modules): PSD, SVG, PDF and ABR
+  (exports, svg, psd, abr chunks), the text layout with its line breaking
+  and bidi tables (with the fonts, which were already on demand), and 29
+  dialogs in twelve files (docDialogs stays: the start screen uses it).
+  The main chunk 998 KB (332 gzipped) to 813 (266). The swatch file
+  reader stays, 4 KB and needed synchronously. The dialogs are fetched once
+  the page is idle (ui/lazyDialogs.ts), so even the first opens at once;
+  the checks wait for them with the engine (harness.mjs, waitForEngine),
+  and those that open a dialog then read it wait for it (`dialogShown`),
+  since a lazy component shows a moment after it's asked for even when
+  loaded.*
+- [x] Wasm compiled as it streams. *The Emscripten loaders already stream
+  when given the URL rather than the bytes.* pxcms once for page and worker
+  is left: it needs a hand-over in the protocol for tens of milliseconds at
+  start. HarfBuzz was already loaded only when type is first needed.
+- [x] `/fonts/*` cached long (or hashed through `?url`). *A week, then
+  revalidated in the background (`public/_headers`); they keep their
+  names, which the font library knows them by.*
+
+**7. Correctness and structure** (done 13 October 2026, but for the splits noted)
+- [x] Errors keep their name across the worker (the quota check in autosave
+  can't match one from the worker); pending calls rejected when the
+  worker dies. *And a reply that won't clone is the call's failure.*
+- [x] The protocol's calls typed end to end (method tied to args); transfer
+  chosen explicitly, not by a top-level `bytes`. *The wire message ties each
+  method to its arguments (CallMessage); the copy-by-name went: a message
+  is copied anyway, so only `give` (transfer) is a choice.*
+- [x] One hold-for-commit helper for the five copies of the 60 s timer.
+  *`held` in tileHost: seven copies in five files.*
+- [x] `JSON.stringify` equality in `doc/` replaced by one deep equal (key
+  order made no-ops into history steps; slow with Liquify fields).
+  *lib/equal.ts; five uses (the rest were copies and serialising).*
+- [x] The history cap counts what isn't tiles too (Liquify fields, about
+  0.5 MB a step, weren't counted). *Each step's long strings (stepBytes);
+  the cap's failures are said now, not swallowed.*
+- [x] One `geom/affine.ts` (four composes, three inverses that disagreed on
+  singular matrices); one `clamp`. *A singular affine inverts to the
+  identity everywhere (one place made values of 10¹²); lib/num.ts for
+  clamp and clamp01, ten copies.*
+- [x] Typed parameters for filters, effects and adjustments. *defineFilter,
+  defineFx and defineAdjustment infer each one's values from its
+  parameters (ParamValues; data parameters from their readers): 141 casts
+  to 10, the rest in helpers shared between them.* A `CommandId` type was
+  tried and left: two dozen generated families of commands type their ids
+  as strings, which makes the union a string, and check:commands already
+  fails on a menu naming a missing command. Categories are a union now.
+- [x] `render/graph.ts`'s one `encode` helper, which also counts the
+  dispatches it missed (the mask display's, and the renderer's two); three
+  of `render/readback.ts`'s band loops as one (renderBand; the other two
+  render differently). The split by concern is left: one class of seventy
+  methods sharing its state, split for navigation alone.
+- [x] `commands/index.ts` split: context, predicates, registry, menus and
+  shortcuts, index.ts re-exporting. The context in slices is left.
+- [ ] `App.tsx` split: the command context, key dispatch. Left (the dialogs
+  are a table already, ui/lazyDialogs.ts): the context closes over some
+  twenty-five pieces of App's state; better done as reading the stores when
+  it runs, a change of its own, measured.
+- [x] One way to dispatch tools (a switch, a registry and a hard-coded list
+  in `Viewport.tsx`). *One registry; isGestureTool from it; Patch registers
+  itself, as the vector and type tools do.*
+- [x] `render/probe.ts` (GPU test code) out of `src/render`: src/checks/.
+- [x] Found on the way, by check:static: four runtime import cycles (three
+  through app/canvasTools, one the commands split made); none now.
+
+**8. Checks and tooling** (done 13 October 2026)
+- [x] Suites in parallel, output kept per suite, `--only` and
+  `--retry-failed`. *Headless ones a core each, browser ones four at once,
+  longest first by their last times: all 43 in 410 s, from about 900.
+  `--retry-failed` has already told a flaky run (check:segment, with the
+  machine busy) from a failure: its one tight timing (150 ms) is doubled
+  when suites run side by side, and strict alone.*
+- [x] Browser suites against a built preview, so editing during a run
+  can't break it. *The default now; `--dev` for the dev server.*
+- [x] typescript-eslint (floating promises), the React hooks rules,
+  dependency-cruiser, knip; as `check:static` at the front of `check:fast`.
+  *Lint found ten async functions where plain ones were expected (four
+  fixed; JSX handlers allowed); dependency-cruiser the cycles above; knip
+  240 exports nothing else used: 203 are used in their own module and are
+  no longer exported; 37 are used nowhere and are kept, exported, for
+  review (`npx knip` lists them; some look like groundwork, moveChannel and
+  moveSwatch among them). knip fails on unused files and packages, not on
+  exports.*
+- [x] The browser suites' shared helpers in one module (`press` was
+  defined in 21 of them). *pageHelpers: press (21 suites) and idle (17);
+  nine keep an idle of their own that waits a frame more. The other
+  helpers differ suite to suite.* Fewer fixed `settle` waits: left, 63 of
+  them, each needing what it waits for worked out.
+- [x] Tidying: `check:manual` named in ARCHITECTURE.md but missing (marked
+  not built, with the plugin it pairs with); `scripts/shot-split.tmp.mjs`
+  (deleted); `.gitignore` (both spellings).
+
+## After the pass: six gaps from the gap map
+
+Asked for on 12 October 2026, in this order, each a phase of its own.
+
+1. **Channels**: painting and filling an alpha channel; the colour
+   channels in the Channels panel; thumbnails; spot channels in pixel
+   layers; alpha channels in PSD.
+2. **The Pen's editing**: the Curvature tool; a smooth-curve display like
+   Affinity's; joining and splitting paths; selecting points across
+   several shapes.
+3. **Stroke features**: variable width profiles, arrowheads, dashes
+   aligned to corners, a switch to scale strokes.
+4. **The Width tool**: editing width profiles on the canvas (needs 3).
+5. **Vector brushes**: art brushes bending artwork along a path (from the
+   envelope distortion code), scatter and pattern brushes.
+6. **Image Trace** (done 13 October 2026): pixel layers traced into vector
+   shapes, with presets.
 
 ## Vector construction (done)
 
@@ -797,8 +1637,8 @@ is done, move it to the CHANGELOG and take it off this list.
   and white), and a Refine Edge brush that subtracts. (Later)
 - Colour Range: Localized Colour Clusters, the subtracting eyedropper,
   Out of Gamut, and its own preview in the dialog. (Later)
-- Alpha channels: painting and filling one as a target, thumbnails in the
-  Channels panel, and the colour channels listed there. (Later)
+- ~~Alpha channels: painting and filling one as a target, thumbnails in the
+  Channels panel, and the colour channels listed there.~~ Done with Channels (13 October 2026).
 - The Magnetic Lasso: Backspace to take back the last point, pen pressure
   for its width. Quick Selection and Select and Mask read documents over
   32 megapixels from a mip level, so there their edges are coarser.

@@ -10,7 +10,7 @@
  * against (brush/preview.ts), so a preview is what the brush paints. Each is
  * drawn when it scrolls into view: an imported set can hold hundreds.
  */
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { brushAssets } from '../app/brushAssets'
 import { pickBrushFiles } from '../app/brushImport'
 import { brushes, type PaintTool, type UserPreset } from '../app/brushes'
@@ -40,7 +40,8 @@ function Preview({ settings }: { settings: BrushSettings }) {
   useEffect(() => {
     if (!visible) return
     const c = ref.current
-    const ctx = c?.getContext('2d')
+    // On the CPU: a GPU canvas is a composited layer of its own, and a long list of presets would be as many (see LayersPanel's thumbnails).
+    const ctx = c?.getContext('2d', { willReadFrequently: true })
     if (!c || !ctx) return
     const a = strokePreview(settings, W, H)
     const img = ctx.createImageData(W, H)
@@ -53,7 +54,7 @@ function Preview({ settings }: { settings: BrushSettings }) {
   return <canvas ref={ref} width={W} height={H} className="brush-preview" aria-hidden />
 }
 
-export function BrushesPanel() {
+export const BrushesPanel = memo(function BrushesPanel() {
   const state = useSyncExternalStore(brushes().subscribe, brushes().get)
   const toolId = useSyncExternalStore(tools().subscribe, tools().get)
   // Image tips arriving from storage redraw the previews that use them.
@@ -123,4 +124,4 @@ export function BrushesPanel() {
       </div>
     </div>
   )
-}
+})

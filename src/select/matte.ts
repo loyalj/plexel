@@ -15,6 +15,7 @@
  * its coverage, on the CPU, with no DOM: the engine worker runs it, and so
  * do the checks, in Node.
  */
+import { clamp01 } from '../lib/num'
 
 /**
  * The band to re-estimate: within `radius` pixels of the selection's edge (where coverage crosses 0.5), and,
@@ -529,4 +530,3 @@ function dist(j: number, w: number, x: number, y: number): number {
   return Math.sqrt(dx * dx + dy * dy)
 }
 
-const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)

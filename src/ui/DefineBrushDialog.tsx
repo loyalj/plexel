@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { addDefinedBrush, defineTip, type DefinedTip } from '../app/brushImport'
 import { Dialog } from './Dialog'
 import { Field, Footer } from './docDialogs'
+import { Hint } from './controls'
 
 const SIDE = 160
 
@@ -51,8 +52,8 @@ export function DefineBrushDialog({ onClose }: { onClose(): void }) {
         {ready && (
           <>
             <canvas ref={canvas} width={SIDE} height={SIDE} className="brush-settings-preview" data-define-brush-tip style={{ width: SIDE }} />
-            <p className="field-note">
-              {tip.width} × {tip.height} pixels{Math.max(tip.width, tip.height) > 1024 ? ', kept at 1,024 pixels across' : ''}. Darker parts of the image paint more; white and transparent parts paint nothing.
+            <p className="field-meta">
+              {tip.width} × {tip.height} pixels{Math.max(tip.width, tip.height) > 1024 ? ', kept at 1,024 across' : ''} <Hint text="Darker parts of the image paint more; white and transparent parts paint nothing." />
             </p>
             <Field id="define-brush-name" label="Name" error={blank ? 'A brush needs a name.' : null}>
               <input id="define-brush-name" value={name} onChange={(e) => setName(e.target.value)} autoFocus onFocus={(e) => e.target.select()} />

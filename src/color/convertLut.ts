@@ -15,14 +15,14 @@
 import { FLAGS, type Cms, type Intent, type Profile } from './cms'
 import { LUT_SIZE } from './lut'
 
-export const CONVERT_GRAY_SIZE = 4096
+const CONVERT_GRAY_SIZE = 4096
 /**
  * CMYK in: twice the display's K slices, as a conversion is kept, not just
  * looked at, and CMYK's error is along K, worst in the last few percent of
  * black where a profile turns hardest.
  */
-export const CONVERT_CMYK_SIZE = 17
-export const CONVERT_K_SLICES = 65
+const CONVERT_CMYK_SIZE = 17
+const CONVERT_K_SLICES = 65
 
 /**
  * RGB and Gray outputs are kept in the table roughly linear (raised to
@@ -34,6 +34,11 @@ export const CONVERT_K_SLICES = 65
 const LINEAR = 2.2
 const lin = (v: number) => (v < 0 ? -((-v) ** LINEAR) : v ** LINEAR)
 const unlin = (v: number) => (v < 0 ? -((-v) ** (1 / LINEAR)) : v ** (1 / LINEAR))
+/** unlin over a whole result, in place: a conversion makes millions of them, and a copy each time was garbage. */
+function unlinInPlace(out: Float32Array): Float32Array {
+  for (let i = 0; i < out.length; i++) out[i] = unlin(out[i])
+  return out
+}
 
 export interface ConvertLut {
   inCh: number
@@ -91,7 +96,7 @@ export function runConvertLut(l: ConvertLut, input: Float32Array, count: number)
       const r = f - i0
       for (let c = 0; c < outCh; c++) out[i * outCh + c] = data[i0 * 4 + c] * (1 - r) + data[(i0 + 1) * 4 + c] * r
     }
-    return l.linear ? out.map(unlin) : out
+    return l.linear ? unlinInPlace(out) : out
   }
   const sx = 4
   const sy = size * 4
@@ -133,7 +138,7 @@ export function runConvertLut(l: ConvertLut, input: Float32Array, count: number)
       tetraAdd(0, input[i * 3], input[i * 3 + 1], input[i * 3 + 2], 1)
       for (let c = 0; c < outCh; c++) out[i * outCh + c] = acc[c]
     }
-    return l.linear ? out.map(unlin) : out
+    return l.linear ? unlinInPlace(out) : out
   }
   const ks1 = l.kSlices - 1
   for (let i = 0; i < count; i++) {
@@ -146,5 +151,5 @@ export function runConvertLut(l: ConvertLut, input: Float32Array, count: number)
     if (rk > 0) tetraAdd((k0 + 1) * slice, input[o], input[o + 1], input[o + 2], rk)
     for (let c = 0; c < outCh; c++) out[i * outCh + c] = acc[c]
   }
-  return l.linear ? out.map(unlin) : out
+  return l.linear ? unlinInPlace(out) : out
 }

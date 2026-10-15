@@ -3,22 +3,20 @@
  * key hints: nothing, or a drag of some kind (a tool's gesture, painting,
  * panning, sizing the brush). The canvas sets it; the hints read it.
  */
-export type CanvasGesture = 'tool' | 'paint' | 'pick' | 'pan' | 'zoom' | 'rotate' | 'size' | 'bird'
+import { Listeners } from '../lib/listeners'
+export type CanvasGesture = 'tool' | 'paint' | 'pick' | 'pan' | 'zoom' | 'rotate' | 'size' | 'bird' | 'hue'
 
 let current: CanvasGesture | null = null
-const listeners = new Set<() => void>()
+const changes = new Listeners()
 
 export const canvasGesture = {
   get: () => current,
   set(g: CanvasGesture | null) {
     if (g === current) return
     current = g
-    for (const fn of listeners) fn()
+    changes.emit()
   },
   subscribe(fn: () => void) {
-    listeners.add(fn)
-    return () => {
-      listeners.delete(fn)
-    }
+    return changes.subscribe(fn)
   },
 }

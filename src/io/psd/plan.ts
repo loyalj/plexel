@@ -34,4 +34,6 @@ export interface PsdPlan {
   /** Bottom first. */
   layers: PlanLayer[]
   blocks: PsdBlock[]
+  /** Alpha and spot channels, in order, as extra channels of the composite: a spot's plane is written as Photoshop keeps it, black full ink. */
+  channels?: { id: string; spot: boolean }[]
 }

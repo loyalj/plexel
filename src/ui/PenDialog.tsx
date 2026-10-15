@@ -6,6 +6,7 @@
 import { useState, useSyncExternalStore, type FormEvent } from 'react'
 import { applyResponse, penSettings } from '../app/brushes'
 import { Dialog } from './Dialog'
+import { Label } from './controls'
 
 /** The slider runs −100..100; the response is 2 raised to it over 100 (½ to 2). */
 const toResponse = (v: number) => 2 ** (v / 100)
@@ -43,13 +44,14 @@ export function PenDialog({ onClose }: { onClose(): void }) {
     >
       <form id="pen-form" className="form" onSubmit={submit}>
         <div className="field">
-          <label htmlFor="pen-response">Pressure response</label>
+          <Label htmlFor="pen-response" hint="Soft makes light pressure count for more; firm needs a heavier hand for the same stroke. Pressure only comes from a pen; a mouse always paints at full pressure.">
+            Pressure response
+          </Label>
           <div className="pen-row">
-            <span className="field-note">Soft</span>
+            <span className="field-meta">Soft</span>
             <input id="pen-response" type="range" min={-100} max={100} value={v} onChange={(e) => setV(Number(e.target.value))} />
-            <span className="field-note">Firm</span>
+            <span className="field-meta">Firm</span>
           </div>
-          <span className="field-note">Soft makes light pressure count for more; firm needs a heavier hand for the same stroke. Pressure only comes from a pen; a mouse always paints at full pressure.</span>
         </div>
         <div className="pen-try">
           <svg className="pen-curve" viewBox="-8 -4 116 116" role="img" aria-label="Pressure from the pen, across, against pressure used, up">

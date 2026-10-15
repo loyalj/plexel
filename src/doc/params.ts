@@ -49,6 +49,34 @@ export type ParamDef = Shown &
     | { key: string; kind: 'wheel'; label: string; hint?: string }
   )
 
+/** What a parameter of each kind reads as (readParamValues). */
+export interface ParamValueOf {
+  number: number
+  bool: boolean
+  choice: string
+  colour: ParamColour
+  curves: Record<string, CurvePoints>
+  levels: Record<string, LevelsValue>
+  gradient: GradientStop[]
+  data: unknown
+  pattern: string | null
+  file: unknown
+  wheel: [number, number]
+}
+
+/**
+ * A parameter list's values, by key, typed by kind: where `radius` is a
+ * number parameter, `v.radius` is a number. Needs the list's keys as
+ * literals (a `const` type parameter, and helpers that keep them).
+ */
+export type ParamValues<P extends readonly ParamDef[]> = {
+  [D in P[number] as D['key']]: D extends { kind: 'data'; read(v: unknown): infer R; default: infer F }
+    ? NonNullable<R> | F
+    : D extends { kind: 'file'; read(v: unknown): infer R }
+      ? R | null
+      : ParamValueOf[D['kind']]
+}
+
 export interface LevelsValue {
   inBlack: number
   inWhite: number
@@ -126,7 +154,7 @@ function readGradient(v: unknown, channels: number, cmyk: boolean): GradientStop
  * Parameters as a registry entry wants them: every one present, in range,
  * the right shape for the document's colour mode. Unknown ones are dropped.
  */
-export function readParamValues(defs: ParamDef[], raw: unknown, mode: 'rgb' | 'gray' | 'cmyk'): Record<string, unknown> {
+export function readParamValues(defs: readonly ParamDef[], raw: unknown, mode: 'rgb' | 'gray' | 'cmyk'): Record<string, unknown> {
   const r = isObject(raw) ? raw : {}
   const channels = mode === 'rgb' ? 3 : mode === 'gray' ? 1 : 4
   const cmyk = mode === 'cmyk'
@@ -177,4 +205,4 @@ export function readParamValues(defs: ParamDef[], raw: unknown, mode: 'rgb' | 'g
 }
 
 /** A registry entry's defaults, for a new node. */
-export const defaultParams = (defs: ParamDef[], mode: 'rgb' | 'gray' | 'cmyk') => readParamValues(defs, {}, mode)
+export const defaultParams = (defs: readonly ParamDef[], mode: 'rgb' | 'gray' | 'cmyk') => readParamValues(defs, {}, mode)

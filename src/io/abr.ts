@@ -21,6 +21,7 @@ import { BLEND_MODES, type BlendModeId } from '../doc/types'
 import { PsdError, Reader } from './psd/bin'
 import { bool, en, get, num, obj, objs, readDescriptor, str, type Descriptor } from './psd/descriptor'
 import { unpackBits } from './psd/format'
+import { clamp01 } from '../lib/num'
 
 export interface AbrImage {
   id: string
@@ -46,7 +47,6 @@ export interface AbrFile {
 
 export class AbrError extends Error {}
 
-const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 
 /** A grey image of `depth` bits, raw or PackBits by row, into 8 bits. */
 function readImage(r: Reader, width: number, height: number, depth: number, compression: number): Uint8Array {

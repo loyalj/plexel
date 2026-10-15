@@ -191,7 +191,7 @@ export const noisy = (m: number, n: number) => Math.min(1, Math.max(0, m + (n - 
  * Wet Edges: the paint lighter inside the dab and pooled at its edge, as
  * watercolour dries. `edge` is how near the edge this pixel is, 0..1.
  */
-export const wetEdge = (m: number, edge: number) => m * (0.45 + 0.55 * edge)
+const wetEdge = (m: number, edge: number) => m * (0.45 + 0.55 * edge)
 
 /** How near a dab's edge a point in tip space is: by radius for the round tip, by coverage for an image. */
 export const edgeness = (round: boolean, r: number, m: number) => (round ? smoothstep(Math.min(1, Math.max(0, (r - 0.55) / 0.45))) : Math.min(1, Math.max(0, (1 - m) * 1.6)))

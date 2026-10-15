@@ -7,8 +7,8 @@
  * Ranges: RGB, S, B and L are 0..1; hue is degrees 0..360; Lab L is
  * 0..100 and a, b about -128..127; LCh C is Lab's chroma.
  */
+import { clamp01 } from '../lib/num'
 
-const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 const wrapHue = (h: number) => ((h % 360) + 360) % 360
 
 export function rgbToHsb([r, g, b]: number[]): number[] {

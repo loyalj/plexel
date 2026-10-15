@@ -10,11 +10,11 @@ export interface XmlElement {
   children: (XmlElement | string)[]
 }
 
-export class XmlError extends Error {}
+class XmlError extends Error {}
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
 
-export function decodeEntities(s: string): string {
+function decodeEntities(s: string): string {
   return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
     if (e[0] === '#') return String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10))
     return ENTITIES[e.toLowerCase()] ?? m

@@ -91,7 +91,7 @@ function mapAppearance(a: AppearanceItem[], fn: (p: Paint) => Paint): Appearance
 }
 
 /** Every paint in the document's own layers through `fn` (smart objects' contents have swatches of their own). */
-export function mapPaints(doc: Doc, fn: (p: Paint) => Paint): Doc {
+function mapPaints(doc: Doc, fn: (p: Paint) => Paint): Doc {
   let nodes: Record<string, DocNode> | null = null
   for (const [id, n] of Object.entries(doc.nodes)) {
     if (n.kind === 'fill') {

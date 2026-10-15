@@ -10,6 +10,7 @@ import type { BrushSettings } from '../brush/defs'
 import { registerTexture } from '../brush/textures'
 import { registerTip, tipFromBytes } from '../brush/tips'
 import { engine } from '../engine/EngineHost'
+import { Listeners } from '../lib/listeners'
 
 export interface BrushAsset {
   id: string
@@ -62,7 +63,7 @@ const textureOf = (a: BrushAsset) => ({ width: a.width, height: a.height, data: 
 class BrushAssets {
   private items = new Map<string, BrushAsset>()
   private sent = new Set<string>()
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   /** Everything stored, read back once. */
   readonly ready: Promise<void>
 
@@ -74,14 +75,11 @@ class BrushAssets {
   }
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   private emit() {
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   private register(a: BrushAsset) {

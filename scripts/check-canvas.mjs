@@ -14,7 +14,7 @@
  * Run with: npm run check:canvas
  */
 import { deflateSync } from 'node:zlib'
-import { check, finish, frames, open, settle, waitForEngine, waitUntil } from './harness.mjs'
+import { check, dialogShown, finish, frames, open, pageHelpers, settle, waitForEngine, waitUntil } from './harness.mjs'
 import { decodePng, pixelAt } from './png.mjs'
 
 const MOCK_PICKERS = () => {
@@ -29,13 +29,7 @@ await page.goto(url)
 await waitForEngine(page)
 
 // --- helpers ---------------------------------------------------------------------------
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
+const { press } = pageHelpers(page)
 const clickMenu = async (menu, command) => {
   await page.evaluate((m) => [...document.querySelectorAll('.menu-title')].find((b) => b.textContent === m).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })), menu)
   await frames(page)
@@ -267,16 +261,16 @@ await rendered()
 check('so does an isolated one, here', near(await at(), [128, 0, 128]), String(await at()))
 await setPercent('props-opacity', 100)
 await page.select('#props-blend', 'pass-through')
-await page.select('#props-knockout', 'deep')
+await page.$eval('#props-knockout-deep', (e) => e.click())
 await selectLayer('Layer 2')
 await setPercent('props-fill', 0)
 await rendered()
 check('a deep knockout layer at 0% fill punches down to the bottom layer', near(await at(), [255, 255, 255]), String(await at()))
 await selectLayer('Group 1')
-await page.select('#props-knockout', 'shallow')
+await page.$eval('#props-knockout-shallow', (e) => e.click())
 await rendered()
 check('a shallow one only to the layers below its group', near(await at(), [255, 0, 0]), String(await at()))
-await page.select('#props-knockout', 'none')
+await page.$eval('#props-knockout-none', (e) => e.click())
 await selectLayer('Layer 2')
 await setPercent('props-fill', 100)
 await rendered()
@@ -381,7 +375,7 @@ check('Ctrl+0 fits it again', (await status('zoom')) === fitZoom)
 // --- export ---------------------------------------------------------------------------------------
 console.log('\nexport')
 await press('Control+Alt+Shift+KeyW')
-check('Export opens its dialog', !!(await page.$('[data-dialog="export"]')))
+check('Export opens its dialog', await dialogShown(page, 'export'))
 check('which says what a PNG will hold', /8-bit RGB with transparency, with the document’s profile/.test(await page.$eval('[data-export-summary]', (e) => e.textContent)))
 await page.click('[data-dialog="export"] .dialog-foot .primary')
 await waitUntil(page, () => [...document.querySelectorAll('.notice')].some((n) => /Exported “Paint.png”/.test(n.textContent)), { timeout: 15000 })
@@ -397,6 +391,74 @@ await page.click('[data-dialog="export"] .dialog-foot .primary')
 await waitUntil(page, () => [...document.querySelectorAll('.notice')].some((n) => /Exported “Paint.jpg”/.test(n.textContent)), { timeout: 15000 })
 const jpg = Buffer.from(await picked('Paint.jpg'))
 check('the JPEG is a JPEG, with an ICC profile', jpg[0] === 0xff && jpg[1] === 0xd8 && jpg.includes(Buffer.from('ICC_PROFILE')))
+/** A WebP's chunk tags, in order. */
+const webpTags = (b) => {
+  const out = []
+  for (let at = 12; at + 8 <= b.length; ) {
+    const size = b.readUInt32LE(at + 4)
+    out.push(b.toString('latin1', at, at + 4))
+    at += 8 + size + (size & 1)
+  }
+  return out
+}
+await press('Control+Alt+Shift+KeyW')
+await page.select('#export-format', 'webp')
+check('WebP is said to be 8-bit with transparency, for the web', /8-bit RGB with transparency.*for the web/.test(await page.$eval('[data-export-summary]', (e) => e.textContent)))
+check('it has a quality', !!(await page.$('#export-quality')))
+await page.click('[data-dialog="export"] .dialog-foot .primary')
+await waitUntil(page, () => [...document.querySelectorAll('.notice')].some((n) => /Exported “Paint.webp”/.test(n.textContent)), { timeout: 15000 })
+const webp = Buffer.from(await picked('Paint.webp'))
+const lossyTags = webpTags(webp)
+check('the WebP is a WebP, lossy, with the profile in it', webp.toString('latin1', 0, 4) === 'RIFF' && webp.toString('latin1', 8, 12) === 'WEBP' && lossyTags[0] === 'VP8X' && lossyTags[1] === 'ICCP' && lossyTags.includes('VP8 '), lossyTags.join(' '))
+check('the canvas size in it is the document’s', webp.readUIntLE(24, 3) + 1 === 1920 && webp.readUIntLE(27, 3) + 1 === 1080)
+await press('Control+Alt+Shift+KeyW')
+await page.click('[data-export-lossless]')
+check('Lossless needs no quality', !(await page.$('#export-quality')))
+await page.click('[data-dialog="export"] .dialog-foot .primary')
+await waitUntil(page, () => [...document.querySelectorAll('.notice')].filter((n) => /Exported “Paint.webp”/.test(n.textContent)).length >= 2, { timeout: 15000 })
+const lossless = Buffer.from(await picked('Paint.webp'))
+const losslessTags = webpTags(lossless)
+check('lossless WebP is VP8L, the profile in it too', losslessTags.includes('VP8L') && losslessTags.includes('ICCP'), losslessTags.join(' '))
+await press('Control+Alt+Shift+KeyW')
+await page.select('#export-format', 'eps')
+check('EPS is said to be for print tools, in device colours', /For print tools that want EPS/.test(await page.$eval('[data-export-summary]', (e) => e.textContent)))
+await page.click('[data-dialog="export"] .dialog-foot .primary')
+await waitUntil(page, () => [...document.querySelectorAll('.notice')].some((n) => /Exported “Paint.eps”/.test(n.textContent)), { timeout: 20000 })
+const epsOut = Buffer.from(await picked('Paint.eps'))
+check('the EPS is an EPSF 3.0 file the document’s size, its painted layers one image', epsOut.toString('latin1', 0, 23) === '%!PS-Adobe-3.0 EPSF-3.0' && /%%BoundingBox: 0 0 1920 1080/.test(epsOut.toString('latin1', 0, 200)) && epsOut.includes(Buffer.from(' image\n')), epsOut.toString('latin1', 0, 120))
+// Save for Web: the panes to compare, each with its file's size; Save writes the chosen one.
+await press('Control+Alt+Shift+KeyS')
+check('Ctrl+Alt+Shift+S opens Save for Web', await dialogShown(page, 'saveForWeb'))
+await page.click('[data-sfw-layout="4up"]')
+await waitUntil(page, () => [...document.querySelectorAll('[data-sfw-caption]')].filter((c) => /(KB|MB| B) ·/.test(c.textContent)).length === 3, { timeout: 20000 })
+const captions = await page.$$eval('[data-sfw-caption]', (cs) => cs.map((c) => c.textContent))
+check('4-Up shows the original and three to compare, each with its size and download time', captions.length === 4 && /^Original/.test(captions[0]) && captions.slice(1).every((c) => /\d+(\.\d+)? (KB|MB|B) · .* at 8 Mbps/.test(c)), captions.join(' | '))
+// The second pane: PNG-8 at 16 colours, made half the size.
+await page.click('[data-sfw-pane="1"] canvas')
+await page.select('#sfw-format', 'png8')
+await page.select('#sfw-colours', '16')
+await page.$eval('#sfw-width', (e) => {
+  e.focus()
+  e.select()
+})
+await page.keyboard.type('960')
+check('the height follows the width, in proportion', (await page.$eval('#sfw-height', (e) => e.value)) === '540')
+await waitUntil(page, () => /PNG-8, 16 colours/.test(document.querySelector('[data-sfw-pane="1"] [data-sfw-caption]').textContent), { timeout: 20000 })
+await page.click('[data-sfw-save]')
+await waitUntil(page, () => [...document.querySelectorAll('.notice')].some((n) => /Saved “Paint.png” for the web/.test(n.textContent)), { timeout: 20000 })
+const web = Buffer.from(await picked('Paint.png'))
+const webPng = decodePng(web)
+check('Save writes the chosen pane’s file: a palette PNG at the size asked for', web[25] === 3 && webPng.width === 960 && webPng.height === 540, `type ${web[25]} ${webPng.width}×${webPng.height}`)
+check('the picture in it: blue in the middle, red around it', near(pixelAt(webPng, 480, 270).slice(0, 3), [0, 0, 255], 8) && near(pixelAt(webPng, 480 + 40, 270).slice(0, 3), [255, 0, 0], 8))
+await press('Control+Alt+Shift+KeyS')
+check('it opens again as it was left: 4-Up', await waitUntil(page, () => document.querySelector('[data-sfw-layout="4up"]')?.getAttribute('aria-selected') === 'true', { timeout: 5000 }).then(() => true, () => false))
+await press('Escape')
+// And it opens again, every pixel as it was.
+await drop(lossless, 'again.webp', 'image/webp', 'elsewhere')
+await waitUntil(page, () => [...document.querySelectorAll('.tab-name')].some((t) => t.textContent === 'again'), { timeout: 10000 })
+await rendered()
+check('a WebP opens as an 8-bit RGB document', /1,?920 × 1,?080 px.*RGB 8-bit/.test((await status('document')) ?? ''), await status('document'))
+check('its pixels as they were: blue in the middle', near(await at(), [0, 0, 255], 0), String(await at()))
 
 // --- importing as documents ------------------------------------------------------------------------
 console.log('\nimages as documents')

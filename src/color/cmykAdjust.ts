@@ -43,7 +43,7 @@ export interface CmykTables {
 }
 
 /** A 4D table read at (x, y, z, w): tetrahedral in x, y, z, linear in w. */
-export function sample4(data: Float32Array, size: number, kSlices: number, x: number, y: number, z: number, w: number, out: number[] = [0, 0, 0]): number[] {
+function sample4(data: Float32Array, size: number, kSlices: number, x: number, y: number, z: number, w: number, out: number[] = [0, 0, 0]): number[] {
   const slice = size ** 3 * 4
   const fk = Math.min(Math.max(w, 0), 1) * (kSlices - 1)
   const k0 = Math.min(Math.floor(fk), kSlices - 2)

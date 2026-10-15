@@ -3,6 +3,7 @@
  * panels that read what's under it (Separations). Null when it's off the
  * canvas.
  */
+import { Listeners } from '../lib/listeners'
 export interface PointerAt {
   key: string
   x: number
@@ -10,19 +11,16 @@ export interface PointerAt {
 }
 
 let at: PointerAt | null = null
-const listeners = new Set<() => void>()
+const changes = new Listeners()
 
 export const pointer = {
   get: () => at,
   set(p: PointerAt | null) {
     if (p === at || (p && at && p.key === at.key && p.x === at.x && p.y === at.y)) return
     at = p
-    for (const fn of listeners) fn()
+    changes.emit()
   },
   subscribe(fn: () => void) {
-    listeners.add(fn)
-    return () => {
-      listeners.delete(fn)
-    }
+    return changes.subscribe(fn)
   },
 }

@@ -25,7 +25,9 @@ import { applyMat, pathBounds } from '../geom/path'
 import { hitSegment } from '../geom/edit'
 import { fillSegments, inside, windingAt } from '../geom/raster'
 import { shapeOf } from '../vector/shape'
+import { brushReach } from '../vector/brush'
 import { layoutOf } from './text'
+import { expandDoc, ownerOf } from '../doc/expand'
 
 /** Below this a pixel (or a mask) counts as clear. */
 const CLEAR = 0.1
@@ -50,7 +52,8 @@ export function shapeHit(doc: Doc, node: DocNode, x: number, y: number, grace: n
   const r = grace / scaleOf(t)
   const filled = shape.appearance.some((it) => it.enabled && it.kind === 'fill')
   if (filled && insidePath(shape.path, qx, qy, r / 4)) return true
-  const width = Math.max(0, ...shape.appearance.filter((it) => it.enabled && it.kind === 'stroke').map((it) => (it.kind === 'stroke' ? it.width : 0)))
+  // A brush stroke reaches as far as its artwork does (half its reach: that's lengthened round turns).
+  const width = Math.max(0, ...shape.appearance.filter((it) => it.enabled && it.kind === 'stroke').map((it) => (it.kind === 'stroke' ? (it.brush ? brushReach(it.brush, it.width, it.profile) : it.width) : 0)))
   return !isGlyphs(shape.path) && !!hitSegment(shape.path, qx, qy, Math.max(r, width / 2))
 }
 
@@ -116,7 +119,10 @@ function maskTests(doc: Doc, n: DocNode, x: number, y: number): Test[] {
  * how far off a shape's edge still counts, in document pixels (a few
  * screen pixels at the zoom in use).
  */
-export async function layersAt(doc: Doc, x: number, y: number, grace = 0): Promise<NodeId[]> {
+export async function layersAt(page: Doc, x: number, y: number, grace = 0): Promise<NodeId[]> {
+  // Artboards and symbol instances as the layers they're drawn as: a hit on an
+  // instance's artwork is a hit on the instance, on an artboard's background the artboard's.
+  const doc = expandDoc(page)
   // Each candidate, in order, with all its tests; a clipped layer also needs its base's.
   const candidates: { id: NodeId; tests: Test[] }[] = []
   const visit = (id: NodeId, clip: Test[]) => {
@@ -154,7 +160,8 @@ export async function layersAt(doc: Doc, x: number, y: number, grace = 0): Promi
     if (typeof t === 'boolean') return t
     return t.pass(values[index.get(`${t.probe.set}|${Math.floor(t.probe.x)}|${Math.floor(t.probe.y)}|${t.probe.kind}|${t.probe.outside ?? 0}`)!] ?? 0)
   }
-  return candidates.filter((c) => c.tests.every(pass)).map((c) => c.id)
+  const hits = candidates.filter((c) => c.tests.every(pass)).map((c) => ownerOf(c.id))
+  return hits.filter((id, i) => hits.indexOf(id) === i && !!page.nodes[id])
 }
 
 /** The outermost group holding a layer, under the root; or the layer itself when it's at the top level. */

@@ -4,6 +4,7 @@
  * warning or error stays until it's dismissed, because a message that
  * vanishes before it's read is no message at all.
  */
+import { Listeners } from '../lib/listeners'
 export interface Notice {
   id: number
   tone: 'info' | 'warning' | 'error'
@@ -16,16 +17,13 @@ const INFO_MS = 4000
 
 let notices: Notice[] = []
 let nextId = 1
-const listeners = new Set<() => void>()
-const emit = () => listeners.forEach((fn) => fn())
+const changes = new Listeners()
+const emit = () => changes.emit()
 
 export const noticeStore = {
   get: () => notices,
   subscribe(fn: () => void) {
-    listeners.add(fn)
-    return () => {
-      listeners.delete(fn)
-    }
+    return changes.subscribe(fn)
   },
 }
 

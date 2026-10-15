@@ -59,7 +59,7 @@ export function writeParams(
      * A live stroke: floats per stroke pixel, its blend mode, whether it erases or (Smudge, the
      * Mixer Brush) replaces, its colour when it has one, and where in a pixel its colour is.
      */
-    stroke?: { stride: number; blend: number; eraser: boolean; replace?: boolean; colour: number[]; selection?: boolean; colourOffset?: number }
+    stroke?: { stride: number; blend: number; eraser: boolean; replace?: boolean; colour: number[]; selection?: boolean; colourOffset?: number; keep?: number }
     /** Source pixels read only inside this rectangle (window pixels: left, top, right, bottom): a copy of a tiled document's layer. */
     clip?: [number, number, number, number]
   },
@@ -76,7 +76,7 @@ export function writeParams(
   i[15] = p.origin[1]
   i.set(p.win, 16)
   if (p.stroke) {
-    u.set([p.stroke.stride, p.stroke.blend, p.stroke.replace ? 2 : p.stroke.eraser ? 1 : 0, (p.stroke.selection ? 1 : 0) | ((p.stroke.colourOffset ?? 1) << 8)], 20)
+    u.set([p.stroke.stride, p.stroke.blend, p.stroke.replace ? 2 : p.stroke.eraser ? 1 : 0, (p.stroke.selection ? 1 : 0) | ((p.stroke.colourOffset ?? 1) << 8) | ((p.stroke.keep ?? 0) << 16)], 20)
     f.set([...p.stroke.colour, 0, 0, 0, 0].slice(0, 4), 24)
   }
   f.set(p.clip ?? [0, 0, 0, 0], 28)
@@ -218,12 +218,24 @@ function strokeWgsl(mode: ColourMode): string {
 // The selection's coverage per stroke tile, when the stroke is confined to one (stroke.w bit 0).
 @group(0) @binding(11) var<storage, read> strokesel: array<f32>;
 
-// stroke: stride, blend mode, kind (0 paint, 1 erase, 2 replace), then the selection bit and the colour's offset (<< 8).
+// stroke: stride, blend mode, kind (0 paint, 1 erase, 2 replace), then the selection bit, the colour's offset (<< 8)
+// and the colour channels left alone (<< 16, a bit each: painting some of them, ref/paint.ts keepPlanes).
 fn with_stroke(p: Px, ix: i32, iy: i32, slot: i32) -> Px {
+  let r = laid_stroke(p, ix, iy, slot);
+  let keep = (P.stroke.w >> 16u) & 15u;
+  if (keep == 0u) { return r; }
+  // Straight colour: each channel left alone keeps the layer's, painted ones take the stroke's; alpha stays.
+  let sp = select(vec4f(0.0), p.c / p.a, p.a > 0.0);
+  let sr = select(vec4f(0.0), r.c / r.a, r.a > 0.0);
+  let k = vec4f(f32(keep & 1u), f32((keep >> 1u) & 1u), f32((keep >> 2u) & 1u), f32((keep >> 3u) & 1u));
+  return Px(mix(sr, sp, k) * p.a, p.a);
+}
+
+fn laid_stroke(p: Px, ix: i32, iy: i32, slot: i32) -> Px {
   if (slot < 0) { return p; }
   let px = u32(slot) * 65536u + u32(iy & 255) * 256u + u32(ix & 255);
   let o = px * P.stroke.x;
-  let co = P.stroke.w >> 8u;
+  let co = (P.stroke.w >> 8u) & 255u;
   var a = stroke[o];
   if ((P.stroke.w & 1u) == 1u) { a = a * strokesel[px]; }
   if (a <= 0.0) { return p; }

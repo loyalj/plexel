@@ -2,6 +2,237 @@
 
 Newest first.
 
+## Artboards and symbols
+
+- **Artboards**: pages of one document, each its own size: from New
+  Document's Artboard option, Layer → Artboards (New Artboard, Artboard from
+  Layers, Release Artboard) or the **Artboard tool** (V, with Move): drawn,
+  moved with their layers, sized, renamed on the canvas. Size presets,
+  backgrounds, clipping; layers go onto the artboard they're drawn or
+  dropped on; a dark pasteboard round them. **Export each artboard** to a
+  file of its own (a zip of them), or the selected one.
+- **Symbols**: artwork placed as instances that all follow it. **New
+  Symbol** (F8), the **Symbols panel** (place by click or drag), **Edit
+  Symbol** in a tab with every instance following live, Replace, Break Link,
+  Duplicate, Delete; instances transformed, rasterized and copied between
+  documents with their symbol.
+
+## Working without interruptions
+
+- **Filter and adjustment dialogs dim nothing**, so their preview is seen
+  as it is; drag the canvas to look round it. **Every dialog moves** by its
+  title bar and opens where it was left.
+- **Long jobs show progress and can be cancelled** (Esc): content-aware
+  fill, opening a large PSD, filters applied for good.
+- **View → Zoom to Selection** and **Zoom to Layer**; double-click a
+  layer's thumbnail to zoom to it.
+- **A colour picker at the pointer**: Shift+Alt and a right-drag, as in
+  Photoshop.
+- **Edit → Toolbar…**: hide, reorder, one or two columns; hidden tools
+  under the toolbar's "…".
+- **Shortcut sets**: Photoshop's, Affinity's or Illustrator's keys, in
+  Edit → Keyboard Shortcuts.
+- **A dot marks a setting off its default**; double-click its name for the
+  default.
+- In **Tiled View**, the document is framed among its copies, with **Back
+  to the document** when it's out of view.
+
+## Panels and controls
+
+- **A docked column's panels share its height**: no scroll bars inside
+  scroll bars, and no tab bar half covered by the group below. Short
+  panels stay whole while long ones scroll; dividers trade height between
+  groups, kept as proportions when the window changes size; a
+  double-click fits them again.
+- **Tabs that don't fit** a group go into a **»** menu.
+- **Sliders are one bar**, the name and the value on it; **drag a
+  number's name** to scrub it, in panels, the options bar and dialogs;
+  arrow keys step numbers and Esc puts them back.
+- **Choices of two or three are buttons** side by side.
+- **ⓘ hints** in place of the sentences under fields, by dialogs' titles,
+  and in short empty states ("No layers"); the app's own tooltips in place
+  of the browser's.
+- One **type and spacing scale** for the interface, which Compact tightens.
+
+## Freehand vector tools
+
+- **Pencil**, **Paintbrush** and **Blob Brush** (N), as Illustrator's: draw
+  paths freehand, smoothed (Fidelity); paint them with a vector brush;
+  paint filled shapes that join the ones of their colour they touch.
+  Strokes started on the selected path redraw it, or carry it on from an
+  end; strokes ending where they began close.
+
+## Image Trace
+
+- **Layer → Image Trace**: a pixel layer traced into shapes, as
+  Illustrator's: black and white, grays or colours, ten presets, paths,
+  corners, noise, a blur for photos, Ignore White; shown live, counted;
+  neighbouring shapes share their edges exactly.
+
+## The toolbar
+
+- Tools that share a key share one slot, as in Photoshop: the last one
+  used shows, with a triangle; right-click, hold or click the triangle for
+  the rest, Alt-click for the next. Nineteen slots rather than thirty-one,
+  and two columns when the window is short.
+
+## Colour chips
+
+- Every colour setting is a **colour chip** that opens a small picker: a
+  saturation and brightness square, a hue strip, the Colour panel's models,
+  hex, and the foreground, background and swatches to take. The "Use
+  Foreground" buttons are gone, and the browser's own colour inputs too.
+
+## EPS export
+
+- **Export as EPS** for print tools that want it: CMYK as ink, spot colours
+  and spot channels on their own plates, opaque shapes and text as
+  vectors, everything with transparency below them as one picture.
+
+## Save for Web
+
+- **File → Save for Web** (Ctrl+Alt+Shift+S), as Photoshop's: Original,
+  Optimized, 2-Up and 4-Up, each file's size and download time; JPEG,
+  PNG-24, PNG-8 (a palette of 2 to 256 colours, dithered) and WebP; the
+  size it's made at; sRGB and the profile.
+
+## WebP and the lasso's Photoshop habits
+
+- **WebP**: Export as WebP, lossy at a quality or lossless, with
+  transparency and the colour profile; WebP files open and import too.
+- **The Lasso** as Photoshop's: let go of the button with Alt held to carry
+  on in straight sides, let go of Alt to close; Alt-drag for freehand in
+  Polygonal mode and Shift for 45°; Backspace takes the last corner back
+  (the Magnetic Lasso's too, which also takes Alt-click for a straight
+  side).
+
+## Vector brushes
+
+- **Vector brushes** for strokes: art brushes bend artwork along the path
+  (stretched, in proportion, or between guides so the ends keep their
+  shape), scatter brushes put varied copies along it, pattern brushes
+  repeat tiles with start, end and corner tiles.
+- **Window → Vector Brushes**: nine built-in brushes, New from Selection,
+  Brush Options with a preview, colorization (Tints, Tints and Shades, Hue
+  Shift); Properties' Brush; Layer → Brushes.
+- Outline Stroke makes a brush stroke's artwork shapes; SVG and PDF write
+  it as filled paths.
+
+## The Width tool
+
+- **The Width tool** (Shift+P, in the Pen's group): drag a stroke to make
+  it wider or narrower there; drag a width point's edge (Alt: one side
+  only) or slide it along the path (Alt: a copy); Shift-click several,
+  Delete removes them, double-click to type the widths.
+- **Profiles** in Properties: Flip Along, Flip Across, and profiles saved
+  under a name of your own.
+
+## Stroke features
+
+- **Width profiles**: Taper Both, Taper Start, Taper End, Bulge, Pinch and
+  Brush, either side of the path its own width.
+- **Arrowheads** at either end of an open path, in seven shapes, sized to
+  the stroke.
+- **Dashes aligned to corners**: every corner and end gets a dash.
+- **Scale Strokes**, in the Move tool's and Free Transform's options: off,
+  scaling a shape leaves its strokes as wide as they were.
+- In SVG and PDF these strokes go as their outlines, so they look the same.
+
+## The Pen's editing
+
+- **The Curvature tool** (Shift+P): click smooth points and the curve runs
+  through them; drag a point and the curve follows; double-click to make a
+  point a corner or smooth; click a segment to add a point.
+- **The Pen's Smart mode**, as Affinity's: clicked points are smooth, their
+  curves worked out from their neighbours and shown as they'll be drawn.
+- **Points across several shapes**: Direct Selection's box takes points of
+  every shape it reaches; Shift-click adds another shape's point; a drag
+  moves them all as one step; Delete removes them all.
+- **Join, Break at Points and Separate** (Layer → Path): two end points
+  joined (of one shape or two), shapes joined into one, paths cut at
+  points, parts made shapes of their own.
+- **Smooth points show round**, corners square.
+
+## Transform controls
+
+- **Selected shapes show their transform handles** with the Move tool, one
+  shape or several: drag a handle to scale, just outside a corner to turn,
+  inside to move, each drag one step.
+- **Free Transform works on several layers at once**: one box round all of
+  them (Distort, Perspective and Warp stay one layer at a time).
+
+## Channels
+
+- **The Channels panel shows every channel**: the composite, each colour
+  channel and the alpha and spot channels, with eyes and thumbnails. A
+  click picks a channel and shows it alone (a colour channel in gray);
+  Shift-click adds; Ctrl+2 and Ctrl+3 onwards pick from the keyboard;
+  channels move by dragging.
+- **Some colour channels can be painted alone**: the Brush, Fill, Delete,
+  the Gradient tool, the Paint Bucket, content-aware fill, and filters and
+  adjustments applied for good change only the channels picked.
+- **Alpha channels can be painted and filled**: New Channel, then the
+  Brush, the Eraser, Fill, Delete, the Gradient tool and the Paint Bucket;
+  the Magic Wand reads a channel picked. Shown over the picture as a tint
+  of their own colour and opacity (Channel Options), marking what's masked
+  or what's selected.
+- **Spot channels**: an ink of its own (the foreground, a spot swatch or a
+  colour picked), made from the selection, painted black for ink, shown on
+  screen as the ink at its solidity, listed in the Separations panel, and
+  printed on a plate of its own in PDF.
+- **Colour channels and the luminosity load as the selection**:
+  Ctrl-click a colour channel, or Select → Load Luminosity (Ctrl+Alt+2).
+- **Alpha and spot channels in PSD and PSB**, read and written with their
+  names and how they show; a file with layers decodes only these channels
+  of its merged image.
+
+## The quality and performance pass (13 October 2026)
+
+- **Panning with many layers keeps up with the display again**: the app no
+  longer re-renders on every frame the engine draws.
+- **Reopening a large PSD draws sooner** (2.8 s for the bench's 96 MP CMYK
+  file, from 3.4): a profile Plexel wrote is recognised as its built-in, so
+  it shares the built-in's tables (and the document says Generic CMYK, not
+  an embedded copy); the merged image isn't decoded when there are layers.
+- **Uploads are packed on the GPU**: 910 to 1,120 MB/s, from 650 to 840.
+- **The interface keeps up with many layers**: choosing a tool with two
+  hundred layers takes 5 ms, from 17 (layers' thumbnails no longer each
+  make a composited layer); the panels only draw again for their own
+  changes.
+- **Selections are quicker**: an ellipse on a 96 MP image in about 0.2 s
+  (from 0.75), feathering in 0.7 s (from 1.3); Expand and Contract cost
+  the same whatever the radius (at 50 px, an edge tile in 13 ms from 150).
+- **Opening a big PSD is quicker**: 14 s for the bench's 573 MB file, from
+  20; its bytes are handed to the engine rather than copied.
+- **Long text is quicker**: an edit in a long story lays out only the
+  paragraphs it changed (about 10 ms for 120 paragraphs, against 70 for all
+  of them); dense text draws in about half the time.
+- **Fixed**: area text in a rectangular frame never used the every-line
+  composer, whatever it was set to; it does now, so justified text keeps a
+  more even colour. Text in existing documents may break differently.
+- **Fixed**: characters set in a fallback font (where the chosen font
+  lacks them) were shaped one at a time, without kerning or ligatures
+  between them.
+- **Layer thumbnails wait for the canvas**: they're made after a document's
+  picture is drawn, a few at a time.
+- **A smaller first download**: the app's main file is 813 KB (266 KB
+  compressed), from 998 (332); file formats, text layout and dialogs load
+  when first used (dialogs are fetched once the page is idle, so they still
+  open at once). The wasm compiles as it downloads, and the built-in
+  fonts are cached for a week.
+- **Errors from the engine keep their kind**: storage filling up while
+  pixels are journalled is now said as such; calls waiting on an engine
+  that stops are answered rather than left waiting.
+- **Checks**: `npm run check` runs suites in parallel, against a production
+  build, in about seven minutes (from fifteen), with `--only`,
+  `--retry-failed` and `--dev`; new `check:static` (types, lint,
+  dependency rules, unused files and packages), first in `check:fast`.
+- **Fixed**: a tile collection during a long operation (converting to
+  CMYK, writing or opening a PSD, retouching) could free tiles the
+  operation had made but not yet put into a set.
+- The bench takes `BENCH_PROFILE` for CPU profiles of the reopening.
+- Checks: `check:color` (a built-in embedded in a file is recognised).
+
 ## Vector construction
 
 - **Pathfinder** on any number of shapes: Unite, Minus Front, Intersect,

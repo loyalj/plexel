@@ -15,7 +15,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { check, finish, frames, open, settle, waitUntil, waitForEngine } from './harness.mjs'
+import { check, finish, frames, open, pageHelpers, settle, waitForEngine, waitUntil } from './harness.mjs'
 
 const { page, url } = await open({ viewport: { width: 1280, height: 860 } })
 await page.goto(url)
@@ -24,17 +24,8 @@ await waitForEngine(page)
 const shots = process.env.UX_SHOTS
 const keep = async (name) => shots && writeFileSync(join(shots, `${name}.png`), await page.screenshot())
 
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
-const idle = async () => {
-  await frames(page)
-  await page.evaluate(() => globalThis.plexel.engine().call('render.idle', {}))
-}
+const { press } = pageHelpers(page)
+const { idle } = pageHelpers(page)
 const openMenu = async (menu, submenu) => {
   await page.evaluate((m) => [...document.querySelectorAll('.menu-title')].find((b) => b.textContent === m).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })), menu)
   await frames(page)
@@ -72,6 +63,46 @@ const newDoc = async () => {
   await press('Control+Digit1')
   await idle()
 }
+
+// --- the toolbar: one slot per group, flyouts, two columns when it's short ---------------------
+console.log('\nthe toolbar')
+await newDoc()
+const slots = await page.$$eval('.toolbar .tool', (b) => b.map((x) => x.dataset.toolSlot))
+check('one slot per group of tools: the Pen’s three are one', slots.includes('pen') && !slots.includes('curvature') && !slots.includes('width') && slots.length < 26, slots.join(' '))
+check('a group’s slot shows a triangle for the rest, a lone tool’s doesn’t', await page.$eval('[data-tool-slot="pen"]', (b) => b.classList.contains('grouped')) && !(await page.$eval('[data-tool-slot="crop"]', (b) => b.classList.contains('grouped'))))
+await page.click('[data-tool-slot="pen"]', { button: 'right' })
+check('right-click opens its flyout: each tool, its name and key', !!(await page.waitForSelector('[data-tool-flyout="pen"]', { timeout: 2000 }).catch(() => null)) && (await page.$$eval('[data-tool-flyout="pen"] [data-tool-option]', (b) => b.map((x) => x.textContent))).join('|').includes('Width'))
+await page.click('[data-tool-option="width"]')
+check('choosing one makes it the tool, the flyout closed, and the slot shows it', (await page.evaluate(() => globalThis.plexel.tools().get())) === 'width' && !(await page.$('[data-tool-flyout]')) && (await page.$eval('[data-tool-slot="pen"]', (b) => b.dataset.tool)) === 'width')
+await page.keyboard.down('Alt')
+await page.click('[data-tool-slot="pen"]')
+await page.keyboard.up('Alt')
+check('Alt-click goes on to the group’s next tool', (await page.evaluate(() => globalThis.plexel.tools().get())) === 'pen', await page.evaluate(() => globalThis.plexel.tools().get()))
+// Held down: the flyout opens after a moment.
+{
+  const r = await page.$eval('[data-tool-slot="shape"]', (b) => { const x = b.getBoundingClientRect(); return { x: x.x + x.width / 3, y: x.y + x.height / 3 } })
+  await page.mouse.move(r.x, r.y)
+  await page.mouse.down()
+  await settle(650)
+  check('holding the button down opens it too', !!(await page.$('[data-tool-flyout="shape"]')))
+  await page.mouse.up()
+  await page.keyboard.press('Escape')
+  await frames(page)
+  check('Esc closes it', !(await page.$('[data-tool-flyout]')))
+}
+// A short window: two columns, every slot still on screen.
+const tall = page.viewport()
+await page.setViewport({ ...tall, height: 520 })
+await settle(200)
+const fits = await page.evaluate(() => {
+  const bar = document.querySelector('.toolbar')
+  const last = [...bar.querySelectorAll('.tool')].at(-1).getBoundingClientRect()
+  return { two: bar.classList.contains('two-columns'), inside: last.bottom <= bar.getBoundingClientRect().bottom + 1, last: Math.round(last.bottom), bar: Math.round(bar.getBoundingClientRect().bottom), top: Math.round(bar.getBoundingClientRect().top), n: bar.querySelectorAll('.tool').length, w: Math.round(bar.getBoundingClientRect().width) }
+})
+check('in a short window the slots go into two columns, all of them showing', fits.two && fits.inside, JSON.stringify(fits))
+await page.setViewport(tall)
+await settle(200)
+check('and back to one when there’s room', !(await page.$eval('.toolbar', (b) => b.classList.contains('two-columns'))))
 
 // --- tooltips that teach ------------------------------------------------------------------
 console.log('\ntooltips')
@@ -210,7 +241,8 @@ await press('KeyM')
   await frames(page)
   const items = await page.$$eval('[data-context-menu] [data-command]', (b) => b.map((x) => x.dataset.command))
   check('a right-click with nothing selected offers Select All and the layer’s commands', items.includes('select.all') && items.includes('layer.duplicate') && !items.includes('select.deselect'), items.join(', '))
-  check('it opens at the pointer', await page.$eval('[data-context-menu]', (e, x, y) => { const r = e.getBoundingClientRect(); return Math.abs(r.left - x) < 2 && Math.abs(r.top - y) < 2 }, cx, cy))
+  // At the pointer; moved up only as far as it must to stay in the window.
+  check('it opens at the pointer, inside the window', await page.$eval('[data-context-menu]', (e, x, y) => { const r = e.getBoundingClientRect(); return Math.abs(r.left - x) < 2 && (Math.abs(r.top - y) < 2 || (r.top < y && r.bottom <= innerHeight && r.bottom > innerHeight - 12)) }, cx, cy))
   await page.keyboard.press('Escape')
   await frames(page)
   check('Esc closes it', !(await page.$('[data-context-menu]')))
@@ -722,10 +754,10 @@ check('but not the canvas, which still fills its place', await page.evaluate(() 
 check('and the dock keeps its width in its own pixels', Math.abs((await page.$eval('.dock', (e) => e.getBoundingClientRect().width)) - 300 * 1.25) < 2, String(await page.$eval('.dock', (e) => e.getBoundingClientRect().width)))
 await keep('scale-125')
 await page.select('#pref-scale', '1')
-await page.select('#pref-density', 'compact')
+await page.click('#pref-density-compact')
 await frames(page)
 check('Compact makes the bars tighter', (await barHeight()) < h0)
-await page.select('#pref-contrast', 'more')
+await page.click('#pref-contrast-more')
 await frames(page)
 check('More contrast is on the page', (await page.evaluate(() => document.documentElement.dataset.contrast)) === 'more')
 await page.click('[data-pref="keyHints"]')

@@ -32,7 +32,7 @@
  * words where the layer would land.
  */
 import { textEpoch } from '../app/text'
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { interfacePrefs } from './interface'
 import { colourSettings } from '../app/colourSettings'
@@ -46,9 +46,14 @@ import { engine } from '../engine/EngineHost'
 import type { Thumbnail } from '../engine/protocol'
 import { Icon } from './Icon'
 import type { IconName } from './icons'
+import { Hint } from './controls'
+import { zoomToLayer } from '../app/zoomTo'
+import { isArtboard } from '../doc/artboards'
 
 /** Thumbnail size in CSS pixels; rendered at the screen's pixel ratio. */
 const THUMB = 22
+/** Thumbnails asked for in one call to the engine: a few, so the canvas draws between them. */
+const THUMBS_AT_ONCE = 8
 /** The larger picture a resting pointer shows. */
 const PEEK = 176
 const PEEK_DELAY = 450
@@ -61,10 +66,24 @@ const v = (n: DocNode) => {
   if (x === undefined) versions.set(n, (x = next++))
   return x
 }
-function contentKey(doc: Doc, id: NodeId): string {
+/** A version per symbol's contents object, as for nodes. */
+const docVersions = new WeakMap<Doc, number>()
+const docVersion = (d: Doc | undefined) => {
+  if (!d) return 0
+  let x = docVersions.get(d)
+  if (x === undefined) docVersions.set(d, (x = next++))
+  return x
+}
+/** `seen` keeps each node's key while one document's are worked out, so a group's isn't walked again for every layer above it. */
+function contentKey(doc: Doc, id: NodeId, seen: Map<NodeId, string>): string {
+  const had = seen.get(id)
+  if (had !== undefined) return had
   const n = doc.nodes[id]
-  if (!n) return ''
-  return `${v(n)}${n.children?.length ? `(${n.children.map((c) => contentKey(doc, c)).join(',')})` : ''}`
+  // An instance's picture is its symbol's too: the symbol's contents count.
+  const sym = n?.kind === 'symbol' ? `s${docVersion(doc.symbols?.find((x) => x.id === n.props.symbol)?.content)}` : ''
+  const k = n ? `${v(n)}${sym}${n.children?.length ? `(${n.children.map((c) => contentKey(doc, c, seen)).join(',')})` : ''}` : ''
+  seen.set(id, k)
+  return k
 }
 
 /**
@@ -78,36 +97,51 @@ function useThumbs(key: string, doc: Doc): Map<NodeId, Thumbnail | null> {
   const display = useSyncExternalStore(colourSettings.subscribe, colourSettings.get).display
   // Text's picture changes when its fonts arrive, with the document unchanged.
   const fonts = useSyncExternalStore(textEpoch.subscribe, textEpoch.get)
-  const ids = Object.values(doc.nodes)
-    .filter((n) => n.kind === 'pixel' || n.kind === 'mask' || n.kind === 'embedded' || n.kind === 'vector' || n.kind === 'boolean' || n.kind === 'text' || n.kind === 'fill' || (n.kind === 'group' && n.id !== doc.root))
-    .map((n) => n.id)
-  const colourKey = `${doc.mode}/${doc.depth}/${JSON.stringify(doc.profile)}/${display}/${doc.width}x${doc.height}`
-  const wanted = ids.map((id) => `${id}:${contentKey(doc, id)}:${colourKey}${doc.nodes[id].kind === 'text' || doc.nodes[id].kind === 'embedded' || doc.nodes[id].kind === 'group' ? `:${fonts}` : ''}`)
-  const signature = wanted.join('|')
+  // Worked out once per document state, not on every render of the panel.
+  const { ids, wanted, signature } = useMemo(() => {
+    const ids = Object.values(doc.nodes)
+      .filter((n) => n.kind === 'pixel' || n.kind === 'mask' || n.kind === 'embedded' || n.kind === 'vector' || n.kind === 'boolean' || n.kind === 'text' || n.kind === 'fill' || n.kind === 'symbol' || (n.kind === 'group' && n.id !== doc.root))
+      .map((n) => n.id)
+    const colourKey = `${doc.mode}/${doc.depth}/${JSON.stringify(doc.profile)}/${display}/${doc.width}x${doc.height}`
+    const seen = new Map<NodeId, string>()
+    const wanted = new Map(ids.map((id) => [id, `${id}:${contentKey(doc, id, seen)}:${colourKey}${doc.nodes[id].kind === 'text' || doc.nodes[id].kind === 'embedded' || doc.nodes[id].kind === 'group' ? `:${fonts}` : ''}`]))
+    return { ids: new Set(ids), wanted, signature: [...wanted.values()].join('|') }
+  }, [doc, display, fonts])
   useEffect(() => {
     let live = true
-    const stale = ids.filter((id, i) => have.current.get(id) !== wanted[i])
+    const stale = [...ids].filter((id) => have.current.get(id) !== wanted.get(id))
     if (!stale.length) {
-      if (thumbs.size !== ids.length) setThumbs((t) => new Map([...t].filter(([id]) => ids.includes(id))))
+      if (thumbs.size !== ids.size) setThumbs((t) => new Map([...t].filter(([id]) => ids.has(id))))
       return
     }
-    const timer = setTimeout(() => {
+    // The canvas comes first: thumbnails wait until it's drawn what it has to
+    // (a document just opened, the view just moved), or two seconds, and are
+    // made a few at a time, so frames get in between and a few hundred
+    // layers' thumbnails don't hold the canvas still while they're made.
+    const canvasFirst = (first: boolean) => (first || engine().getState().pending > 0 ? Promise.race([engine().whenDrawn(), new Promise((r) => setTimeout(r, 2000))]) : Promise.resolve())
+    const load = async () => {
       const size = Math.round(THUMB * devicePixelRatio)
-      void engine()
-        .call('render.thumbnails', { key, nodes: stale, size })
-        .then((got) => {
+      try {
+        for (let i = 0; i < stale.length && live; i += THUMBS_AT_ONCE) {
+          await canvasFirst(i === 0)
+          if (!live) return
+          const some = stale.slice(i, i + THUMBS_AT_ONCE)
+          const got = await engine().call('render.thumbnails', { key, nodes: some, size })
           if (!live) return
           setThumbs((t) => {
-            const m = new Map([...t].filter(([id]) => ids.includes(id)))
-            for (const id of stale) {
+            const m = new Map([...t].filter(([id]) => ids.has(id)))
+            for (const id of some) {
               m.set(id, got[id] ?? null)
-              have.current.set(id, wanted[ids.indexOf(id)])
+              have.current.set(id, wanted.get(id)!)
             }
             return m
           })
-        })
-        .catch(() => {})
-    }, 120)
+        }
+      } catch {
+        // The document went, or the engine did: the next change asks again.
+      }
+    }
+    const timer = setTimeout(() => void load(), 120)
     return () => {
       live = false
       clearTimeout(timer)
@@ -152,7 +186,10 @@ interface Props {
   onDelete(): void
 }
 
-export function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany, onMaskClick, onToggleEffect, onStyle, onToggleVisible, onSolo, onToggleLock, onDuplicate, onDeleteLayer, onToggleFold, onRename, onMove, onNewLayer, onNewAdjustment, onDuplicateSelected, onDelete }: Props) {
+/** What the panel asks for: the app gives the same functions every render (lib/stable.ts), so the memoised panel draws again only for its document. */
+export type LayerActions = Omit<Props, 'doc' | 'renaming'>
+
+export const LayersPanel = memo(function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany, onMaskClick, onToggleEffect, onStyle, onToggleVisible, onSolo, onToggleLock, onDuplicate, onDeleteLayer, onToggleFold, onRename, onMove, onNewLayer, onNewAdjustment, onDuplicateSelected, onDelete }: Props) {
   const present = doc.history.present
   const rows = layerRows(present, doc.folded)
   const thumbs = useThumbs(doc.key, present)
@@ -254,7 +291,9 @@ export function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany,
     // so the Properties panel goes back to the document.
     <div className="layers" onPointerDown={(e) => e.target === e.currentTarget && onSelect(null)}>
       {rows.length === 0 ? (
-        <p className="panel-empty">No layers yet. Layer → New Pixel Layer adds one, and File → Import as Layer brings in an image.</p>
+        <p className="panel-empty">
+          No layers <Hint text="Layer → New Pixel Layer adds one, and File → Import as Layer brings in an image." />
+        </p>
       ) : (
         <ul
           ref={list}
@@ -313,21 +352,26 @@ export function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany,
                   {hasKids ? <Icon name={folded ? 'layer.fold-closed' : 'layer.fold-open'} /> : ''}
                 </button>
                 {clipped && (
-                  <span className="layer-clip" title="Clipped to the layer below" aria-label="Clipped">
+                  <span className="layer-clip" data-tip="Clipped to the layer below" aria-label="Clipped">
                     <Icon name="layer.clipped" />
                   </span>
                 )}
                 {operand && (
-                  <span className="layer-op" data-op={operandOp(operand, node.id)} title={OP_TITLES[operandOp(operand, node.id)]} aria-label={OP_TITLES[operandOp(operand, node.id)]}>
+                  <span className="layer-op" data-op={operandOp(operand, node.id)} data-tip={OP_TITLES[operandOp(operand, node.id)]} aria-label={OP_TITLES[operandOp(operand, node.id)]}>
                     <Icon name={OP_ICONS[operandOp(operand, node.id)]} />
                   </span>
                 )}
-                {(node.kind === 'pixel' || node.kind === 'group' || node.kind === 'embedded' || node.kind === 'vector' || node.kind === 'boolean' || node.kind === 'text' || node.kind === 'fill') && (
+                {(node.kind === 'pixel' || node.kind === 'group' || node.kind === 'embedded' || node.kind === 'vector' || node.kind === 'boolean' || node.kind === 'text' || node.kind === 'fill' || node.kind === 'symbol') && (
                   <span
                     className={`layer-part${selected && !onMask && !onVmask && (mask || vmask) ? ' target' : ''}${node.kind === 'embedded' ? ' smart' : ''}`}
                     data-part="content"
-                    title={node.kind === 'embedded' ? 'Smart object: Layer → Smart Objects → Edit Contents opens it' : undefined}
+                    data-tip={node.kind === 'embedded' ? 'Smart object: Layer → Smart Objects → Edit Contents opens it.' : undefined}
                     {...peek.hover(node.id, node.name)}
+                    onDoubleClick={(e) => {
+                      // The thumbnail frames the layer; the rest of the row renames it.
+                      e.stopPropagation()
+                      void zoomToLayer(node.id)
+                    }}
                   >
                     <LayerThumb thumb={thumbs.get(node.id)} group={node.kind === 'group'} />
                   </span>
@@ -342,7 +386,7 @@ export function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany,
                     className={`layer-part mask${onMask ? ' target' : ''}${mask.visible ? '' : ' disabled'}`}
                     data-part="mask"
                     data-mask={mask.id}
-                    title={`Layer mask${mask.visible ? '' : ' (off)'}. Click to paint on it; Shift-click turns it ${mask.visible ? 'off' : 'on'}; Ctrl-click loads it as the selection.`}
+                    data-tip={`Layer mask${mask.visible ? '' : ' (off)'}. Click to paint on it; Shift-click turns it ${mask.visible ? 'off' : 'on'}; Ctrl-click loads it as the selection.`}
                     {...peek.hover(mask.id, `${node.name}: layer mask`)}
                     onPointerDown={(e) => {
                       if (!e.shiftKey && !e.ctrlKey && !e.metaKey) return
@@ -358,7 +402,7 @@ export function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany,
                     className={`layer-part mask vector${onVmask ? ' target' : ''}${vmask.visible ? '' : ' disabled'}`}
                     data-part="vmask"
                     data-mask={vmask.id}
-                    title={`Vector mask${vmask.visible ? '' : ' (off)'}. Click to edit its outline with the Pen and Direct Selection; Shift-click turns it ${vmask.visible ? 'off' : 'on'}.`}
+                    data-tip={`Vector mask${vmask.visible ? '' : ' (off)'}. Click to edit its outline with the Pen and Direct Selection; Shift-click turns it ${vmask.visible ? 'off' : 'on'}.`}
                     onPointerDown={(e) => {
                       if (!e.shiftKey) return
                       e.stopPropagation()
@@ -383,7 +427,7 @@ export function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany,
                   <button
                     type="button"
                     className="layer-fx"
-                    title="Layer style: double-click to change it"
+                    data-tip="Layer style: double-click to change it"
                     aria-label={`Layer style of ${node.name}`}
                     onPointerDown={(e) => e.stopPropagation()}
                     onDoubleClick={(e) => {
@@ -394,7 +438,7 @@ export function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany,
                     fx
                   </button>
                 )}
-                <span className="layer-kind">{node.kind === 'adjustment' ? adjustmentLabel(node) : nodeDef(node.kind).label}</span>
+                <span className="layer-kind">{node.kind === 'adjustment' ? adjustmentLabel(node) : isArtboard(node) ? 'Artboard' : nodeDef(node.kind).label}</span>
                 <span className={`layer-actions${node.locked.all ? ' locked' : ''}`}>
                   <RowAction label={node.locked.all ? `Unlock ${node.name}` : `Lock ${node.name}`} tip={node.locked.all ? 'Unlock' : 'Lock'} action="lock" pressed={node.locked.all} onAct={() => onToggleLock(node.id)}>
                     <Icon name={node.locked.all ? 'layer.locked' : 'layer.unlocked'} />
@@ -459,7 +503,7 @@ export function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany,
       {peek.view && createPortal(peek.view, document.body)}
     </div>
   )
-}
+})
 
 /** One of the icon buttons along the panel's foot; `why` disables it and says why. */
 function FootButton({ action, label, icon, why = null, onClick }: { action: string; label: string; icon: IconName; why?: string | null; onClick(e: React.MouseEvent<HTMLButtonElement>): void }) {
@@ -600,7 +644,10 @@ function LayerThumb({ thumb, group }: { thumb: Thumbnail | null | undefined; gro
     c.width = thumb.width
     c.height = thumb.height
     const space = display === 'display-p3' ? 'display-p3' : 'srgb'
-    const ctx = c.getContext('2d', { colorSpace: space })
+    // Kept on the CPU (willReadFrequently): a canvas on the GPU is a
+    // composited layer of its own, and two hundred thumbnails made every
+    // change to the page cost about 10 ms of working out layers.
+    const ctx = c.getContext('2d', { colorSpace: space, willReadFrequently: true })
     if (!ctx) return
     ctx.putImageData(new ImageData(new Uint8ClampedArray(thumb.data), thumb.width, thumb.height, { colorSpace: space }), 0, 0)
   }, [thumb, display])

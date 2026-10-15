@@ -193,7 +193,7 @@ const LOREM =
     })
     return a + (310 - right) ** 2
   }, 0)
-  check('the every-line composer leaves a less ragged edge than the single-line one', rag(best) <= rag(greedy) + 1e-6, `${fmt(rag(best))} against ${fmt(rag(greedy))}`)
+  check('the every-line composer leaves a less ragged edge than the single-line one', rag(best) < rag(greedy) - 1e-6, `${fmt(rag(best))} against ${fmt(rag(greedy))}`)
   check('the first baseline is a line’s ascent below the frame’s top', Math.abs(best.lines[0].baseline - (20 + (1984 / 2048) * 20)) < 1e-6)
   const just = lay(styleParagraphs(contentFrom(LOREM, { size: 20 }), 0, 0, { align: 'justify' }), 'area', frame)
   const rightEdge = (ln: TextLayout['lines'][number]) => Math.max(...ln.boxes.map(([, b], i) => (/\s/.test(LOREM[ln.start + i]) ? -Infinity : b)))
@@ -279,6 +279,34 @@ const LOREM =
 }
 
 // --- fonts in documents ------------------------------------------------------------------------
+console.log('\nlaying out again after an edit')
+{
+  // A long story, justified in a frame: laid out, one paragraph edited, laid out again. Paragraphs
+  // the edit didn't touch are kept from the first layout; the result must be what laying out a
+  // copy that shares nothing gives.
+  const story = styleParagraphs(contentFrom(Array.from({ length: 120 }, (_, i) => `${i}. ${LOREM}`).join('\n'), { size: 14 }), 0, 119, { align: 'justify' })
+  const frame = rect(0, 0, 600, 100000)
+  const timed = (fn: () => void) => {
+    const t = performance.now()
+    fn()
+    return performance.now() - t
+  }
+  const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
+  lay(story, 'area', frame)
+  let edited = story
+  let again = lay(edited, 'area', frame)
+  // Medians of three each, so one slow run (the machine busy, the JIT warming) can't decide it.
+  const afterEdits = [0, 1, 2].map((k) => timed(() => {
+    edited = replaceRange(edited, 60 + k, 60 + k, 'An edit. ')
+    again = lay(edited, 'area', frame)
+  }))
+  const fromNothing = [0, 1, 2].map(() => timed(() => lay(structuredClone(edited), 'area', frame)))
+  const fresh = lay(structuredClone(edited), 'area', frame)
+  const same = again.glyphs.placements.length === fresh.glyphs.placements.length && again.glyphs.placements.every((v, i) => v === fresh.glyphs.placements[i]) && again.lines.length === fresh.lines.length
+  check('an edit lays out the same as laying the result out afresh', same, `${again.lines.length} lines`)
+  check('and only the edited paragraph is shaped again', median(afterEdits) < median(fromNothing) * 0.75, `from nothing ${median(fromNothing).toFixed(0)} ms, after an edit ${median(afterEdits).toFixed(0)} ms`)
+}
+
 console.log('\nfonts in documents')
 {
   const noto = new Uint8Array(readFileSync('scripts/fixtures/fonts/NotoSansArabic-Regular.ttf'))

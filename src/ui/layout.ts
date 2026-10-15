@@ -32,7 +32,13 @@ export interface PanelGroup {
   active: PanelId
   /** Folded down to its tabs. */
   collapsed: boolean
-  /** Its height, when one has been dragged; null takes the height of what's in it. */
+  /**
+   * Its share of its column's height, when a divider has been dragged:
+   * docked groups with one share the room left by the others in
+   * proportion, so a column keeps its look as the window changes size. Null
+   * takes the height of what's in it (or, last in a column of those, the
+   * room left). A floating window's groups don't use it.
+   */
   height: number | null
 }
 
@@ -81,18 +87,18 @@ export interface Layout {
 export const COLUMN_MIN = 220
 export const COLUMN_MAX = 560
 export const COLUMN_DEFAULT = 300
-export const GROUP_MIN = 60
-export const GROUP_MAX = 2000
-export const FLOAT_MIN_WIDTH = 200
-export const FLOAT_MAX_WIDTH = 900
-export const FLOAT_MIN_HEIGHT = 80
+const GROUP_MIN = 60
+const GROUP_MAX = 2000
+const FLOAT_MIN_WIDTH = 200
+const FLOAT_MAX_WIDTH = 900
+const FLOAT_MIN_HEIGHT = 80
 
 const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(hi, Math.max(lo, v)))
-export const clampColumn = (w: number) => clamp(w, COLUMN_MIN, COLUMN_MAX)
-export const clampGroupHeight = (h: number) => clamp(h, GROUP_MIN, GROUP_MAX)
-export const clampFloatWidth = (w: number) => clamp(w, FLOAT_MIN_WIDTH, FLOAT_MAX_WIDTH)
+const clampColumn = (w: number) => clamp(w, COLUMN_MIN, COLUMN_MAX)
+const clampGroupHeight = (h: number) => clamp(h, GROUP_MIN, GROUP_MAX)
+const clampFloatWidth = (w: number) => clamp(w, FLOAT_MIN_WIDTH, FLOAT_MAX_WIDTH)
 
-export const group = (panels: PanelId[], active: PanelId = panels[0]): PanelGroup => ({ panels, active, collapsed: false, height: null })
+const group = (panels: PanelId[], active: PanelId = panels[0]): PanelGroup => ({ panels, active, collapsed: false, height: null })
 
 /** One column on the right with a group per panel, in the order given: the shape of the task workspaces. */
 export function columnLayout(panels: PanelId[], width = COLUMN_DEFAULT): Layout {
@@ -107,7 +113,7 @@ export const emptyLayout = (): Layout => ({ left: [], right: [], floats: [], clo
 export type Place = { where: 'dock'; side: Side; col: number; index: number; group: PanelGroup } | { where: 'float'; index: number; sub: number; group: PanelGroup }
 
 /** Every group, docked and floating, with where it is. */
-export function groups(l: Layout): Place[] {
+function groups(l: Layout): Place[] {
   const out: Place[] = []
   for (const side of ['left', 'right'] as const) l[side].forEach((c, col) => c.groups.forEach((group, index) => out.push({ where: 'dock', side, col, index, group })))
   l.floats.forEach((f, index) => f.groups.forEach((group, sub) => out.push({ where: 'float', index, sub, group })))
@@ -132,7 +138,7 @@ export const hasDocked = (l: Layout) => l.left.length > 0 || l.right.length > 0
 // --- changing groups in place -------------------------------------------------------
 
 /** The layout with the group holding `id` changed by `f`; the same layout when it isn't open. */
-export function updateGroup(l: Layout, id: PanelId, f: (g: PanelGroup) => PanelGroup): Layout {
+function updateGroup(l: Layout, id: PanelId, f: (g: PanelGroup) => PanelGroup): Layout {
   const p = find(l, id)
   if (!p) return l
   if (p.where === 'float') return { ...l, floats: l.floats.map((w, i) => (i === p.index ? { ...w, groups: w.groups.map((g, gi) => (gi === p.sub ? f(g) : g)) } : w)) }
@@ -144,6 +150,23 @@ export function updateGroup(l: Layout, id: PanelId, f: (g: PanelGroup) => PanelG
 
 export const toggleCollapsed = (l: Layout, id: PanelId) => updateGroup(l, id, (g) => ({ ...g, collapsed: !g.collapsed }))
 export const setGroupHeight = (l: Layout, id: PanelId, h: number | null) => updateGroup(l, id, (g) => ({ ...g, height: h === null ? null : clampGroupHeight(h) }))
+
+/**
+ * Sets the heights of a docked column's groups at once, top to bottom, as a
+ * drag on the divider between two does (each its share of the column).
+ */
+export function setColumnHeights(l: Layout, side: Side, col: number, heights: (number | null)[]): Layout {
+  const c = l[side][col]
+  if (!c || heights.length !== c.groups.length) return l
+  return { ...l, [side]: l[side].map((x, i) => (i === col ? { ...x, groups: x.groups.map((g, gi) => ({ ...g, height: heights[gi] === null ? null : clampGroupHeight(heights[gi]!) })) } : x)) }
+}
+
+/** Every group in a docked column back to the height of what's in it. */
+export function fitColumn(l: Layout, side: Side, col: number): Layout {
+  const c = l[side][col]
+  if (!c) return l
+  return setColumnHeights(l, side, col, c.groups.map(() => null))
+}
 
 /** Brings a tab to the front of its group, and unfolds the group. */
 export const activate = (l: Layout, id: PanelId) => updateGroup(l, id, (g) => (g.active === id && !g.collapsed ? g : { ...g, active: id, collapsed: false }))
@@ -394,7 +417,7 @@ export function moveWindow(l: Layout, index: number, t: Target): Layout {
   return out
 }
 
-export function moveFloat(l: Layout, index: number, x: number, y: number): Layout {
+function moveFloat(l: Layout, index: number, x: number, y: number): Layout {
   return { ...l, floats: l.floats.map((f, i) => (i === index ? { ...f, x: Math.round(x), y: Math.round(y) } : f)) }
 }
 

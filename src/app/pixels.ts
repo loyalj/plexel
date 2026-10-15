@@ -23,7 +23,7 @@ const keepers: (() => Iterable<string>)[] = []
 export const keepAlive = (fn: () => Iterable<string>) => keepers.push(fn)
 
 /** Every set any open document's history refers to, and every set kept alive besides. */
-export function liveSets(): Set<string> {
+function liveSets(): Set<string> {
   const live = new Set<string>()
   for (const fn of keepers) for (const id of fn()) live.add(id)
   for (const d of documents().getState().docs) {
@@ -58,16 +58,46 @@ export function hold(ids: Iterable<string>): () => void {
  * image each hold on to the tiles they replaced, and a hundred of them
  * could otherwise fill the disk the tile store spills to.
  */
-export const HISTORY_BYTES = 1024 * 1024 * 1024
+const HISTORY_BYTES = 1024 * 1024 * 1024
 
-/** Trims each document's history to HISTORY_BYTES (check-paint lowers it), oldest steps first. */
+/** Strings this long or longer count against history; shorter ones (names, settings) are noise. */
+const LONG_STRING = 1024
+const heavy = new WeakMap<object, number>()
+
+/** The bytes of a value's long strings, all the way down (a node's parameters, effects, smart object contents), kept by object. */
+function heavyBytes(v: unknown): number {
+  if (typeof v === 'string') return v.length >= LONG_STRING ? v.length : 0
+  if (!v || typeof v !== 'object') return 0
+  const had = heavy.get(v)
+  if (had !== undefined) return had
+  let n = 0
+  for (const x of Array.isArray(v) ? v : Object.values(v)) n += heavyBytes(x)
+  heavy.set(v, n)
+  return n
+}
+
+/**
+ * What a past state holds, outside tiles, that the state after it doesn't:
+ * its nodes that the next step replaced (unchanged nodes are the same
+ * objects in both), by their long strings.
+ */
+function stepBytes(older: Doc, newer: Doc): number {
+  let n = 0
+  for (const [id, node] of Object.entries(older.nodes)) if (newer.nodes[id] !== node) n += heavyBytes(node)
+  return n
+}
+
+/** Trims each document's history to HISTORY_BYTES (check-paint lowers it), oldest steps first, counting tiles and what else steps hold (stepBytes). */
 async function capHistory() {
   for (const d of documents().getState().docs) {
     const h = d.history
     if (!h.past.length) continue
     const kept = [...tileSetsOf(h.present), ...h.future.flatMap(tileSetsOf), ...(d.saved ? tileSetsOf(d.saved) : [])]
-    const past = [...h.past].reverse().map(tileSetsOf)
+    const newestFirst = [...h.past].reverse()
+    const past = newestFirst.map(tileSetsOf)
     const cost = await engine().call('tiles.historyCost', { past, kept })
+    // What a step holds that isn't tiles: a Liquify field, say, half a megabyte of text a stroke.
+    newestFirst.forEach((older, i) => (cost[i] += stepBytes(older, i ? newestFirst[i - 1] : h.present)))
     let total = 0
     let keep = cost.length
     const cap = (globalThis as { plexelHistoryBytes?: number }).plexelHistoryBytes ?? HISTORY_BYTES
@@ -82,10 +112,11 @@ async function capHistory() {
   }
 }
 
-export async function collectNow() {
+async function collectNow() {
   if (gcTimer) clearTimeout(gcTimer)
   gcTimer = null
-  await capHistory().catch(() => {})
+  // A failure here keeps more history than it should, not less: said, and collection goes on.
+  await capHistory().catch((e) => console.warn('History couldn’t be trimmed:', e))
   const live = liveSets()
   for (const id of held.keys()) live.add(id)
   return engine().call('tiles.gc', { live: [...live] })
@@ -95,7 +126,7 @@ export async function collectNow() {
 export function startCollecting() {
   return documents().subscribe(() => {
     if (gcTimer) clearTimeout(gcTimer)
-    gcTimer = setTimeout(() => void collectNow().catch(() => {}), GC_MS)
+    gcTimer = setTimeout(() => void collectNow().catch((e) => console.warn('Unused tiles couldn’t be collected:', e)), GC_MS)
   })
 }
 

@@ -15,8 +15,9 @@ import { defaultColour, readColour, type ParamColour } from './params'
 import { isObject, type Warn } from './read'
 import type { Anchor, FillRule, PathData, Pt, Subpath } from '../geom/path'
 import { shapePath, readShape, type ShapeParams } from '../geom/shapes'
-import type { Cap, Join, StrokeStyle } from '../geom/stroke'
+import { ARROW_SHAPES, type Arrowhead, type Cap, type Join, type StrokeStyle, type WidthPoint } from '../geom/stroke'
 import { readItemEffects, type ItemEffect } from '../vector/itemEffects'
+import { mapBrushPaints, readBrush, type VectorBrush } from './vectorBrush'
 
 export type Geometry = { kind: 'path'; path: PathData } | { kind: 'shape'; shape: ShapeParams }
 
@@ -78,6 +79,19 @@ export interface StrokeItem extends ItemBase {
   dashOffset: number
   /** Where the stroke sits on a closed path's edge; open paths stroke on the centre. */
   align: StrokeAlign
+  /** Its width along each subpath: width points (geom/stroke.ts); absent is the same all the way. */
+  profile?: WidthPoint[]
+  /** Dashes fitted between corners, as Illustrator's "aligns dashes to corners"; absent is off. */
+  dashAlign?: boolean
+  /** Arrowheads at an open path's start and end; absent is none. */
+  start?: Arrowhead
+  end?: Arrowhead
+  /**
+   * A vector brush the stroke draws instead of its outline (doc/vectorBrush.ts),
+   * a copy of the library's; its width, profile, opacity, blend and effects
+   * still apply. Absent is a plain stroke.
+   */
+  brush?: VectorBrush
 }
 
 export type AppearanceItem = FillItem | StrokeItem
@@ -131,7 +145,41 @@ export const strokeItem = (paint: Paint, width: number): StrokeItem => ({
 })
 
 /** A stroke's geometry settings. */
-export const strokeStyleOf = (s: StrokeItem, width = s.width): StrokeStyle => ({ width, join: s.join, cap: s.cap, miter: s.miter, dash: s.dash, dashOffset: s.dashOffset })
+export const strokeStyleOf = (s: StrokeItem, width = s.width): StrokeStyle => ({
+  width,
+  join: s.join,
+  cap: s.cap,
+  miter: s.miter,
+  dash: s.dash,
+  dashOffset: s.dashOffset,
+  ...(s.profile?.length ? { profile: s.profile } : {}),
+  ...(s.dashAlign ? { dashAlign: true } : {}),
+  // A stroke twice as wide (inside or outside) keeps its heads the size the stroke's own width makes them.
+  ...(s.start ? { start: { ...s.start, scale: (s.start.scale * s.width) / (width || 1) } } : {}),
+  ...(s.end ? { end: { ...s.end, scale: (s.end.scale * s.width) / (width || 1) } } : {}),
+})
+
+/** Whether a stroke has what only an outline can show in a file: a width profile, arrowheads, dashes fitted to corners. (A brush is its own case.) */
+export const strokeNeedsOutline = (s: StrokeItem) => !s.brush && (!!s.profile?.length || !!s.start || !!s.end || (!!s.dashAlign && s.dash.length > 0))
+
+/** Width points read back: within range, in order, at most 64. */
+function readProfile(v: unknown): WidthPoint[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const out: WidthPoint[] = []
+  for (const p of v.slice(0, 64)) {
+    if (!isObject(p)) continue
+    const at = num(p.at, NaN, 0, 1)
+    if (!Number.isFinite(at)) continue
+    out.push({ at, left: num(p.left, 1, 0, 50), right: num(p.right, num(p.left, 1, 0, 50), 0, 50) })
+  }
+  out.sort((a, b) => a.at - b.at)
+  return out.length ? out : undefined
+}
+
+function readArrow(v: unknown): Arrowhead | undefined {
+  if (!isObject(v) || !ARROW_SHAPES.some(([s]) => s === v.shape)) return undefined
+  return { shape: v.shape as Arrowhead['shape'], scale: num(v.scale, 1, 0.1, 10) }
+}
 
 // --- reading -------------------------------------------------------------------------------------
 
@@ -143,7 +191,7 @@ function readPt(v: unknown): Pt | null {
   return Array.isArray(v) && v.length === 2 && finite(v[0]) && finite(v[1]) ? [num(v[0], 0, -LIMIT, LIMIT), num(v[1], 0, -LIMIT, LIMIT)] : null
 }
 
-export function readPath(raw: unknown, warn: Warn): PathData {
+function readPath(raw: unknown, warn: Warn): PathData {
   const r = isObject(raw) ? raw : {}
   const fillRule: FillRule = r.fillRule === 'evenodd' ? 'evenodd' : 'nonzero'
   const subpaths: Subpath[] = []
@@ -232,6 +280,7 @@ export function readPaint(raw: unknown): Paint {
   return solid
 }
 
+const optional = <K extends string, V>(k: K, v: V | undefined) => (v === undefined ? {} : ({ [k]: v } as Record<K, V>))
 const isBlend = (v: unknown): v is BlendModeId => BLEND_MODES.includes(v as BlendModeId) && v !== 'pass-through'
 
 export function readAppearance(raw: unknown, warn: Warn): AppearanceItem[] {
@@ -260,17 +309,33 @@ export function readAppearance(raw: unknown, warn: Warn): AppearanceItem[] {
         dash: Array.isArray(it.dash) ? it.dash.filter(finite).map((d) => num(d, 0, 0, 10000)).slice(0, 16) : [],
         dashOffset: num(it.dashOffset, 0, -10000, 10000),
         align: ALIGNS.some(([a]) => a === it.align) ? (it.align as StrokeAlign) : 'centre',
+        ...optional('profile', readProfile(it.profile)),
+        ...(it.dashAlign === true ? { dashAlign: true } : {}),
+        ...optional('start', readArrow(it.start)),
+        ...optional('end', readArrow(it.end)),
+        ...optional('brush', readStrokeBrush(it.brush, warn)),
       })
   }
   return out
 }
+
+/** A stroke's brush read back; one that can't draw is left out (the stroke plain), and said. */
+function readStrokeBrush(v: unknown, warn: Warn): VectorBrush | undefined {
+  if (v === undefined || v === null) return undefined
+  const b = readBrush(v, brushReaders(warn))
+  if (!b) warn('a stroke’s brush was not readable; the stroke is plain')
+  return b ?? undefined
+}
+
+/** How brushes' paths and paints are read: as a shape's. */
+export const brushReaders = (warn: Warn) => ({ path: (v: unknown) => readPath(v, warn), paint: readPaint })
 
 // --- in a document's mode ----------------------------------------------------------------------
 
 const channelsOf = (mode: ColourMode) => (mode === 'rgb' ? 3 : mode === 'gray' ? 1 : 4)
 
 /** A stored colour made the shape a mode wants: a wrong count falls back to black (or white). */
-export const colourIn = (c: ParamColour, mode: ColourMode, d: 'black' | 'white' = 'black') => readColour(c, channelsOf(mode), d, mode === 'cmyk')
+const colourIn = (c: ParamColour, mode: ColourMode, d: 'black' | 'white' = 'black') => readColour(c, channelsOf(mode), d, mode === 'cmyk')
 
 export function paintIn(p: Paint, mode: ColourMode): Paint {
   switch (p.kind) {
@@ -284,7 +349,11 @@ export function paintIn(p: Paint, mode: ColourMode): Paint {
 }
 
 /** An appearance stack with every colour in the document's mode. */
-export const appearanceIn = (items: AppearanceItem[], mode: ColourMode): AppearanceItem[] => items.map((it) => ({ ...it, paint: paintIn(it.paint, mode) }))
+export const appearanceIn = (items: AppearanceItem[], mode: ColourMode): AppearanceItem[] =>
+  items.map((it) => (it.kind === 'stroke' && it.brush ? { ...it, paint: paintIn(it.paint, mode), brush: brushIn(it.brush, mode) } : { ...it, paint: paintIn(it.paint, mode) }))
+
+/** A brush with every colour in the document's mode. */
+export const brushIn = (b: VectorBrush, mode: ColourMode): VectorBrush => mapBrushPaints(b, (p) => paintIn(p, mode), (c) => colourIn(c, mode))
 
 /** A default two-stop gradient between two colours. */
 export function gradientPaint(a: ParamColour, b: ParamColour): Paint {

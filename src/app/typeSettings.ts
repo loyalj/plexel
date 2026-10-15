@@ -3,6 +3,7 @@
  * text is selected, as Photoshop's are. Kept in the browser.
  */
 import { readCharProps, readParaProps, type CharProps, type ParaProps } from '../doc/text'
+import { Listeners } from '../lib/listeners'
 
 export interface TypeSettings {
   char: Partial<CharProps>
@@ -13,7 +14,7 @@ const KEY = 'plexel.typeSettings.v1'
 
 class TypeSettingsStore {
   private state: TypeSettings
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   constructor() {
     let raw: { char?: unknown; para?: unknown } | null = null
     try {
@@ -25,10 +26,7 @@ class TypeSettingsStore {
   }
   get = () => this.state
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
   update(patch: { char?: Partial<CharProps>; para?: Partial<ParaProps> }) {
     this.state = { char: { ...this.state.char, ...patch.char }, para: { ...this.state.para, ...patch.para } }
@@ -37,7 +35,7 @@ class TypeSettingsStore {
     } catch {
       // Not remembered; still used.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 }
 

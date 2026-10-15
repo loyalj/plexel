@@ -10,7 +10,7 @@ import type { DocNode, NodeId } from '../doc/types'
 import { makeNode } from '../doc/nodes'
 import { TILE, TILE_PIXELS } from '../tiles/format'
 import { NotReady } from './residency'
-import type { Rect } from './scene'
+import type { Rect, SceneChannel } from './scene'
 import type { Renderer } from './renderer'
 import { tileBufferBytes } from './shaders/common'
 import type { DisplayProfileId } from '../color/profiles'
@@ -37,6 +37,101 @@ async function retry<T>(fn: () => T): Promise<T> {
       await Promise.allSettled(e.waits)
     }
   }
+}
+
+/**
+ * A band of `cols` tiles rendered (`renderOne` for each, null where there's
+ * nothing) and copied into one staging buffer, tried again while tiles come
+ * back from disk; then mapped. Returns the buffer, which tiles were drawn,
+ * and the mapping, to wait for when the caller wants the bytes (several
+ * bands can be in flight). The caller destroys the buffer.
+ */
+async function renderBand(r: Renderer, label: string, cols: number, tileBytes: number, renderOne: (tx: number, enc: GPUCommandEncoder) => GPUBuffer | null) {
+  const staging = r.device.createBuffer({ label, size: tileBytes * cols, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+  const present: boolean[] = []
+  try {
+    await retry(() => {
+      present.length = 0
+      const enc = r.beginWork()
+      try {
+        for (let tx = 0; tx < cols; tx++) {
+          const buf = renderOne(tx, enc)
+          present.push(!!buf)
+          if (!buf) continue
+          enc.copyBufferToBuffer(buf, 0, staging, tx * tileBytes, tileBytes)
+          r.bufferPool.release(buf)
+        }
+      } finally {
+        r.finishWork(enc)
+      }
+    })
+  } catch (e) {
+    staging.destroy()
+    throw e
+  }
+  return { staging, present, mapped: staging.mapAsync(GPUMapMode.READ) }
+}
+
+/**
+ * An alpha or spot channel's coverage over the canvas at a mip level, as
+ * the canvas shows it (through its transform, from its mips), one byte a
+ * pixel: for the Magic Wand and the Paint Bucket on a channel, and its
+ * thumbnail.
+ */
+export async function readCover8(r: Renderer, key: string, c: SceneChannel, level: number): Promise<{ width: number; height: number; data: Uint8Array }> {
+  const s = r.docState(key)
+  const doc = s?.scene.doc
+  if (!s || !doc) throw new Error('That document isn’t in the engine')
+  const span = 2 ** level
+  const width = Math.max(1, Math.ceil(doc.width / span))
+  const height = Math.max(1, Math.ceil(doc.height / span))
+  const cols = Math.ceil(width / TILE)
+  const tileBytes = TILE_PIXELS * 4
+  const data = new Uint8Array(width * height)
+  for (let ty = 0; ty < Math.ceil(height / TILE); ty++) {
+    const staging = r.device.createBuffer({ label: 'channel band', size: tileBytes * cols, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
+    try {
+      const constants: (number | null)[] = []
+      await retry(() => {
+        constants.length = 0
+        const enc = r.beginWork()
+        try {
+          for (let tx = 0; tx < cols; tx++) {
+            const v = r.channelTile(r.job(s, level, tx, ty, enc), c)
+            if (typeof v === 'number') {
+              constants.push(v)
+              continue
+            }
+            constants.push(null)
+            enc.copyBufferToBuffer(v, 0, staging, tx * tileBytes, tileBytes)
+            r.releaseCover(v)
+          }
+        } finally {
+          r.finishWork(enc)
+        }
+      })
+      await staging.mapAsync(GPUMapMode.READ)
+      const f = new Float32Array(staging.getMappedRange())
+      const rows = Math.min(TILE, height - ty * TILE)
+      for (let tx = 0; tx < cols; tx++) {
+        const k = constants[tx]
+        const w = Math.min(TILE, width - tx * TILE)
+        for (let y = 0; y < rows; y++) {
+          const o = (ty * TILE + y) * width + tx * TILE
+          if (k !== null) {
+            data.fill(Math.round(Math.min(1, Math.max(0, k)) * 255), o, o + w)
+            continue
+          }
+          const b = tx * TILE_PIXELS + y * TILE
+          for (let x = 0; x < w; x++) data[o + x] = Math.round(Math.min(1, Math.max(0, f[b + x])) * 255)
+        }
+      }
+      staging.unmap()
+    } finally {
+      staging.destroy()
+    }
+  }
+  return { width, height, data }
 }
 
 /**
@@ -173,26 +268,9 @@ export async function* compositeBands(r: Renderer, key: string): AsyncGenerator<
   const stride = format.mode === 'rgb' ? 4 : format.mode === 'gray' ? 2 : 5
   const tileBytes = tileBufferBytes(format)
   const cols = Math.ceil(doc.width / TILE)
-  const device = r.device
   for (let ty = 0; ty < Math.ceil(doc.height / TILE); ty++) {
-    const staging = device.createBuffer({ label: 'export band', size: tileBytes * cols, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
-    const present: boolean[] = []
-    await retry(() => {
-      present.length = 0
-      const enc = r.beginWork()
-      try {
-        for (let tx = 0; tx < cols; tx++) {
-          const buf = r.renderTile(r.job(s, 0, tx, ty, enc))
-          present.push(!!buf)
-          if (!buf) continue
-          enc.copyBufferToBuffer(buf, 0, staging, tx * tileBytes, tileBytes)
-          r.bufferPool.release(buf)
-        }
-      } finally {
-        r.finishWork(enc)
-      }
-    })
-    await staging.mapAsync(GPUMapMode.READ)
+    const { staging, present, mapped } = await renderBand(r, 'export band', cols, tileBytes, (tx, enc) => r.renderTile(r.job(s, 0, tx, ty, enc)))
+    await mapped
     const raw = staging.getMappedRange()
     const f16 = format.store === 'f16'
     const src16 = f16 ? new Uint16Array(raw) : null
@@ -302,29 +380,14 @@ export async function readPixels8(r: Renderer, key: string, node: NodeId | null,
   const tileBytes = tileBufferBytes(format)
   const cols = Math.ceil(width / TILE)
   const data = new Uint8Array(width * height * stride)
-  const device = r.device
   const cmyk = doc.mode === 'cmyk'
   for (let ty = 0; ty < Math.ceil(height / TILE); ty++) {
-    const staging = device.createBuffer({ label: 'wand band', size: tileBytes * cols, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
-    const present: boolean[] = []
+    const { staging, present, mapped } = await renderBand(r, 'wand band', cols, tileBytes, (tx, enc) => {
+      const job = r.job(s, level, tx, ty, enc)
+      return node ? r.renderNodeTile(job, node) : r.renderTile(job)
+    })
     try {
-      await retry(() => {
-        present.length = 0
-        const enc = r.beginWork()
-        try {
-          for (let tx = 0; tx < cols; tx++) {
-            const job = r.job(s, level, tx, ty, enc)
-            const buf = node ? r.renderNodeTile(job, node) : r.renderTile(job)
-            present.push(!!buf)
-            if (!buf) continue
-            enc.copyBufferToBuffer(buf, 0, staging, tx * tileBytes, tileBytes)
-            r.bufferPool.release(buf)
-          }
-        } finally {
-          r.finishWork(enc)
-        }
-      })
-      await staging.mapAsync(GPUMapMode.READ)
+      await mapped
       const raw = staging.getMappedRange()
       const f16 = format.store === 'f16'
       const src16 = f16 ? new Uint16Array(raw) : null
@@ -427,29 +490,7 @@ export async function readTiles(
   }
   try {
     for (let ty = ty0; ty <= ty1; ty++) {
-      const staging = r.device.createBuffer({ label: 'tiles band', size: tileBytes * cols, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST })
-      const present: boolean[] = []
-      try {
-        await retry(() => {
-          present.length = 0
-          const enc = r.beginWork()
-          try {
-            for (let tx = tx0; tx <= tx1; tx++) {
-              const buf = renderOne(r.job(s, 0, tx, ty, enc))
-              present.push(!!buf)
-              if (!buf) continue
-              enc.copyBufferToBuffer(buf, 0, staging, (tx - tx0) * tileBytes, tileBytes)
-              r.bufferPool.release(buf)
-            }
-          } finally {
-            r.finishWork(enc)
-          }
-        })
-      } catch (e) {
-        staging.destroy()
-        throw e
-      }
-      inFlight.push({ ty, staging, present, mapped: staging.mapAsync(GPUMapMode.READ) })
+      inFlight.push({ ty, ...(await renderBand(r, 'tiles band', cols, tileBytes, (tx, enc) => renderOne(r.job(s, 0, tx0 + tx, ty, enc)))) })
       if (inFlight.length >= READ_AHEAD) await settle()
     }
     while (inFlight.length) await settle()
@@ -464,22 +505,23 @@ export const tileRange = (b: Rect): [number, number, number, number] => [Math.fl
 /**
  * Rasterize: a pixel layer drawn through its live transform, with its own
  * resampling, into new tiles on the document's grid, in the document's own
- * numbers; or a smart object's contents, drawn the same way. The layer then
+ * numbers; or a smart object's contents (or a symbol instance's layers), drawn the same way. The layer then
  * has no transform to carry. Tiles left fully transparent aren't kept.
  */
 export async function rasterizeNode(r: Renderer, store: TileStore, key: string, nodeId: NodeId): Promise<string | null> {
   const s = r.docState(key)
   const doc = s?.scene.doc
   const node = s?.scene.node(nodeId)
-  if (!s || !doc || !node || !['pixel', 'embedded', 'vector', 'boolean', 'text', 'fill'].includes(node.kind)) throw new Error('Rasterize needs a pixel layer, a smart object, a shape, text or a fill layer')
+  if (!s || !doc || !node || !['pixel', 'embedded', 'vector', 'boolean', 'text', 'fill', 'group'].includes(node.kind)) throw new Error('Rasterize needs a pixel layer, a smart object, a shape, text or a fill layer')
   // A fill layer has no edge: it's rasterized over the canvas.
-  const b = node.kind === 'fill' ? s.scene.canvas : s.scene.contentBounds(node, false)
+  const b = node.kind === 'fill' ? s.scene.canvas : node.kind === 'group' ? s.scene.bounds(nodeId) : s.scene.contentBounds(node, false)
   if (!b) return null
   const f: TileFormat = { mode: doc.mode, depth: doc.depth }
   // Kept as samples until the read is done, then made tiles and a set in one go: a tile made
   // earlier would belong to no set while the reads wait, and a collection meanwhile would take it.
   const read: [number, number, Samples][] = []
-  await readTiles(r, s, tileRange(b), (job) => r.renderContentTile(job, nodeId), (tx, ty, samples) => read.push([tx, ty, samples]))
+  // A group (a symbol instance, as the page sends it) is its layers drawn together.
+  await readTiles(r, s, tileRange(b), (job) => (node.kind === 'group' ? r.renderNodeTile(job, nodeId) : r.renderContentTile(job, nodeId)), (tx, ty, samples) => read.push([tx, ty, samples]))
   return read.length ? store.createSet(f, read.map(([tx, ty, samples]) => [tx, ty, store.data(f, samples)])) : null
 }
 
@@ -497,7 +539,7 @@ let bakes = 0
  * pixels) from the document's corner: the same pixels, in the layer's own
  * tiles. Transparent pixels are skipped, as new tiles start transparent.
  */
-export function shiftTiles(src: Map<string, Samples>, f: TileFormat, dx: number, dy: number): Map<string, Samples> {
+function shiftTiles(src: Map<string, Samples>, f: TileFormat, dx: number, dy: number): Map<string, Samples> {
   const out = new Map<string, Samples>()
   if (dx % TILE === 0 && dy % TILE === 0) {
     for (const [k, s] of src) {

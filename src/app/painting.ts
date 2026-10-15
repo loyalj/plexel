@@ -8,16 +8,21 @@
  * everything else, and hands back a new tile set when the pen lifts, which
  * is committed like any edit: one step in the history, named for the tool.
  *
- * What's painted: in Quick Mask, the selection itself; with the layer's
- * mask as the target, the mask; otherwise the layer's pixels. On a mask or
- * the selection the colours are gray levels (white shows or selects, black
- * hides or deselects), and the Eraser paints the background colour, as in
- * Photoshop. Anything but the selection itself is confined to the
- * selection when there is one.
+ * What's painted: in Quick Mask, the selection itself; with an alpha or
+ * spot channel targeted in the Channels panel, that channel; with the
+ * layer's mask as the target, the mask; otherwise the layer's pixels (only
+ * the colour channels targeted, when only some are). On a mask, a channel
+ * or the selection the colours are gray levels (white shows or selects,
+ * black hides or deselects; on a spot channel black is ink), and the
+ * Eraser paints the background colour, as in Photoshop; so it does on
+ * some colour channels. Anything but the selection itself is confined to
+ * the selection when there is one.
  */
 import type { PenSample } from '../brush/stroke'
-import { setSelection, setTiles } from '../doc/edit'
-import { SELECTION_NODE, type StrokeSampling } from '../render/strokes'
+import { setChannelTiles, setSelection, setTiles } from '../doc/edit'
+import { channelKind } from '../doc/types'
+import { SELECTION_NODE, channelNode, channelOfNode, type StrokeSampling } from '../render/strokes'
+import { channelTarget, planesTarget } from './channels'
 import { brushAssets } from './brushAssets'
 import { pixelTarget } from './selection'
 import { engine } from '../engine/EngineHost'
@@ -28,6 +33,7 @@ import { colourSettings } from './colourSettings'
 import { documents } from './documents'
 import { notify } from './notices'
 import { retouch } from './retouch'
+import { Listeners } from '../lib/listeners'
 
 interface Active {
   id: number
@@ -47,7 +53,7 @@ class Painter {
   private active: Active | null = null
   /** Where the last stroke ended, per document, for Shift-click straight lines. */
   private lastEnd = new Map<string, PenSample>()
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
 
   constructor() {
     engine().onStrokeRefused((id, reason) => {
@@ -59,14 +65,11 @@ class Painter {
   }
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   private emit() {
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   get painting() {
@@ -88,9 +91,22 @@ class Painter {
     }
     let nodeId: string
     let gray = false
+    // A spot channel's gray is how little ink: black is full ink.
+    let ink = false
+    let planes: boolean[] | null = null
+    const ch = channelTarget(d)
+    const picksUp = tool === 'mixer' || tool === 'smudge' || tool === 'clone' || tool === 'heal' || tool === 'spot'
     if (d.quickMask) {
       nodeId = SELECTION_NODE
       gray = true
+    } else if (ch) {
+      if (picksUp) {
+        notify('info', `That tool works on layers. To paint “${ch.name}”, use the Brush or the Eraser, or pick a layer in the Layers panel.`)
+        return false
+      }
+      nodeId = channelNode(ch.id)
+      gray = true
+      ink = channelKind(ch) === 'spot'
     } else {
       const node = d.selected ? doc.nodes[d.selected] : null
       const t = pixelTarget(d)
@@ -108,6 +124,11 @@ class Painter {
       }
       nodeId = t.mask ? t.mask.id : node.id
       gray = !!t.mask
+      planes = t.mask ? null : planesTarget(d)
+      if (planes && (tool === 'heal' || tool === 'spot')) {
+        notify('info', 'The healing brushes work on all the colour channels at once. Click the composite channel in the Channels panel first.')
+        return false
+      }
     }
     let fg: number[]
     let bg: number[]
@@ -117,7 +138,7 @@ class Painter {
       // eraser paints the background, as Photoshop's does on a mask.
       const { intent, blackPointCompensation } = colourSettings.get()
       const target = { space: 'gray' as const, profile: { builtin: 'gray-gamma-2.2' } }
-      const g = (c: 'fg' | 'bg') => cms.converter.convert(colours().get()[c], target, intent, blackPointCompensation).c
+      const g = (c: 'fg' | 'bg') => cms.converter.convert(colours().get()[c], target, intent, blackPointCompensation).c.map((v) => (ink ? 1 - v : v))
       fg = eraser ? g('bg') : g('fg')
       bg = g('bg')
       eraser = false
@@ -126,6 +147,11 @@ class Painter {
       const target = { space: doc.mode, profile: doc.profile }
       fg = cms.converter.convert(colours().get().fg, target, intent, blackPointCompensation).c
       bg = cms.converter.convert(colours().get().bg, target, intent, blackPointCompensation).c
+      // On some colour channels the Eraser paints the background into them, as Photoshop's does.
+      if (eraser && planes) {
+        fg = bg
+        eraser = false
+      }
     }
     const seed = crypto.getRandomValues(new Uint32Array(1))[0]
     const id = ++nextId
@@ -164,7 +190,7 @@ class Painter {
     }
     // Image tips and patterns go to the engine before the stroke that needs them.
     brushAssets().sendFor(settings)
-    engine().beginStroke({ id, key: d.key, node: nodeId, settings: tool === 'spot' ? { ...settings, opacity: 0.6 } : settings, eraser, seed, fg, bg, selection, sampling, clone, retouch: retouching })
+    engine().beginStroke({ id, key: d.key, node: nodeId, settings: tool === 'spot' ? { ...settings, opacity: 0.6 } : settings, eraser, seed, fg, bg, selection, sampling, clone, retouch: retouching, ...(planes ? { planes } : {}) })
     engine().strokeSamples(id, from ? [{ ...from, t: p.t - 1 }, p] : [p])
     this.emit()
     return true
@@ -187,7 +213,15 @@ class Painter {
       const { set, overflow } = await engine().call('stroke.end', { id: a.id })
       const d = documents().get(a.key)
       const label = { eraser: 'Eraser', mixer: 'Mixer Brush', smudge: 'Smudge', clone: 'Clone Stamp', heal: 'Healing Brush', spot: 'Spot Healing Brush', brush: 'Brush Stroke' }[a.tool]
-      if (a.node === SELECTION_NODE) {
+      const ch = channelOfNode(a.node)
+      if (ch) {
+        const c = d?.history.present.channels?.find((x) => x.id === ch)
+        if (!d || !c || set === c.tiles) {
+          engine().cancelStroke(a.id)
+          return
+        }
+        documents().commit((x) => setChannelTiles(x, ch, set, true), { key: a.key, label })
+      } else if (a.node === SELECTION_NODE) {
         if (!d || set === (d.history.present.selection?.tiles ?? null)) {
           engine().cancelStroke(a.id)
           return

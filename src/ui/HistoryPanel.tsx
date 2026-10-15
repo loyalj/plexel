@@ -4,11 +4,11 @@
  * that takes. Steps after the current one stay listed, dimmed, until the
  * next edit replaces them.
  */
-import { useEffect, useRef } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import type { OpenDoc } from '../app/documents'
 import { steps } from '../doc/history'
 
-export function HistoryPanel({ doc, onJump }: { doc: OpenDoc; onJump(index: number): void }) {
+export const HistoryPanel = memo(function HistoryPanel({ doc, onJump }: { doc: OpenDoc; onJump(index: number): void }) {
   const { labels, current } = steps(doc.history)
   const list = useRef<HTMLOListElement>(null)
   useEffect(() => {
@@ -30,4 +30,4 @@ export function HistoryPanel({ doc, onJump }: { doc: OpenDoc; onJump(index: numb
       ))}
     </ol>
   )
-}
+})

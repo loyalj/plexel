@@ -7,6 +7,7 @@
  * a CMYK foreground stays those inks however documents change around it.
  */
 import { BLACK, CHANNELS, WHITE, type ColourValue, type ValueSpace } from '../color/value'
+import { Listeners } from '../lib/listeners'
 
 export type PickerModel = 'rgb' | 'hsb' | 'lab' | 'cmyk' | 'gray'
 export const PICKER_MODELS: { id: PickerModel; label: string }[] = [
@@ -53,14 +54,11 @@ function load(): Colours {
 
 class ColourStore {
   private state: Colours = load()
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
 
   get = () => this.state
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   private set(next: Colours) {
@@ -70,7 +68,7 @@ class ColourStore {
     } catch {
       // The colours just won't survive the tab.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   setFg(fg: ColourValue) {

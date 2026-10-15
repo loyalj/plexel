@@ -88,8 +88,8 @@ export interface TileJob {
 }
 
 /** A job's tile corner in its level's pixels, moved by its shift: where a copy of a tiled document's layer is read. */
-export const originX = (job: TileJob) => job.tx * TILE + (job.shift ? job.shift[0] / 2 ** job.level : 0)
-export const originY = (job: TileJob) => job.ty * TILE + (job.shift ? job.shift[1] / 2 ** job.level : 0)
+const originX = (job: TileJob) => job.tx * TILE + (job.shift ? job.shift[0] / 2 ** job.level : 0)
+const originY = (job: TileJob) => job.ty * TILE + (job.shift ? job.shift[1] / 2 ** job.level : 0)
 /** The rectangle a job reads, in document pixels: its tile's, moved by its shift. */
 const rectOf = (job: TileJob): Rect => (job.shift ? [job.rect[0] + job.shift[0], job.rect[1] + job.shift[1], job.rect[2] + job.shift[0], job.rect[3] + job.shift[1]] : job.rect)
 /** A cache key's part for a job's shift. */
@@ -337,7 +337,7 @@ function bendOf(ws: Warp[], t: readonly number[], st: readonly number[]): (x: nu
   }
 }
 
-export const EVALUATORS: Partial<Record<NodeKind, Evaluator>> = {
+const EVALUATORS: Partial<Record<NodeKind, Evaluator>> = {
   pixel: pixelEvaluator,
   embedded: pixelEvaluator,
   vector: vectorEvaluator,
@@ -830,23 +830,12 @@ export class Graph {
     const pu = this.params.put(params)
     const table = p.table ? this.tableBuffer(p.table) : null
     const pipeline = this.kernels.adjustPipeline(fmt)
-    const pass = job.enc.beginComputePass({ label: 'adjust' })
-    pass.setPipeline(pipeline)
-    pass.setBindGroup(
-      0,
-      this.device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: pu.buffer, offset: pu.offset, size: ADJUST_PARAMS_BYTES } },
-          { binding: 1, resource: { buffer: buf } },
-          { binding: 2, resource: table ? { buffer: table.buffer, offset: table.offset, size: table.size } : { buffer: this.kernels.dummy } },
-          ...(mode === 'cmyk' ? [{ binding: 3, resource: { buffer: ct ?? this.kernels.dummy } }] : []),
-        ],
-      }),
-    )
-    pass.dispatchWorkgroups(Math.ceil(count / 256))
-    pass.end()
-    this.dispatches++
+    this.encode(job, 'adjust', pipeline, [
+      { binding: 0, resource: { buffer: pu.buffer, offset: pu.offset, size: ADJUST_PARAMS_BYTES } },
+      { binding: 1, resource: { buffer: buf } },
+      { binding: 2, resource: table ? { buffer: table.buffer, offset: table.offset, size: table.size } : { buffer: this.kernels.dummy } },
+      ...(mode === 'cmyk' ? [{ binding: 3, resource: { buffer: ct ?? this.kernels.dummy } }] : []),
+    ], Math.ceil(count / 256))
   }
 
   /** Big tables (colour cubes) kept on the GPU, made once each; small ones go through the ring. */
@@ -915,12 +904,7 @@ export class Graph {
     if (bufs.b) entries.push({ binding: 2, resource: { buffer: bufs.b } })
     if (bufs.src) entries.push({ binding: 3, resource: { buffer: bufs.src } })
     if (bufs.dst) entries.push({ binding: 4, resource: { buffer: bufs.dst } })
-    const pass = job.enc.beginComputePass({ label: `filter ${entry}` })
-    pass.setPipeline(pipeline)
-    pass.setBindGroup(0, this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries }))
-    pass.dispatchWorkgroups(groups[0], groups[1])
-    pass.end()
-    this.dispatches++
+    this.encode(job, `filter ${entry}`, pipeline, entries, groups[0], groups[1])
   }
 
   /** A node's layer effects that draw, with their settings whole, in Photoshop's order. */
@@ -988,12 +972,7 @@ export class Graph {
       entries.push({ binding: 6, resource: { buffer: st.buffer, offset: st.offset, size: st.size } })
     }
     if (b.next) entries.push({ binding: 7, resource: { buffer: b.next } })
-    const pass = job.enc.beginComputePass({ label: `fx ${entry}` })
-    pass.setPipeline(pipeline)
-    pass.setBindGroup(0, this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries }))
-    pass.dispatchWorkgroups(groups)
-    pass.end()
-    this.dispatches++
+    this.encode(job, `fx ${entry}`, pipeline, entries, groups)
   }
 
   /**
@@ -1413,23 +1392,12 @@ export class Graph {
       const pu = this.params.put(params)
       const pg = this.storage.put(grid)
       const pipeline = this.kernels.warpPipeline(job.format.mode)
-      const pass = job.enc.beginComputePass({ label: 'warp' })
-      pass.setPipeline(pipeline)
-      pass.setBindGroup(
-        0,
-        this.device.createBindGroup({
-          layout: pipeline.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: { buffer: pu.buffer, offset: pu.offset, size: WARP_PARAMS_BYTES } },
-            { binding: 1, resource: { buffer: pg.buffer, offset: pg.offset, size: pg.size } },
-            { binding: 2, resource: { buffer: region } },
-            { binding: 3, resource: { buffer: out } },
-          ],
-        }),
-      )
-      pass.dispatchWorkgroups(TILE / 16, TILE / 16)
-      pass.end()
-      this.dispatches++
+      this.encode(job, 'warp', pipeline, [
+        { binding: 0, resource: { buffer: pu.buffer, offset: pu.offset, size: WARP_PARAMS_BYTES } },
+        { binding: 1, resource: { buffer: pg.buffer, offset: pg.offset, size: pg.size } },
+        { binding: 2, resource: { buffer: region } },
+        { binding: 3, resource: { buffer: out } },
+      ], TILE / 16, TILE / 16)
       any = true
     }
     if (!any) return null
@@ -2028,6 +1996,23 @@ export class Graph {
    * the shape) times its paint. Null when none of it is on the tile.
    */
   private paintItem(job: TileJob, it: ItemOutline, pathBox: Box | null, toNode: Matrix, x0: number, y0: number): GPUBuffer | null {
+    if (it.parts) {
+      // A brush stroke: its parts painted over one another, in order, as one buffer.
+      let acc: GPUBuffer | null = null
+      for (const p of it.parts) {
+        const b = p.box
+        if (!b || b[2] <= x0 || b[0] >= x0 + TILE || b[3] <= y0 || b[1] >= y0 + TILE) continue
+        const buf = this.paintItem(job, { item: { ...it.item, paint: p.paint }, segs: p.segs, rule: p.rule, box: p.box, clip: null }, pathBox, toNode, x0, y0)
+        if (!buf) continue
+        if (!acc) {
+          acc = buf
+          continue
+        }
+        this.dispatch(job, acc, { buffer: buf, op: 'over', blend: 'normal', k: 1 })
+        this.give(buf)
+      }
+      return acc
+    }
     const mode = job.scene.doc!.mode
     const local: number[] = []
     const rows = new Float64Array(TILE)
@@ -2126,24 +2111,13 @@ export class Graph {
     const pr = this.storage.put(new Float32Array(rows))
     const po = this.storage.put(strips.offsets)
     const pipeline = this.kernels.rasterPipeline()
-    const pass = job.enc.beginComputePass({ label: 'vector raster' })
-    pass.setPipeline(pipeline)
-    pass.setBindGroup(
-      0,
-      this.device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: pu.buffer, offset: pu.offset, size: RASTER_PARAMS_BYTES } },
-          { binding: 1, resource: { buffer: ps.buffer, offset: ps.offset, size: Math.floor(ps.size / 16) * 16 } },
-          { binding: 2, resource: { buffer: cover } },
-          { binding: 3, resource: { buffer: pr.buffer, offset: pr.offset, size: pr.size } },
-          { binding: 4, resource: { buffer: po.buffer, offset: po.offset, size: po.size } },
-        ],
-      }),
-    )
-    pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16))
-    pass.end()
-    this.dispatches++
+    this.encode(job, 'vector raster', pipeline, [
+      { binding: 0, resource: { buffer: pu.buffer, offset: pu.offset, size: RASTER_PARAMS_BYTES } },
+      { binding: 1, resource: { buffer: ps.buffer, offset: ps.offset, size: Math.floor(ps.size / 16) * 16 } },
+      { binding: 2, resource: { buffer: cover } },
+      { binding: 3, resource: { buffer: pr.buffer, offset: pr.offset, size: pr.size } },
+      { binding: 4, resource: { buffer: po.buffer, offset: po.offset, size: po.size } },
+    ], Math.ceil(w / 16), Math.ceil(h / 16))
   }
 
   /** Coverage times a paint into a composite tile buffer. */
@@ -2155,24 +2129,13 @@ export class Graph {
     const pipeline = this.kernels.paintPipeline(job.format)
     this.noPattern ??= this.device.createBuffer({ label: 'no pattern', size: 16, usage: GPUBufferUsage.STORAGE })
     const pat = (p.image && this.patternBuffers.get(p.image)) || this.noPattern
-    const pass = job.enc.beginComputePass({ label: 'vector paint' })
-    pass.setPipeline(pipeline)
-    pass.setBindGroup(
-      0,
-      this.device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: pu.buffer, offset: pu.offset, size: PAINT_PARAMS_BYTES } },
-          { binding: 1, resource: { buffer: cover, offset: 0, size: COVER_BYTES } },
-          { binding: 2, resource: { buffer: st.buffer, offset: st.offset, size: st.size } },
-          { binding: 3, resource: { buffer: out } },
-          { binding: 4, resource: { buffer: pat } },
-        ],
-      }),
-    )
-    pass.dispatchWorkgroups(TILE / 16, TILE / 16)
-    pass.end()
-    this.dispatches++
+    this.encode(job, 'vector paint', pipeline, [
+      { binding: 0, resource: { buffer: pu.buffer, offset: pu.offset, size: PAINT_PARAMS_BYTES } },
+      { binding: 1, resource: { buffer: cover, offset: 0, size: COVER_BYTES } },
+      { binding: 2, resource: { buffer: st.buffer, offset: st.offset, size: st.size } },
+      { binding: 3, resource: { buffer: out } },
+      { binding: 4, resource: { buffer: pat } },
+    ], TILE / 16, TILE / 16)
   }
 
   /** The segments a vector mask fills at the job's level, made when the mask changes. */
@@ -2247,12 +2210,7 @@ export class Graph {
     const pipes = this.kernels.maskPipelines(false)
     const uniform = { binding: 0, resource: { buffer: p.buffer, offset: p.offset, size: MASK_PARAMS_BYTES } }
     const run = (pipeline: GPUComputePipeline, entries: GPUBindGroupEntry[], x: number, y: number, label: string) => {
-      const pass = job.enc.beginComputePass({ label })
-      pass.setPipeline(pipeline)
-      pass.setBindGroup(0, this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [uniform, ...entries] }))
-      pass.dispatchWorkgroups(Math.ceil(x / 16), Math.ceil(y / 16))
-      pass.end()
-      this.dispatches++
+      this.encode(job, label, pipeline, [uniform, ...entries], Math.ceil(x / 16), Math.ceil(y / 16))
     }
     if (o.margin) run(pipes.blurH, [{ binding: 2, resource: { buffer: o.wide } }, { binding: 3, resource: { buffer: o.across } }], TILE, o.size, 'mask blur')
     run(pipes.finish, [{ binding: 1, resource: { buffer: o.out } }, { binding: 3, resource: { buffer: o.across } }], TILE, TILE, 'mask finish')
@@ -2416,12 +2374,7 @@ export class Graph {
       const pipes = this.kernels.maskPipelines(!!strokeWindow)
       const uniform = { binding: 0, resource: { buffer: p.buffer, offset: p.offset, size: MASK_PARAMS_BYTES } }
       const run = (pipeline: GPUComputePipeline, entries: GPUBindGroupEntry[], x: number, y: number, label: string) => {
-        const pass = job.enc.beginComputePass({ label })
-        pass.setPipeline(pipeline)
-        pass.setBindGroup(0, this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [uniform, ...entries] }))
-        pass.dispatchWorkgroups(Math.ceil(x / 16), Math.ceil(y / 16))
-        pass.end()
-        this.dispatches++
+        this.encode(job, label, pipeline, [uniform, ...entries], Math.ceil(x / 16), Math.ceil(y / 16))
       }
       const sampleEntries: GPUBindGroupEntry[] = [
         { binding: 2, resource: { buffer: wide } },
@@ -2463,13 +2416,23 @@ export class Graph {
     // A constant goes in through the ring: a fresh slice, safe to write mid-frame.
     const cover = typeof r === 'number' ? this.storage.put(new Float32Array(TILE * TILE).fill(r)) : { buffer: r, offset: 0, size: COVER_BYTES }
     const pipeline = this.kernels.maskShowPipeline(job.format)
-    const pass = job.enc.beginComputePass({ label: 'mask show' })
-    pass.setPipeline(pipeline)
-    pass.setBindGroup(0, this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: cover.buffer, offset: cover.offset, size: COVER_BYTES } }, { binding: 1, resource: { buffer: dst } }] }))
-    pass.dispatchWorkgroups(TILE / 16, TILE / 16)
-    pass.end()
+    this.encode(job, 'mask show', pipeline, [{ binding: 0, resource: { buffer: cover.buffer, offset: cover.offset, size: COVER_BYTES } }, { binding: 1, resource: { buffer: dst } }], TILE / 16, TILE / 16)
     if (typeof r !== 'number') this.give(r)
     return true
+  }
+
+  /**
+   * One compute dispatch: a pass of its own, its pipeline, one bind group
+   * (group 0) from `entries`, and `groups` workgroups. Every dispatch the
+   * graph makes goes through here, so `dispatches` counts them all.
+   */
+  private encode(job: TileJob, label: string, pipeline: GPUComputePipeline, entries: GPUBindGroupEntry[], ...groups: [number, number?, number?]) {
+    const pass = job.enc.beginComputePass({ label })
+    pass.setPipeline(pipeline)
+    pass.setBindGroup(0, this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries }))
+    pass.dispatchWorkgroups(...groups)
+    pass.end()
+    this.dispatches++
   }
 
   /** Encodes one compositing dispatch onto `dst`. */
@@ -2514,14 +2477,9 @@ export class Graph {
     } else {
       entries.push({ binding: 4, resource: { buffer: s.buffer! } })
     }
-    const pass = job.enc.beginComputePass({ label: `${s.op} ${s.blend}` })
-    pass.setPipeline(pipeline)
-    pass.setBindGroup(0, this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries }))
-    pass.dispatchWorkgroups(TILE / 16, TILE / 16)
-    pass.end()
-    this.dispatches++
+    this.encode(job, `${s.op} ${s.blend}`, pipeline, entries, TILE / 16, TILE / 16)
   }
 }
 
-export { AtlasFull }
+
 export const bufferBytes = tileBufferBytes

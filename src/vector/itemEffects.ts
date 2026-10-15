@@ -30,7 +30,7 @@ export interface ItemEffect {
 export interface PathEffectDef {
   id: string
   label: string
-  params: ParamDef[]
+  params: readonly ParamDef[]
   /** The path the item is drawn from, changed; `tol` is how finely curves are followed, in the shape's units. */
   apply(path: PathData, v: Record<string, unknown>, tol: number): PathData
 }
@@ -233,7 +233,7 @@ export const PATH_EFFECTS: PathEffectDef[] = [
   },
 ]
 
-export const PATH_EFFECT_BY_ID = new Map(PATH_EFFECTS.map((d) => [d.id, d]))
+const PATH_EFFECT_BY_ID = new Map(PATH_EFFECTS.map((d) => [d.id, d]))
 
 /** Pixel effects: live filters that don't move pixels about the canvas. */
 export const pixelEffectIds = () => [...FILTER_BY_ID.values()].filter((d) => !d.hidden && !d.warp && !d.remap).map((d) => d.id)

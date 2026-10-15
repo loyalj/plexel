@@ -69,6 +69,23 @@ function start(): Promise<void> {
 /** Sets made in the engine that the page hasn't committed yet, kept from collection meanwhile. */
 const pinned = new Map<string, number>()
 export const pinSet = (id: string) => pinned.set(id, (pinned.get(id) ?? 0) + 1)
+
+/** How long a new set is kept from collection, waiting for the page to commit it. */
+const HOLD_MS = 60_000
+
+/**
+ * A new set held for the page to commit: pinned, and let go after a
+ * minute, by when the page's document holds it (or has thrown it away).
+ * Null, for no set, passes through.
+ */
+export function held(set: string): string
+export function held(set: string | null): string | null
+export function held(set: string | null): string | null {
+  if (!set) return null
+  pinSet(set)
+  setTimeout(() => unpinSet(set), HOLD_MS)
+  return set
+}
 export const unpinSet = (id: string) => {
   const n = (pinned.get(id) ?? 1) - 1
   if (n <= 0) pinned.delete(id)
@@ -83,7 +100,7 @@ export type Handler<M extends keyof EngineCalls> = (args: EngineCalls[M]['args']
 type TileCall = 'tiles.fill' | 'tiles.describe' | 'tiles.pack' | 'tiles.unpack' | 'tiles.journal' | 'tiles.restore' | 'tiles.collectJournal' | 'tiles.gc' | 'tiles.stats' | 'tiles.unpackLazy' | 'tiles.materialize' | 'tiles.historyCost'
 
 /** Called with the sets still in use after every collection, so the GPU can let go of the rest. */
-export let onCollected: (live: ReadonlySet<string>) => void = () => {}
+let onCollected: (live: ReadonlySet<string>) => void = () => {}
 export const setOnCollected = (fn: (live: ReadonlySet<string>) => void) => (onCollected = fn)
 
 export const tileHandlers: { [M in TileCall]: Handler<M> } = {

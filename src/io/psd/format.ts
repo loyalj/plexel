@@ -17,7 +17,7 @@
 import { inflateZlib, deflateZlib } from '../png'
 import { PsdError, Reader, Writer } from './bin'
 
-export { PsdError }
+
 
 export type PsdSamples = Uint8Array | Uint16Array | Float32Array
 
@@ -94,8 +94,12 @@ export interface PsdFile {
   globalMask: Uint8Array
   /** Tagged blocks after the layers (patterns, linked files, and the like). */
   blocks: PsdBlock[]
-  /** The composite image, one plane a channel; null when it wasn't read or isn't there. */
-  composite: PsdSamples[] | null
+  /**
+   * The composite image, one plane a channel; null when it wasn't read or
+   * isn't there. A plane not decoded (the colour, read 'flat' from a file
+   * with layers) is null.
+   */
+  composite: (PsdSamples | null)[] | null
 }
 
 const BIG_KEYS = new Set(['LMsk', 'Lr16', 'Lr32', 'Layr', 'Mt16', 'Mt32', 'Mtrn', 'Alph', 'FMsk', 'lnk2', 'FEid', 'FXid', 'PxSD', 'lnkE', 'cinf'])
@@ -243,8 +247,13 @@ async function decodeChannel(r: Reader, compression: number, w: number, h: numbe
 // --- reading ----------------------------------------------------------------------------------------
 
 export interface ReadOptions {
-  /** Skip the composite image (when the layers are what's wanted). */
-  composite?: boolean
+  /**
+   * Whether to decode the composite image: false skips it (when the layers
+   * are what's wanted), 'flat' reads its colour only when there are no
+   * layers (when it would be the Background), and its alpha and spot
+   * channels always (they're only there). Decoding it is a full image's work.
+   */
+  composite?: boolean | 'flat'
 }
 
 export async function readPsd(bytes: Uint8Array, o: ReadOptions = {}): Promise<PsdFile> {
@@ -313,9 +322,11 @@ export async function readPsd(bytes: Uint8Array, o: ReadOptions = {}): Promise<P
     }
   }
   r.pos = lmEnd
-  // The composite.
-  let composite: PsdSamples[] | null = null
-  if (o.composite !== false && r.left >= 2) {
+  // The composite. Read 'flat' from a file with layers, only the planes after the colour (and the merged transparency): alpha and spot channels.
+  let composite: (PsdSamples | null)[] | null = null
+  const colourCount = mode === PSD_MODE.cmyk ? 4 : mode === PSD_MODE.rgb || mode === PSD_MODE.lab ? 3 : 1
+  const firstWanted = o.composite === 'flat' && layers.length ? colourCount + (mergedAlpha ? 1 : 0) : 0
+  if (o.composite !== false && firstWanted < channels && r.left >= 2) {
     const compression = r.u16()
     const n = width * height
     const rowBytes = depth === 1 ? Math.ceil(width / 8) : width * (depth / 8)
@@ -324,6 +335,11 @@ export async function readPsd(bytes: Uint8Array, o: ReadOptions = {}): Promise<P
       const counts: number[] = []
       for (let i = 0; i < height * channels; i++) counts.push(r.psb ? r.u32() : r.u16())
       for (let c = 0; c < channels; c++) {
+        if (c < firstWanted) {
+          for (let y = 0; y < height; y++) r.pos += counts[c * height + y]
+          composite.push(null)
+          continue
+        }
         const plane = new Uint8Array(rowBytes * height)
         for (let y = 0; y < height; y++) {
           const len = counts[c * height + y]
@@ -334,6 +350,11 @@ export async function readPsd(bytes: Uint8Array, o: ReadOptions = {}): Promise<P
       }
     } else if (compression === 0) {
       for (let c = 0; c < channels; c++) {
+        if (c < firstWanted) {
+          r.skip(rowBytes * height)
+          composite.push(null)
+          continue
+        }
         const plane = r.bytes(rowBytes * height)
         composite.push(depth === 1 ? bitmapToBytes(plane, width, height, rowBytes) : toSamples(plane, depth, n))
       }
@@ -341,6 +362,10 @@ export async function readPsd(bytes: Uint8Array, o: ReadOptions = {}): Promise<P
       let all = await inflateZlib(r.bytes(r.left))
       const per = rowBytes * height
       for (let c = 0; c < channels; c++) {
+        if (c < firstWanted) {
+          composite.push(null)
+          continue
+        }
         let plane = all.subarray(c * per, (c + 1) * per)
         if (compression === 3) plane = unpredict(plane.slice(), width, height, depth)
         composite.push(toSamples(plane, depth, n))

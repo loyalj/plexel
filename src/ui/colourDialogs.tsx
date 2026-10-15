@@ -11,6 +11,7 @@ import type { ProofSetup } from '../color/proof'
 import type { ColourMode, Doc, ProfileRef } from '../doc/types'
 import { assets } from '../io/assets'
 import { Dialog } from './Dialog'
+import { Hint, Label } from './controls'
 
 export function ColourSettingsDialog({ onClose }: { onClose(): void }) {
   const current = useSyncExternalStore(colourSettings.subscribe, colourSettings.get)
@@ -38,7 +39,9 @@ export function ColourSettingsDialog({ onClose }: { onClose(): void }) {
     >
       <form id="colour-settings-form" className="form" onSubmit={submit}>
         <div className="field">
-          <label htmlFor="cs-display">Display</label>
+          <Label htmlFor="cs-display" hint="The colour space of your screen. Browsers don’t say which profile a monitor has, so pick Display P3 for a wide-gamut screen (most recent Macs and many laptops) and sRGB otherwise.">
+            Display
+          </Label>
           <select id="cs-display" value={s.display} onChange={(e) => setS({ ...s, display: e.target.value as DisplayProfileId })}>
             {DISPLAY_PROFILE_IDS.map((id) => (
               <option key={id} value={id}>
@@ -46,13 +49,11 @@ export function ColourSettingsDialog({ onClose }: { onClose(): void }) {
               </option>
             ))}
           </select>
-          <span className="field-note">
-            The colour space of your screen. Browsers don’t say which profile a monitor has, so pick Display P3 for a wide-gamut screen
-            (most recent Macs and many laptops) and sRGB otherwise.
-          </span>
         </div>
         <div className="field">
-          <label htmlFor="cs-intent">Rendering intent</label>
+          <Label htmlFor="cs-intent" hint="How colours are converted into a document’s colour space, as when filling with a colour picked elsewhere.">
+            Rendering intent
+          </Label>
           <select id="cs-intent" value={s.intent} onChange={(e) => setS({ ...s, intent: e.target.value as Intent })}>
             {(Object.keys(INTENT_NAMES) as Intent[]).map((i) => (
               <option key={i} value={i}>
@@ -60,15 +61,16 @@ export function ColourSettingsDialog({ onClose }: { onClose(): void }) {
               </option>
             ))}
           </select>
-          <span className="field-note">How colours are converted into a document’s colour space, as when filling with a colour picked elsewhere.</span>
         </div>
         <label className="check">
           <input type="checkbox" checked={s.blackPointCompensation} onChange={(e) => setS({ ...s, blackPointCompensation: e.target.checked })} />
           Use black point compensation
         </label>
         <fieldset className="field-group">
-          <legend>Working spaces</legend>
-          <span className="field-note">What Image → Mode converts to. Working CMYK is also the printing condition documents are proofed against to start with.</span>
+          <legend>
+            Working spaces
+            <Hint text="What Image → Mode converts to. Working CMYK is also the printing condition documents are proofed against to start with." />
+          </legend>
           {(['rgb', 'cmyk', 'gray'] as ColourMode[]).map((m) => (
             <div className="field" key={m}>
               <label htmlFor={`cs-working-${m}`}>{MODE_NAMES[m]}</label>
@@ -240,7 +242,7 @@ export function AssignProfileDialog({ doc, onApply, onClose }: { doc: Doc; onApp
             </option>
           ))}
         </select>
-        {note && <span className="field-note">{note}</span>}
+        {note && <span className="field-meta">{note}</span>}
       </div>
       <div>
         <button
@@ -319,7 +321,7 @@ export function ConvertProfileDialog({ doc, onConvert, onClose }: { doc: Doc; on
       <div className="field">
         <label htmlFor="convert-profile">Destination</label>
         <ProfileSelect id="convert-profile" mode={null} value={to.profile} onChange={(profile, mode) => setTo({ profile, mode })} />
-        {note && <span className="field-note">{note}</span>}
+        {note && <span className="field-meta">{note}</span>}
       </div>
       <div className="field">
         <label htmlFor="convert-intent">Rendering intent</label>
@@ -357,7 +359,7 @@ export function ProofSetupDialog({ setup, onApply, onClose }: { setup: ProofSetu
       <div className="field">
         <label htmlFor="proof-profile">Device to simulate</label>
         <ProfileSelect id="proof-profile" mode={null} value={s.profile} onChange={(profile, mode) => setS({ ...s, profile, mode })} />
-        {note && <span className="field-note">{note}</span>}
+        {note && <span className="field-meta">{note}</span>}
       </div>
       <div className="field">
         <label htmlFor="proof-intent">Rendering intent</label>

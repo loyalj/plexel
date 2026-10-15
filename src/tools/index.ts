@@ -8,9 +8,11 @@
  */
 import type { BrushSettings, DynTarget } from '../brush/defs'
 import type { PaintTool } from '../app/brushes'
+import { Listeners } from '../lib/listeners'
 
 export type ToolId =
   | 'move'
+  | 'artboard'
   | 'marquee'
   | 'lasso'
   | 'quick'
@@ -31,8 +33,13 @@ export type ToolId =
   | 'bucket'
   | 'picker'
   | 'pen'
+  | 'curvature'
+  | 'width'
   | 'direct'
   | 'shape'
+  | 'pencil'
+  | 'vbrush'
+  | 'blob'
   | 'builder'
   | 'livepaint'
   | 'type'
@@ -76,8 +83,12 @@ export type ToolOption =
   | { kind: 'shape-settings' }
   /** Whether new shapes are filled and stroked, and how wide the stroke is. */
   | { kind: 'shape-paint' }
+  /** The Pen's Smart mode. */
+  | { kind: 'pen-smart' }
   /** How many anchors Direct Selection has selected. */
   | { kind: 'anchors' }
+  /** The Pencil's, the Paintbrush's or the Blob Brush's settings. */
+  | { kind: 'freehand'; tool: 'pencil' | 'vbrush' | 'blob' }
   /** The Type tool's font, style and size: the Character panel's, in short. */
   | { kind: 'type-font' }
   /** The Mixer Brush's paint: its combinations, Wet, Load and Mix, Load and Clean, Sample All Layers. */
@@ -90,6 +101,8 @@ export type ToolOption =
   | { kind: 'align' }
   /** The Move tool's Auto-Select and what it picks. */
   | { kind: 'auto-select' }
+  /** The Artboard tool's size, its presets, and Add Artboard. */
+  | { kind: 'artboard' }
 
 /**
  * A key or gesture a tool answers to, for its tooltip and the status bar's
@@ -148,6 +161,7 @@ const PAINT_KEYS: ToolKey[] = [
   { keys: '[ ]', does: 'smaller, larger' },
   { keys: 'Shift+[ ]', does: 'softer, harder' },
   { keys: 'Alt+Right-drag', does: 'size and hardness on the canvas' },
+  { keys: 'Shift+Alt+Right-drag', does: 'a colour picker at the pointer' },
   { keys: 'Alt', does: 'picks a colour' },
   { keys: 'Shift+Click', does: 'a straight line from the last stroke' },
 ]
@@ -163,12 +177,24 @@ const TOOL_KEYS: Record<ToolId, ToolKey[]> = {
     { keys: 'Shift', does: 'keeps it straight', during: 'drag' },
     { keys: 'Ctrl', does: 'lets go of snapping', during: 'drag' },
   ],
+  artboard: [
+    { keys: 'Drag', does: 'draws an artboard on the pasteboard, or moves one with its layers' },
+    { keys: 'Click', does: 'selects an artboard' },
+    { keys: 'Shift', does: 'keeps a move straight', during: 'drag' },
+  ],
   marquee: [
     ...SELECT_KEYS,
     { keys: 'Shift', does: 'square or circle', during: 'drag' },
     { keys: 'Alt', does: 'from the centre', during: 'drag' },
   ],
-  lasso: [...SELECT_KEYS, { keys: 'Enter', does: 'closes a polygon' }, { keys: 'Esc', does: 'cancels' }],
+  lasso: [
+    ...SELECT_KEYS,
+    { keys: 'Alt', does: 'let go of the button with it: straight sides, then let go of Alt to close', during: 'drag' },
+    { keys: 'Shift', does: 'polygonal sides at 45°' },
+    { keys: 'Backspace', does: 'takes the last corner back' },
+    { keys: 'Enter', does: 'closes a polygon' },
+    { keys: 'Esc', does: 'cancels' },
+  ],
   quick: [
     { keys: 'Drag', does: 'paints the selection out to the edges' },
     { keys: 'Alt', does: 'paints it away' },
@@ -186,11 +212,38 @@ const TOOL_KEYS: Record<ToolId, ToolKey[]> = {
     { keys: 'Enter', does: 'finishes the path open' },
     { keys: 'Alt', does: 'breaks the handles', during: 'drag' },
   ],
+  curvature: [
+    { keys: 'Click', does: 'a smooth point' },
+    { keys: 'Alt+Click', does: 'a corner point' },
+    { keys: 'Double-click', does: 'a point: corner or smooth' },
+    { keys: 'Enter', does: 'finishes the path open' },
+  ],
+  width: [
+    { keys: 'Drag', does: 'a stroke: adds a width point and widens it' },
+    { keys: 'Drag', does: 'a point’s edge: wider or narrower; its centre: along the path' },
+    { keys: 'Shift+Click', does: 'selects several points' },
+    { keys: 'Double-click', does: 'a point: its widths in pixels' },
+    { keys: 'Delete', does: 'removes the selected points' },
+    { keys: 'Alt', does: 'one side only; a copy of the point', during: 'drag' },
+  ],
   direct: [
-    { keys: 'Shift', does: 'adds points to the selection' },
+    { keys: 'Shift', does: 'adds points (of any shape) to the selection' },
     { keys: 'Alt+Click', does: 'converts a point' },
     { keys: 'Delete', does: 'removes the selected points' },
     { keys: 'Alt', does: 'breaks a smooth point', during: 'drag' },
+  ],
+  pencil: [
+    { keys: 'Drag', does: 'draws a path as your hand goes' },
+    { keys: 'Drag', does: 'from the selected path: redraws it there, or carries it on from an end' },
+    { keys: 'Drag', does: 'back to where it started: a closed path' },
+  ],
+  vbrush: [
+    { keys: 'Drag', does: 'paints a path with the chosen vector brush' },
+    { keys: 'Drag', does: 'from the selected path: redraws it there' },
+  ],
+  blob: [
+    { keys: 'Drag', does: 'paints a filled shape, joining the shapes of its colour it touches' },
+    { keys: '[ ]', does: 'smaller, larger' },
   ],
   shape: [
     { keys: 'Drag', does: 'draws a live shape' },
@@ -296,9 +349,19 @@ const DEFS: Omit<ToolDef, 'keys'>[] = [
     id: 'move',
     name: 'Move',
     shortcut: 'V',
+    group: 'move',
     cursor: 'move',
     hint: 'Drag to move the selected layers; Shift keeps them straight, Ctrl lets go of snapping. Drag a guide to move it, or off the canvas to remove it. The arrow keys nudge a pixel, Shift ten.',
     options: [{ kind: 'auto-select' }, { kind: 'align' }, { kind: 'session' }],
+  },
+  {
+    id: 'artboard',
+    name: 'Artboard',
+    shortcut: 'V',
+    group: 'move',
+    cursor: 'crosshair',
+    hint: 'Drag on the pasteboard to draw an artboard; drag one to move it with its layers; drag its handles to size it. The options bar sizes it and adds more.',
+    options: [{ kind: 'artboard' }],
   },
   {
     id: 'marquee',
@@ -314,7 +377,7 @@ const DEFS: Omit<ToolDef, 'keys'>[] = [
     name: 'Lasso',
     shortcut: 'L',
     cursor: 'crosshair',
-    hint: 'Draw round what to select; in Polygonal mode click its corners; in Magnetic mode click once and trace the edge, and the outline clings to it. Shift adds, Alt subtracts, both intersect.',
+    hint: 'Draw round what to select; in Polygonal mode click its corners (Alt-drag for freehand, Shift for 45°); in Magnetic mode click once and trace the edge, and the outline clings to it (Alt-click for a straight side). Shift adds, Alt subtracts, both intersect. Drawing freehand, let go of the button with Alt held to carry on in straight sides, and let go of Alt to close. Backspace takes the last corner back.',
    
     options: [{ kind: 'lasso-mode' }, ...selectOptions('lasso'), { kind: 'magnetic' }],
   },
@@ -343,10 +406,28 @@ const DEFS: Omit<ToolDef, 'keys'>[] = [
     id: 'pen',
     name: 'Pen',
     shortcut: 'P',
+    group: 'pen',
     cursor: 'crosshair',
     hint: 'Click to place points, drag to pull out curves; click the first point to close the path, Enter to finish it open. On the selected path, click a segment to add a point, a point to delete it, an end to carry on.',
    
+    options: [{ kind: 'pen-smart' }, { kind: 'shape-paint' }, { kind: 'session' }],
+  },
+  {
+    id: 'curvature',
+    name: 'Curvature',
+    shortcut: 'P',
+    group: 'pen',
+    cursor: 'crosshair',
+    hint: 'Click to place smooth points, the curve running through them (Alt-click for a corner); click the first point to close, Enter to finish open. On the selected path: drag a point to move it, the curve following; double-click a point to make it a corner or smooth; click a segment to add a point.',
     options: [{ kind: 'shape-paint' }, { kind: 'session' }],
+  },
+  {
+    id: 'width',
+    name: 'Width',
+    shortcut: 'P',
+    group: 'pen',
+    cursor: 'crosshair',
+    hint: 'Drag a shape’s stroke to make it wider or narrower there: a width point is added where you press. Drag a point’s edge to change its width (Alt: one side only), its centre to slide it along the path (Alt: a copy). Shift-click selects several; Delete removes them; double-click a point to type its widths.',
   },
   {
     id: 'direct',
@@ -356,6 +437,33 @@ const DEFS: Omit<ToolDef, 'keys'>[] = [
     hint: 'Click a point of the selected path to select it (Shift adds), drag to move it; drag a handle to reshape the curve (Alt breaks a smooth point). Alt-click converts a point; Delete removes the selected ones. Click another shape to select it.',
    
     options: [{ kind: 'anchors' }],
+  },
+  {
+    id: 'pencil',
+    name: 'Pencil',
+    shortcut: 'N',
+    group: 'pencil',
+    cursor: 'crosshair',
+    hint: 'Draw a path freehand, smoothed to curves as you let go (Fidelity sets how smooth). End near where you began to close it. Start a stroke on the selected path to redraw that part of it, or at an open end to carry it on.',
+    options: [{ kind: 'freehand', tool: 'pencil' }],
+  },
+  {
+    id: 'vbrush',
+    name: 'Paintbrush',
+    shortcut: 'N',
+    group: 'pencil',
+    cursor: 'crosshair',
+    hint: 'Paint a path freehand, stroked with a vector brush (choose it here or in Vector Brushes): art bent along it, copies scattered along it, or tiles. Its width is the stroke’s. Start on the selected path to redraw it.',
+    options: [{ kind: 'freehand', tool: 'vbrush' }],
+  },
+  {
+    id: 'blob',
+    name: 'Blob Brush',
+    shortcut: 'N',
+    group: 'pencil',
+    cursor: 'crosshair',
+    hint: 'Paint filled shapes in the foreground colour, as with a marker: where a stroke touches a shape of the same colour (filled, no stroke), they become one shape. [ and ] change the size.',
+    options: [{ kind: 'freehand', tool: 'blob' }],
   },
   {
     id: 'shape',
@@ -520,11 +628,16 @@ class ToolStore {
   private current: ToolId = 'hand'
   /** The tool before this one, which Previous Tool (the ` key) goes back to. */
   private previous: ToolId | null = null
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   /** The tool each group last had, which its key picks. */
   private lastInGroup = new Map<string, ToolId>()
 
   get = () => this.current
+
+  /** The tool a group's slot in the toolbar shows: the one it had last (its first, to begin with). */
+  shownIn(group: string): ToolId {
+    return this.lastInGroup.get(group) ?? toolsInGroup(group)[0].id
+  }
 
   /** A group's key: the tool it had last (its first, to begin with). */
   pickGroup(group: string) {
@@ -539,10 +652,7 @@ class ToolStore {
   }
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   /** Previous Tool: back to the one before, and again to come back. */
@@ -557,7 +667,7 @@ class ToolStore {
     this.current = id
     const g = TOOL_BY_ID.get(id)?.group
     if (g) this.lastInGroup.set(g, id)
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 }
 

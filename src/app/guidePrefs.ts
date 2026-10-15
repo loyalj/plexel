@@ -10,6 +10,7 @@
  * (app/snapping.ts).
  */
 import { UNITS, type Unit } from '../doc/units'
+import { Listeners } from '../lib/listeners'
 
 export type AlignTo = 'layers' | 'key' | 'canvas' | 'selection'
 
@@ -124,7 +125,7 @@ export function rgbOf(hex: string): [number, number, number] {
 
 class GuidePrefsStore {
   private value: GuidePrefs | null = null
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
 
   get = (): GuidePrefs => {
     if (!this.value) {
@@ -140,10 +141,7 @@ class GuidePrefsStore {
   }
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   update(change: Partial<GuidePrefs>) {
@@ -153,7 +151,7 @@ class GuidePrefsStore {
     } catch {
       // Kept for this visit only.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   toggle(k: 'rulers' | 'guides' | 'lockGuides' | 'grid' | 'pixelGrid' | 'smartGuides' | 'snap' | 'tiledView') {

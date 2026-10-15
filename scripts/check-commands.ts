@@ -66,6 +66,8 @@ import { ICONS, phosphorNames } from '../src/ui/icons'
 import { ICON_DATA } from '../src/ui/icons.data'
 import { ICON_DATA_FILE, iconBodies, iconDataSource } from './icon-data'
 import { readFileSync } from 'node:fs'
+import { KEY_SETS, isKeySet, keySetById, keySetChanges, keySetOf } from '../src/input/keySets'
+import { DEFAULT_SLOTS, arrange, moveSlot, readToolbar, setShown } from '../src/ui/toolbarPrefs'
 
 let failures = 0
 const check = (name: string, ok: boolean, detail = '') => {
@@ -130,6 +132,9 @@ function fakeContext(): Recorded {
       fill: (w) => void rec.calls.push(`fill ${w}`),
       act: (a) => void rec.calls.push(`act ${a}`),
       hasChannels: () => true,
+      channel: call('channel'),
+      channelPicked: () => true,
+      channelCount: () => 7,
       swapColours: call('swapColours'),
       resetColours: call('resetColours'),
       deleteLayer: call('deleteLayer'),
@@ -151,6 +156,8 @@ function fakeContext(): Recorded {
       zoomOut: call('zoomOut'),
       fitOnScreen: call('fitOnScreen'),
       actualPixels: call('actualPixels'),
+      zoomToSelection: call('zoomToSelection'),
+      zoomToLayer: call('zoomToLayer'),
       rotateView: (d) => void rec.calls.push(`rotate ${d}`),
       resetRotation: call('resetRotation'),
       tool: () => tool,
@@ -236,6 +243,17 @@ function fakeContext(): Recorded {
       shapeCount: () => 2,
       isPlainShape: () => true,
       isLivePaint: () => false,
+      vectorBrush: (a: string) => {
+        // Every brush command but Remove opens Brush Options.
+        if (a !== 'remove') rec.dialogs.push('brushOptions')
+      },
+      hasBrushStroke: () => false,
+      canTrace: () => false,
+      artboard: (a: string) => void rec.calls.push(`artboard ${a}`),
+      inArtboard: () => true,
+      symbol: (a: string) => void rec.calls.push(`symbol ${a}`),
+      canMakeSymbol: () => true,
+      instanceSelected: () => true,
       construct: (k) => void rec.calls.push(`construct ${k}`),
       canFilter: () => true,
       hasLiveFilters: () => true,
@@ -880,6 +898,32 @@ console.log('\nicons')
   }
   check('icons.data.ts is what build:icons makes from Phosphor’s set (after changing icons.ts, run npm run build:icons)', fresh === readFileSync(ICON_DATA_FILE, 'utf8').replace(/\r\n/g, '\n'))
   check('every outline draws in the current colour, so icons follow the theme', Object.values(ICON_DATA).every((b) => !/(fill|stroke)="#/.test(b)))
+}
+
+console.log('\nshortcut sets')
+{
+  const all = [...COMMANDS]
+  const c = keySetChanges(all, keySetById('illustrator')!)
+  const k = (id: string) => keysOf(COMMANDS_BY_ID.get(id)!, c)
+  check('Photoshop’s set is the keys as shipped', Object.keys(keySetChanges(all, keySetById('photoshop')!)).length === 0)
+  check('Illustrator’s: the Paintbrush on B, the Blob Brush on Shift+B, the Pencil’s group on N', k('tool.vbrush').join() === 'B' && k('tool.blob').join() === 'Shift+B' && k('tool.group-pencil').join() === 'N')
+  check('and B taken from the Brush’s group, M from the Marquee for the Shape tool', k('tool.group-brush').length === 0 && k('tool.marquee').length === 0 && k('tool.shape').join() === 'M')
+  check('Free Transform on E, the Eraser on Shift+E, Create Outlines on Ctrl+Shift+O', k('edit.free-transform').join() === 'E' && k('tool.eraser').join() === 'Shift+E' && k('type.create-outlines').join() === 'Mod+Shift+O')
+  check('no key left on two commands', clashes(all, c).size === 0, [...clashes(all, c).keys()].join(' '))
+  check('every key in every set is one its command can have', KEY_SETS.every((set) => Object.entries(set.keys).every(([id, keys]) => COMMANDS_BY_ID.get(id) && keys.every((x) => keyProblem(COMMANDS_BY_ID.get(id)!, x) === null))))
+  check('the set is recognised, Photoshop’s the first match for none changed', keySetOf(all, c) === 'illustrator' && keySetOf(all, {}) === 'photoshop' && isKeySet(all, {}, keySetById('affinity')!))
+  check('changed further, it’s no set', keySetOf(all, assignKey(all, c, 'tool.hand', 'F2')) === null)
+}
+
+console.log('\nthe toolbar, yours')
+{
+  check('every tool is in one slot', DEFAULT_SLOTS.length === new Set(TOOL_DEFS.map((t) => t.group ?? t.id)).size)
+  const read = readToolbar({ order: ['type', 'move', 'nonsense', 'type'], hidden: ['crop', 'nope'], columns: 'two' })
+  check('read defensively: unknown slots dropped, each once, the rest in their place', read.order[0] === 'type' && read.order.indexOf('type') < read.order.indexOf('move') && read.order.length === DEFAULT_SLOTS.length && !read.order.includes('nonsense'))
+  check('hidden kept for known slots, columns read', read.hidden.join() === 'crop' && read.columns === 'two' && readToolbar({ columns: 'three' }).columns === 'auto')
+  check('a slot a later version adds goes in after the one before it', arrange(DEFAULT_SLOTS.filter((x) => x !== 'crop')).indexOf('crop') === DEFAULT_SLOTS.indexOf('crop'))
+  check('moved to the end, and before another', moveSlot(read, 'move', null).order.at(-1) === 'move' && moveSlot(read, 'move', 'type').order.slice(0, 2).join() === 'move,type')
+  check('shown and hidden', !setShown(read, 'crop', true).hidden.includes('crop') && setShown(read, 'pen', false).hidden.includes('pen'))
 }
 
 console.log(`\n${failures === 0 ? 'all clear' : `${failures} failure(s)`}`)

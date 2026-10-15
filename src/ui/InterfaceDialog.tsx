@@ -7,6 +7,20 @@ import { useSyncExternalStore } from 'react'
 import { Dialog } from './Dialog'
 import { Field } from './docDialogs'
 import { DEFAULT_PREFS, SCALES, interfacePrefs, type InterfacePrefs } from './interface'
+import { Hint, Segmented } from './controls'
+
+const DENSITIES: [InterfacePrefs['density'], string][] = [
+  ['comfortable', 'Comfortable'],
+  ['compact', 'Compact'],
+]
+const CONTRASTS: [InterfacePrefs['contrast'], string, string][] = [
+  ['normal', 'Normal', 'The theme’s own'],
+  ['more', 'More', 'Stronger text, edges and focus rings'],
+]
+const MOTIONS: [InterfacePrefs['motion'], string, string][] = [
+  ['system', 'System', 'As the system says'],
+  ['reduce', 'Reduced', 'No transitions or animations'],
+]
 
 export function InterfaceDialog({ onClose }: { onClose(): void }) {
   const p = useSyncExternalStore(interfacePrefs().subscribe, interfacePrefs().get)
@@ -15,7 +29,7 @@ export function InterfaceDialog({ onClose }: { onClose(): void }) {
     <label className="check pref-check">
       <input type="checkbox" checked={p[key]} data-pref={key} onChange={(e) => set({ [key]: e.target.checked })} />
       {label}
-      <span className="field-note">{note}</span>
+      <Hint text={note} />
     </label>
   )
   return (
@@ -35,7 +49,7 @@ export function InterfaceDialog({ onClose }: { onClose(): void }) {
       }
     >
       <div className="form">
-        <Field id="pref-scale" label="Interface size">
+        <Field id="pref-scale" label="Interface size" hint="Menus, panels, bars and dialogs. The canvas keeps its own zoom.">
           <select id="pref-scale" value={p.scale} onChange={(e) => set({ scale: Number(e.target.value) })} autoFocus>
             {SCALES.map((s) => (
               <option key={s} value={s}>
@@ -43,26 +57,10 @@ export function InterfaceDialog({ onClose }: { onClose(): void }) {
               </option>
             ))}
           </select>
-          <span className="field-note">Menus, panels, bars and dialogs. The canvas keeps its own zoom.</span>
         </Field>
-        <Field id="pref-density" label="Density">
-          <select id="pref-density" value={p.density} onChange={(e) => set({ density: e.target.value as InterfacePrefs['density'] })}>
-            <option value="comfortable">Comfortable</option>
-            <option value="compact">Compact: tighter rows and bars, for small screens</option>
-          </select>
-        </Field>
-        <Field id="pref-contrast" label="Contrast">
-          <select id="pref-contrast" value={p.contrast} onChange={(e) => set({ contrast: e.target.value as InterfacePrefs['contrast'] })}>
-            <option value="normal">The theme’s own</option>
-            <option value="more">More: stronger text, edges and focus rings</option>
-          </select>
-        </Field>
-        <Field id="pref-motion" label="Motion">
-          <select id="pref-motion" value={p.motion} onChange={(e) => set({ motion: e.target.value as InterfacePrefs['motion'] })}>
-            <option value="system">As the system says</option>
-            <option value="reduce">Reduced: no transitions or animations</option>
-          </select>
-        </Field>
+        <Segmented id="pref-density" label="Density" hint="Compact has tighter rows and bars, for small screens" value={p.density} options={DENSITIES} onChange={(density) => set({ density })} />
+        <Segmented id="pref-contrast" label="Contrast" hint="More: stronger text, edges and focus rings" value={p.contrast} options={CONTRASTS} onChange={(contrast) => set({ contrast })} />
+        <Segmented id="pref-motion" label="Motion" hint="Reduced: no transitions or animations" value={p.motion} options={MOTIONS} onChange={(motion) => set({ motion })} />
         <fieldset className="field-group">
           <legend>Help as you work</legend>
           {toggle('richTips', 'Rich tooltips', 'Tools list their keys; unavailable commands say why.')}

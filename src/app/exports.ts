@@ -10,6 +10,7 @@ import { docToSvg } from '../io/svg/write'
 import { formatHex } from '../color/models'
 import { layoutOf, startFonts } from './text'
 import { docToPdf } from '../io/pdf/write'
+import { docToEps } from '../io/eps/write'
 import { deflateZlib } from '../io/png'
 import { swatchColourIn } from './docSwatches'
 import { profileLabel } from '../color/profiles'
@@ -17,9 +18,11 @@ import { engine } from '../engine/EngineHost'
 import { assets } from '../io/assets'
 import { docToPlan } from '../io/psd/fromDoc'
 import { colourEngine } from './colour'
+import { colourSettings } from './colourSettings'
 import { fontLibrary } from './fonts'
 import { newId } from './documents'
 import { hold } from './pixels'
+import { expandDoc } from '../doc/expand'
 
 export interface Exported {
   bytes: Uint8Array
@@ -50,6 +53,7 @@ export async function postscriptNames(): Promise<(family: string, style: string)
  * put in a scene of their own while they're written.
  */
 export async function psdOf(doc: Doc, key: string, psb = false): Promise<Exported> {
+  doc = expandDoc(doc)
   const warnings: string[] = []
   const psName = await postscriptNames()
   const write = async (d: Doc, k: string, big: boolean): Promise<Uint8Array> => {
@@ -104,7 +108,7 @@ export async function renderPart(doc: Doc, children: NodeId[], srgb: boolean, al
 
 /** The document as SVG: vectors where SVG can hold them, images where not (io/svg/write.ts). */
 export async function svgOf(doc: Doc, textAsOutlines: boolean): Promise<Exported> {
-  doc = fillsAsShapes(doc)
+  doc = fillsAsShapes(expandDoc(doc))
   const { converter } = await colourEngine()
   await fontsFor(doc)
   const release = hold(tileSetsOf(doc))
@@ -128,9 +132,52 @@ async function fontsFor(doc: Doc) {
   if (hasText(doc)) await startFonts().catch(() => null)
 }
 
+/** A document's spot channels for a PDF: each ink's name and full strength in the document's terms, and its plane over the canvas. */
+async function spotPlanes(doc: Doc) {
+  const spots = (doc.channels ?? []).filter((c) => c.kind === 'spot' && c.ink)
+  if (!spots.length) return []
+  const { converter } = await colourEngine()
+  const { intent, blackPointCompensation } = colourSettings.get()
+  const tmp = newId('spots')
+  engine().setScene(tmp, doc)
+  try {
+    const out = []
+    for (const c of spots) {
+      const plane = await engine().call('channel.plane', { key: tmp, channel: c.id })
+      out.push({ name: c.name, full: converter.convert(c.ink!, { space: doc.mode, profile: doc.profile }, intent, blackPointCompensation).c, ...plane })
+    }
+    return out
+  } finally {
+    engine().closeDoc(tmp)
+  }
+}
+
 /** The document as a print PDF (io/pdf/write.ts). */
+/** The document as EPS: the PDF host's pieces, written as PostScript (io/eps/write.ts). */
+export async function epsOf(doc: Doc): Promise<Exported> {
+  doc = fillsAsShapes(expandDoc(doc))
+  await fontsFor(doc)
+  const colourOf = swatchColourIn(doc)
+  const release = hold(tileSetsOf(doc))
+  try {
+    const r = await docToEps(doc, {
+      image: (id) => renderPart(doc, [id], false, true),
+      flattened: (count) => renderPart(doc, (doc.nodes[doc.root].children ?? []).slice(0, count), false),
+      layout: (n) => layoutOf(n, doc),
+      profileName: profileLabel(doc.profile),
+      spotColour: (s) => (colourOf ? colourOf(s, 1) : doc.mode === 'cmyk' ? [0, 0, 0, 1] : doc.mode === 'gray' ? [0] : [0, 0, 0]),
+      spotChannels: () => spotPlanes(doc),
+      deflate: deflateZlib,
+      now: new Date(),
+    })
+    return { bytes: r.bytes, mime: 'application/postscript', warnings: r.warnings }
+  } finally {
+    release()
+  }
+}
+
 export async function pdfOf(doc: Doc): Promise<Exported> {
-  doc = fillsAsShapes(doc)
+  doc = fillsAsShapes(expandDoc(doc))
   const { registry } = await colourEngine()
   await fontsFor(doc)
   const colourOf = swatchColourIn(doc)
@@ -144,6 +191,7 @@ export async function pdfOf(doc: Doc): Promise<Exported> {
       icc: await profileBytes(doc),
       profileName,
       spotColour: (s) => (colourOf ? colourOf(s, 1) : doc.mode === 'cmyk' ? [0, 0, 0, 1] : doc.mode === 'gray' ? [0] : [0, 0, 0]),
+      spotChannels: () => spotPlanes(doc),
       deflate: deflateZlib,
       now: new Date(),
     })

@@ -38,7 +38,7 @@ export const WORKSPACES: WorkspaceDef[] = [
   { id: 'print', name: 'Print', hint: 'Separations, Swatches with spot colours, Colour and Layers.', panels: ['colour', 'swatches', 'separations', 'layers'], dockWidth: 300 },
 ]
 
-export const WORKSPACE_BY_ID = new Map(WORKSPACES.map((w) => [w.id, w]))
+const WORKSPACE_BY_ID = new Map(WORKSPACES.map((w) => [w.id, w]))
 const isBuiltin = (id: string): id is WorkspaceId => WORKSPACE_BY_ID.has(id as WorkspaceId)
 
 /** A workspace of your own: its name and the layout it was saved with. */
@@ -85,10 +85,10 @@ export const allWorkspaces = (ws: Workspace): { id: string; name: string; custom
 ]
 
 export const workspaceName = (ws: Workspace, id = ws.current) => (isBuiltin(id) ? WORKSPACE_BY_ID.get(id)!.name : (ws.custom.find((w) => w.id === id)?.name ?? 'Workspace'))
-export const isCustom = (ws: Workspace, id = ws.current) => ws.custom.some((w) => w.id === id)
+const isCustom = (ws: Workspace, id = ws.current) => ws.custom.some((w) => w.id === id)
 
 /** A workspace as designed, or null when there's no such workspace. */
-export function designOf(ws: Workspace, id: string): Layout | null {
+function designOf(ws: Workspace, id: string): Layout | null {
   if (isBuiltin(id)) return presetLayout(id)
   return ws.custom.find((w) => w.id === id)?.layout ?? null
 }
@@ -201,7 +201,7 @@ function readOldLayout(raw: unknown, base: WorkspaceId): Layout {
 }
 
 /** A first-version save, carried over: the task workspaces as they were left. */
-export function readOldWorkspace(text: string | null): Workspace {
+function readOldWorkspace(text: string | null): Workspace {
   if (!text) return defaultWorkspace()
   let raw: Record<string, unknown> | null
   try {

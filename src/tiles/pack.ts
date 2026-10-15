@@ -31,8 +31,8 @@ const HEADER = 16
 const ENTRY = 24
 const MODES: ColourMode[] = ['rgb', 'gray', 'cmyk']
 
-export const KIND_UNIFORM = 0
-export const KIND_DEFLATE = 1
+const KIND_UNIFORM = 0
+const KIND_DEFLATE = 1
 export const KIND_SUB = 2
 
 export class PackError extends Error {}
@@ -116,7 +116,7 @@ export async function encodeSet(store: TileStore, id: SetId): Promise<Uint8Array
 }
 
 /** The format a pack holds, from its header alone. */
-export function packFormat(bytes: Uint8Array): TileFormat {
+function packFormat(bytes: Uint8Array): TileFormat {
   if (bytes.length < HEADER) throw new PackError('The tile data is cut short.')
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   if (v.getUint32(0, true) !== MAGIC) throw new PackError('This isn’t Plexel tile data.')

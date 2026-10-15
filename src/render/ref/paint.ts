@@ -39,8 +39,8 @@ export interface StrokeLayout {
 }
 
 export const strokeStride = (l: StrokeLayout) => 1 + (l.raw ? 1 : 0) + (l.dual ? 1 : 0) + l.channels
-export const rawOffset = (l: StrokeLayout) => (l.raw ? 1 : 0)
-export const dualOffset = (l: StrokeLayout) => 1 + (l.raw ? 1 : 0)
+const rawOffset = (l: StrokeLayout) => (l.raw ? 1 : 0)
+const dualOffset = (l: StrokeLayout) => 1 + (l.raw ? 1 : 0)
 export const colourOffset = (l: StrokeLayout) => 1 + (l.raw ? 1 : 0) + (l.dual ? 1 : 0)
 
 /** A stroke's texture, as stamping reads it. */
@@ -63,7 +63,7 @@ export interface StampStyle extends DabStyle {
   dualMode: number
 }
 
-export const PLAIN_STYLE: StampStyle = { noise: false, wetEdges: false, texture: null, dualMode: -1 }
+const PLAIN_STYLE: StampStyle = { noise: false, wetEdges: false, texture: null, dualMode: -1 }
 
 /** TEXTURE_MODE_INDEX for each dual mode: the dual brush combines with the same formulas. */
 export const DUAL_INDEX: Record<string, number> = { multiply: 0, darken: 2, overlay: 3, 'color-dodge': 4, 'color-burn': 5, 'linear-burn': 6, 'hard-mix': 7, 'linear-height': 8 }
@@ -116,7 +116,7 @@ export function onCanvas(clip: CanvasClip, px: number, py: number) {
 }
 
 /** The texture's value under a layer pixel, adjusted: it sits on the document, wherever the layer is. */
-export function textureAt(tex: StampTexture, clip: CanvasClip, px: number, py: number): number {
+function textureAt(tex: StampTexture, clip: CanvasClip, px: number, py: number): number {
   const t = clip.t
   const x = t[0] * px + t[2] * py + t[4]
   const y = t[1] * px + t[3] * py + t[5]
@@ -183,10 +183,20 @@ export function stamp(tile: StrokeTile, tx: number, ty: number, dabs: LayerDab[]
  * on: coverage `a` in straight colour `colour`, blended with `mode`; or, for
  * the eraser, `L` with `a` of its alpha taken away.
  */
-export function applyStroke(L: Px, a: number, colour: number[], mode: BlendModeId, eraser: boolean): Px {
+export function applyStroke(L: Px, a: number, colour: number[], mode: BlendModeId, eraser: boolean, planes?: boolean[]): Px {
   if (a <= 0) return { c: [...L.c], a: L.a }
-  if (eraser) return { c: L.c.map((v) => v * (1 - a)), a: L.a * (1 - a) }
-  return over(L, { c: colour.map((v) => v * a), a }, mode, 1)
+  const r = eraser ? { c: L.c.map((v) => v * (1 - a)), a: L.a * (1 - a) } : over(L, { c: colour.map((v) => v * a), a }, mode, 1)
+  return planes && !planes.every(Boolean) ? keepPlanes(L, r, planes) : r
+}
+
+/**
+ * Painting some colour channels (the Channels panel's target): `R`, the
+ * layer pixel `L` with paint laid on, keeping `L`'s straight colour in
+ * each channel not painted, and `L`'s alpha.
+ */
+export function keepPlanes(L: Px, R: Px, planes: boolean[]): Px {
+  const straight = (p: Px, i: number) => (p.a > 0 ? p.c[i] / p.a : 0)
+  return { c: L.c.map((_, i) => (planes[i] ?? true ? straight(R, i) : straight(L, i)) * L.a), a: L.a }
 }
 
 /**

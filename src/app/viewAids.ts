@@ -11,21 +11,19 @@ import type { OverlayView } from '../render/overlay'
 import { fromPixels } from '../doc/units'
 import { documents } from './documents'
 import { guidePrefs, rgbOf } from './guidePrefs'
+import { Listeners } from '../lib/listeners'
 
 class Origins {
   private map = new Map<string, [number, number]>()
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
   get = (key: string | null): [number, number] => (key ? (this.map.get(key) ?? [0, 0]) : [0, 0])
   set(key: string, at: [number, number] | null) {
     if (at) this.map.set(key, at)
     else this.map.delete(key)
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 }
 

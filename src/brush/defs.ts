@@ -45,7 +45,7 @@ export type DynTarget =
   | 'wetness'
   | 'mix'
 export const DYN_INPUTS: DynInput[] = ['pressure', 'tilt', 'twist', 'speed', 'distance', 'random', 'fade', 'direction', 'initial-direction']
-export const DYN_TARGETS: DynTarget[] = ['size', 'opacity', 'flow', 'hardness', 'angle', 'roundness', 'scatter', 'count', 'colour', 'hue', 'saturation', 'brightness', 'texture-depth', 'wetness', 'mix']
+const DYN_TARGETS: DynTarget[] = ['size', 'opacity', 'flow', 'hardness', 'angle', 'roundness', 'scatter', 'count', 'colour', 'hue', 'saturation', 'brightness', 'texture-depth', 'wetness', 'mix']
 
 /** Inputs as Photoshop's Control menus name them. */
 export const DYN_INPUT_LABELS: Record<DynInput, string> = {

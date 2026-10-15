@@ -9,7 +9,8 @@ import { addVector, insertNode, invertAffine, moveNode, removeNode, setAppearanc
 import { makeNode } from '../doc/nodes'
 import { freshName, placeOf } from '../doc/tree'
 import type { Affine, Doc, DocNode, NodeId } from '../doc/types'
-import { fillItem, geometryPath, solid, strokeStyleOf, type AppearanceItem, type Paint } from '../doc/vector'
+import { appearanceIn, fillItem, geometryPath, solid, strokeStyleOf, type AppearanceItem, type Paint, type StrokeItem } from '../doc/vector'
+import { brushAsPaths } from '../vector/outline'
 import { booleanPaths } from '../geom/boolean'
 import { anchor, applyMat, flattenPath, pathBounds, transformPath, type PathData, type Pt } from '../geom/path'
 import { contains, divide, joinPath, regionAt, simplifyPath, smoothPath, unite, type Region } from '../geom/regions'
@@ -25,7 +26,7 @@ import { clearToolOverlay, setToolOverlay } from './overlay'
 
 export type PathfinderOp = 'unite' | 'minus-front' | 'intersect' | 'exclude' | 'divide' | 'trim' | 'merge' | 'crop' | 'minus-back'
 
-export const PATHFINDER: [PathfinderOp, string][] = [
+const PATHFINDER: [PathfinderOp, string][] = [
   ['unite', 'Unite'],
   ['minus-front', 'Minus Front'],
   ['intersect', 'Intersect'],
@@ -105,7 +106,7 @@ const op = (path: PathData, o: 'add' | 'subtract' | 'intersect' | 'exclude') => 
 const nonEmpty = (p: PathData) => p.subpaths.length > 0 && (pathBounds(p) ?? [0, 0, 0, 0])[2] > (pathBounds(p) ?? [0, 0, 0, 0])[0]
 
 /** What a Pathfinder operation makes of shapes (bottom first), as paths with their looks. */
-export function pathfinderOf(doc: Doc, shapes: DocNode[], o: PathfinderOp): Made[] {
+function pathfinderOf(doc: Doc, shapes: DocNode[], o: PathfinderOp): Made[] {
   const paths = shapes.map((n) => pathOfNode(doc, n))
   const top = shapes[shapes.length - 1]
   const name = (n: DocNode) => n.name
@@ -226,6 +227,7 @@ export function outlineStroke() {
   if (!at || at.it.kind !== 'stroke') return notify('info', `“${s.n.name}” has no stroke to outline.`)
   const st = at.it
   const t = s.n.transform
+  if (st.brush) return outlineBrushStroke(s.d, s.n, items, at.i, st)
   const scale = Math.sqrt(Math.abs(t[0] * t[3] - t[1] * t[2])) || 1
   const tol = 0.05 / scale
   const closed = s.path.subpaths.every((x) => x.closed)
@@ -247,6 +249,35 @@ export function outlineStroke() {
     { key: s.d.key, label: 'Outline Stroke' },
   )
   documents().select(id, s.d.key)
+}
+
+/**
+ * Outline Stroke on a stroke drawn with a vector brush: each part of the
+ * brush's artwork a shape of its own, in its paint, grouped just above the
+ * shape (the group taking the stroke's opacity and blend), and the stroke
+ * taken off the shape.
+ */
+function outlineBrushStroke(d: OpenDoc, n: DocNode & { kind: 'vector' }, items: AppearanceItem[], index: number, st: StrokeItem) {
+  const doc = d.history.present
+  const parts = brushAsPaths(geometryPath(n.props.geometry), appearanceIn([st], doc.mode)[0] as StrokeItem, doc.mode)
+  if (!parts.length) return notify('info', `“${n.name}”’s brush draws nothing to outline.`)
+  const place = placeOf(doc, n.id)!
+  const gid = newId('n')
+  documents().commit(
+    (x) => {
+      let y = setAppearance(x, n.id, items.filter((_, i) => i !== index))
+      const group = makeNode('group', gid, freshName(y, `${n.name} ${st.brush!.name}`))
+      group.opacity = st.opacity
+      group.blend = st.blend
+      y = insertNode(y, group, place.parent, place.index + 1)
+      parts.forEach((p, i) => {
+        y = addVector(y, newId('n'), `${st.brush!.name} ${i + 1}`, { kind: 'path', path: transformPath(p.path, n.transform) }, [fillItem(p.paint)], gid, i)
+      })
+      return y
+    },
+    { key: d.key, label: 'Outline Stroke' },
+  )
+  documents().select(gid, d.key)
 }
 
 /** What Offset Path makes of the selected shape: a new shape just below it, its path offset. */
@@ -273,7 +304,7 @@ export function offsetShape(distance: number, join: 'miter' | 'round' | 'bevel',
 // --- Live Paint ------------------------------------------------------------------------------------
 
 /** A point inside a region: its box's middle if that's in it, else the middle of where a line across the middle first goes in. */
-export function interiorPoint(r: PathData): Pt | null {
+function interiorPoint(r: PathData): Pt | null {
   const b = pathBounds(r)
   if (!b) return null
   const c: Pt = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]
@@ -338,7 +369,7 @@ export function makeLivePaint(): NodeId | null {
 }
 
 /** A Live Paint group's regions, in the document's coordinates. */
-export function liveRegions(doc: Doc, g: DocNode): Region[] {
+function liveRegions(doc: Doc, g: DocNode): Region[] {
   const kids = (g.children ?? []).map((c) => doc.nodes[c]).filter((c): c is DocNode => !!c && c.visible && isShape(c))
   return divide(kids.map((c) => pathOfNode(doc, c)))
 }
@@ -348,7 +379,7 @@ export function liveRegions(doc: Doc, g: DocNode): Region[] {
  * with the foreground colour (Alt: its fill taken away). On shapes that
  * aren't one yet, it makes one of the selected shapes first.
  */
-export function livePaintClick(d: OpenDoc, p: Pointer) {
+function livePaintClick(d: OpenDoc, p: Pointer) {
   let doc = d.history.present
   const sel = d.selected ? doc.nodes[d.selected] : undefined
   let g = isLivePaint(sel) ? sel : isLivePaint(doc.nodes[placeOf(doc, d.selected ?? '')?.parent ?? '']) ? doc.nodes[placeOf(doc, d.selected!)!.parent] : undefined
@@ -428,7 +459,7 @@ function builderRegions(d: OpenDoc, shapes: DocNode[]): Region[] {
  * Alt to delete them. The shapes are cut into their regions as it does;
  * the regions keep the look of the shape on top of them.
  */
-export function builderPress(d: OpenDoc, p0: Pointer): Gesture | null {
+function builderPress(d: OpenDoc, p0: Pointer): Gesture | null {
   const shapes = selectedShapes(d)
   if (shapes.length < 1) {
     notify('info', 'Select the shapes to build from first, with the Move tool or in the Layers panel.')

@@ -22,8 +22,12 @@ make.
 - **The options bar** runs across the window under the menu bar and shows
   the chosen tool's settings.
 - **The toolbar** down the window's left edge, under the options bar, holds
-  the tools. Click one, or
-  press its key.
+  the tools. Click one, or press its key. Tools that share a key share a
+  slot, as in Photoshop (the Pen, Curvature and Width tools; the Brush and
+  Mixer Brush...): the slot shows the one you used last, with a small
+  triangle in its corner. Right-click it, hold the button down or click
+  the triangle for the others; Alt-click goes on to the next. When the
+  window is too short for one column of tools, they go into two.
 - **The docks** hold the panels: one on the right to start with, and one
   on the left once you put a panel there. Click a panel's title to fold it,
   × to close it, and drag a column's edge by the canvas to make it wider or
@@ -64,7 +68,8 @@ shortcut, and changes them (chapter 15). The keys below are Plexel's own.
 | Ctrl+S | Save |
 | Ctrl+Shift+S | Save As |
 | Ctrl+Alt+W | Close the document in front |
-| Ctrl+Alt+Shift+W | Export as PNG, JPEG, PSD, PSB, SVG or PDF |
+| Ctrl+Alt+Shift+W | Export as PNG, JPEG, WebP, PSD, PSB, SVG, PDF or EPS |
+| Ctrl+Alt+Shift+S | Save for Web: compare formats and sizes side by side |
 | Ctrl+Z | Undo |
 | Ctrl+Shift+Z | Redo |
 | Ctrl+X, Ctrl+C, Ctrl+V | Cut, copy and paste (chapter 13) |
@@ -76,7 +81,7 @@ shortcut, and changes them (chapter 15). The keys below are Plexel's own.
 | F2 | Rename the selected layer |
 | Ctrl+, | Show or hide the selected layer |
 | Ctrl+] and Ctrl+[ | Move the selected layer up or down |
-| Delete or Backspace | Clear what's selected; with nothing selected, delete the selected layer |
+| Delete or Backspace | Clear what's selected; with nothing selected, delete the selected layer (or, with an alpha or spot channel picked, clear the channel) |
 | Ctrl+Alt+Shift+N | New pixel layer |
 | Alt+Backspace | Fill the selected layer (or what's selected of it) with the foreground colour |
 | Ctrl+Backspace | Fill it with the background colour |
@@ -86,6 +91,8 @@ shortcut, and changes them (chapter 15). The keys below are Plexel's own.
 | Shift+F6 | Feather the selection |
 | Ctrl+Alt+R | Select and Mask |
 | Q | Quick Mask on and off |
+| Ctrl+2, Ctrl+3… | Pick the composite channel, then each channel after it (chapter 20) |
+| Ctrl+Alt+2 | Load the luminosity as the selection |
 | Ctrl+Alt+T | Free Transform |
 | Enter and Esc | Commit or cancel a Free Transform, a crop or a Polygonal Lasso |
 | ← → ↑ ↓ | Nudge the selected layer a pixel (with a selection tool, the selection); Shift for ten |
@@ -325,8 +332,8 @@ its own name until you Save As.
 
 ### Images
 
-Plexel opens and imports PNG, JPEG and TIFF images, and exports PNG and
-JPEG. Photoshop documents, SVG and PDF are in chapter 11.
+Plexel opens and imports PNG, JPEG, WebP and TIFF images, and exports PNG,
+JPEG and WebP. Photoshop documents, SVG and PDF are in chapter 11.
 
 - **File → Open** (Ctrl+O), or dropping an image anywhere but on an open
   document's canvas, opens it as a **new document**, with the image's own
@@ -341,7 +348,7 @@ JPEG. Photoshop documents, SVG and PDF are in chapter 11.
   lands where you dropped it; an imported one in the middle. One Undo takes
   it away.
 - **File → Export** (Ctrl+Alt+Shift+W) saves the document flattened, every
-  visible layer combined, as a PNG or a JPEG, or with its layers as a
+  visible layer combined, as a PNG, a JPEG or a WebP, or with its layers as a
   Photoshop document, an SVG or a PDF (chapter 11). The dialog says what
   the file will hold before you save it.
 
@@ -349,7 +356,35 @@ JPEG. Photoshop documents, SVG and PDF are in chapter 11.
 | --- | --- | --- |
 | PNG | Every kind: 1 to 16 bits, gray, colour, palette, transparency, interlaced, with its profile | 8 or 16 bits as the document is, with transparency and the profile. A CMYK document is converted to sRGB, since PNG has no CMYK. |
 | JPEG | RGB, gray and CMYK (Photoshop's too), baseline and progressive, with the profile | 8-bit RGB on white (JPEG has no transparency) at the quality you choose, with the profile; Gray and CMYK documents are converted to sRGB |
+| WebP | Lossy and lossless, with transparency and the profile (as Chrome decodes it, 8-bit RGB) | 8-bit RGB with transparency, lossy at the quality you choose or **Lossless** (every pixel exact), with the profile; Gray and CMYK documents are converted to sRGB. Small files for the web, so there's nothing to convert afterwards. |
 | TIFF | 1 to 16 bits, gray, RGB, palette and CMYK, with transparency and the profile; uncompressed, LZW, ZIP or PackBits, in strips or tiles. Not yet: JPEG-compressed TIFFs, floating point, and Photoshop's layers inside TIFFs (the flattened image opens) | Later |
+
+### Save for Web
+
+**File → Save for Web** (Ctrl+Alt+Shift+S) is Photoshop's Save for Web
+(Legacy): it shows the image as it will be on the web, in the formats
+you're choosing between, with each file's size and how long it takes to
+download.
+
+- **Original** shows the image as it is; **Optimized** the file being set;
+  **2-Up** the two side by side; **4-Up** the original and three files to
+  compare, each with its own settings: click one to set it (it's
+  outlined). Drag any of them to look round; they move together. The zoom
+  is at the top right.
+- **Format**: **JPEG** (a quality, on a matte colour since it has no
+  transparency), **PNG-24** (every colour, transparency or a matte),
+  **PNG-8** (a palette of 2 to 256 colours, dithered or not, with one-bit
+  transparency, often the smallest for flat graphics), or **WebP** (a
+  quality, or lossless, with transparency).
+- **Image size** makes the file smaller or larger than the document, by
+  width, height or a percentage, in proportion if you keep it ticked; the
+  document isn't changed.
+- **Convert to sRGB** (on, as the web expects) converts the colours; off,
+  an RGB document keeps its own profile. **Embed colour profile** puts the
+  profile in the file.
+
+**Save** writes the chosen file. Save for Web remembers its layout and
+settings for next time.
 
 ## 3. Colour
 
@@ -364,6 +399,23 @@ front.
 - ⇄ (or **X**) swaps them.
 - The small black-and-white pair (or **D**) puts them back to black on
   white.
+
+### Colour chips
+
+Everywhere else a colour is set (a shape's fill, a gradient's stops, a
+filter's colour, a swatch, an ink, the guides), it shows as a **colour
+chip**. Click it for the colour picker:
+
+- Drag in the square for saturation and brightness, and along the strip
+  under it for the hue.
+- Or use the sliders and numbers, in the same models as the Colour panel,
+  or type a hex code.
+- The chips along the bottom take the foreground, the background, one of
+  the document's swatches or one of yours.
+- A colour the document can't print is warned of, as in the Colour panel.
+
+The colour changes as you go, and everything you do in the picker is one
+step to undo. Esc, Enter or a click outside closes it.
 
 ### Colour models
 
@@ -457,6 +509,7 @@ graphics card is holding.
 | Zoom in or out | **Ctrl+=** and **Ctrl+−** step through 100%, 200%, 66.7% and the rest. **Ctrl+wheel**, or pinching on a trackpad, zooms smoothly about the pointer. With the **Zoom** tool (Z), click to zoom in a step about the point you click, Alt-click to zoom out, or drag right and left to zoom smoothly. |
 | See the whole image | **View → Fit on Screen** (Ctrl+0). |
 | See every pixel as it is | **View → 100%** (Ctrl+1): one image pixel to one screen pixel. Above 100% the pixels are drawn as hard squares. |
+| Frame the selection or a layer | **View → Zoom to Selection**, or **View → Zoom to Layer** for the selected layers. Double-click a layer's thumbnail in the Layers panel to zoom to that layer. |
 | Turn the view | Choose **Rotate View** (R) and drag around the middle of the canvas; hold Shift to turn in 15° steps. **View → Rotate View Left 15°** and **Right 15°** turn it a step. Double-click with the tool, or choose **View → Reset Rotation**, to put it straight. |
 | Jump somewhere else while zoomed in | **Hold H and press** on the canvas: the whole document shows, with a frame the size of the view you came from. Drag the frame where you want to be and let go; the view zooms back in there. Esc puts it back as it was. |
 | See two views at once | **View → Split View**: the canvas splits in two, your view on the left and the whole document fitted on the right. Each pane zooms, pans and turns on its own, and every tool works in either; the one under the pointer is the one the zoom keys, the status bar and the rulers follow. Choose it again for one pane, keeping the view of the pane you were in. |
@@ -557,6 +610,14 @@ foreground; Alt-click for the background. It picks from everything you see,
 all the layers together. **Sample** in the options bar picks one pixel, or
 averages a 3 × 3 or 5 × 5 square.
 
+**A colour picker at the pointer**: with a painting tool or the Colour
+Picker, hold **Shift+Alt** and drag with the right button (Ctrl+Option+Cmd
+and a drag on a Mac), as in Photoshop. A shade square opens under the
+pointer, with the foreground's place in it where you pressed, and a hue
+strip beside it: move in the square for the shade, or across onto the
+strip for the hue. The foreground follows; let go to keep it, or press
+**Esc** for the colour you had.
+
 ### Swatches
 
 The **Swatches** panel (Window → Swatches) keeps colours for reuse. Click a
@@ -589,7 +650,14 @@ selected, and what's done through it fades out there.
   circle, and Alt to draw from the middle out.
 - **The Lasso** (L) selects what you draw round. In **Polygonal** mode,
   click each corner instead; click the first corner, double-click or press
-  Enter to close the shape, and Esc to give up.
+  Enter to close the shape, and Esc to give up. As in Photoshop:
+  - Drawing freehand, hold **Alt** and let go of the button: the Lasso
+    carries on in straight sides, a click for each corner (drag without
+    Alt for freehand again). Let go of Alt to close it.
+  - In Polygonal mode, **Alt-drag** draws freehand, and **Shift** keeps
+    the next side to 45°.
+  - **Backspace** (or Delete) takes the last corner, or freehand piece,
+    back; with nothing left to take, the lasso is cancelled.
 - **The Magic Wand** (W) selects pixels like the one you click. **Tolerance**
   says how different a colour may be (on any channel, from 0 to 255) and still
   be selected. **Contiguous** keeps to pixels joined to the one clicked; turn
@@ -698,7 +766,7 @@ layer into or out of another does the same.
   Ctrl then turns it off for that press. Auto-Select can pick the layer,
   or the outermost group holding it.
 - **Edit → Free Transform** (Ctrl+Alt+T) puts a box with handles round the
-  selected layer. Drag a corner to scale it, keeping its proportions (Shift
+  selected layer (or, with several selected, round all of them). Drag a corner to scale it, keeping its proportions (Shift
   lets them go), and an edge's middle to stretch it one way; hold Alt to
   scale about the middle. Ctrl-drag an edge's middle to skew. Drag inside
   the box to move it, and outside to turn it, Shift in 15° steps. The
@@ -778,7 +846,11 @@ layer's effects instead.
 The **Filter** menu has Photoshop's submenus: Blur, Distort, Noise,
 Pixelate, Render, Sharpen, Stylize and Other (and Liquify, chapter 19).
 Each filter opens a dialog that shows the result on the canvas as you set
-it.
+it. Nothing is dimmed behind the dialog, so you see the result as it will
+be; drag on the canvas to move around it (the wheel zooms), and drag the
+dialog by its title bar to see past it. Every dialog opens where you last
+left it; double-click its title bar to put it back. The adjustment, Layer
+Style, Offset Path and Simplify dialogs work the same way.
 
 With **Live** ticked (as it is unless something is selected), the filter
 goes in the layer's effects, listed under the layer in the Layers panel.
@@ -905,17 +977,91 @@ point (the curve doesn't change), click a point to delete it, Alt-click a
 point to turn it from corner to smooth or back, and click an open path's
 end to carry it on.
 
+**Smart** in the options bar (as Affinity's Pen has it): a click places a
+smooth point, its curve worked out from the points either side, and the
+next segment shows as it will curve; Alt-click places a corner, and a drag
+still pulls the handles out by hand.
+
+### The Curvature tool (Shift+P)
+
+The **Curvature** tool (in the Pen's group: Shift+P switches between them)
+draws curves from points alone:
+
+- Click to place smooth points; the curve runs through them, each point's
+  handles along the line between its neighbours. Alt-click places a corner.
+- Click the first point to close the path; Enter finishes it open.
+- On the selected path: drag a point to move it, the curve through its
+  neighbours following; double-click a point to make it a corner, and
+  again to make it smooth; click a segment to add a smooth point (and drag
+  it straight away); click an open end to carry the path on.
+
+Points show as **rounds** when they're smooth and **squares** when they're
+corners, with whichever tool shows them.
+
+### The Width tool (Shift+P)
+
+The **Width** tool, also in the Pen's group, makes a stroke wider or
+narrower along its path, as Illustrator's does. It works on the topmost
+stroke of the selected shapes, or of any stroked shape you press on, which
+it then selects.
+
+- Hover the stroke and a line across it shows where a width point would
+  go. **Drag** the stroke to add a point there and widen it (or narrow it)
+  as you drag.
+- Each width point shows as a line across the stroke: a round point in the
+  middle and a diamond at each edge. Drag an **edge** to change the width
+  there; both sides change in proportion, or with **Alt** only that side.
+- Drag a point's **middle** to slide it along the path, between the points
+  either side; **Alt**-drag to slide a copy of it instead.
+- **Shift**-click points to select several: dragging the edge of one of
+  them widens them all. **Delete** removes the selected points.
+- **Double-click** a point for Width Point Edit: each side's width and the
+  whole width, in pixels (changing the whole keeps the sides' proportion),
+  and Delete.
+
+The points are the stroke's profile, so Properties shows it as **Custom**
+once you've changed it, and Uniform makes it even again. A path of several
+parts takes the same profile along each. On a closed path the point where
+it starts is also where it ends: changing one changes both.
+
+### Drawing freehand (N)
+
+Three tools share the **N** slot (Shift+N goes from one to the next), as
+in Illustrator:
+
+- **Pencil**: drag to draw a path as your hand goes; it's smoothed into
+  curves when you let go. End near where you began and it closes.
+- **Paintbrush**: the same, stroked with a vector brush (choose it in the
+  options bar, or Basic for a plain stroke). Its **Width** is how tall
+  the brush's artwork is on the path.
+- **Blob Brush**: paints filled shapes in the foreground colour, like a
+  marker. Where a stroke touches a shape of the same colour (filled, with
+  no stroke) in the same group, they become one shape. [ and ] change its
+  **Size**; **Merge only with selection** joins only the selected shapes.
+
+**Fidelity** says how smooth: how far the curve may stray from your hand,
+in screen pixels (small follows every wobble, large is smooth), so it
+feels the same at any zoom.
+
+With **Edit selected** on (the Pencil's and the Paintbrush's), a stroke
+that starts on the selected path and ends on it again redraws the part
+between; one that starts at an open path's end carries it on. **Keep
+selected** keeps each new path selected, so the next stroke near it
+reshapes it. **Fill** fills new paths with the background colour.
+
 ### Editing points
 
-**Direct Selection** (A) shows the selected path's points:
+**Direct Selection** (A) shows the points of every selected shape:
 
-- Click a point to select it, Shift-click to add one, or drag a box round
-  several. Drag to move them; their handles come with them.
+- Click a point to select it, Shift-click to add one (of any selected
+  shape), or drag a box round several: the box takes the points of every
+  shape it reaches and selects those shapes. Drag to move them, on all the
+  shapes at once, as one step; their handles come with them.
 - Drag a selected point's handle to reshape its curves. A smooth point's
   other handle turns to stay in line; hold Alt to break them apart.
 - Alt-click a point to convert it; **Delete** removes the selected points.
 - Click a segment to select the points at its ends, and drag it.
-- Click another shape on the canvas to select it.
+- Click another shape on the canvas to select it; Shift-click to add it.
 
 Editing a live shape's points turns it into a path.
 
@@ -929,14 +1075,25 @@ and × to remove it. Click one to set it:
 | Setting | What it does |
 | --- | --- |
 | Paint | **Colour**, **Gradient** or **Pattern**. |
-| Colour | Takes the foreground colour. |
+| Colour | Its chip: click it for the colour picker. |
 | Gradient | Linear, radial, angular or diamond, across the shape's box: its stops (each with a position, a colour and an opacity), angle, scale and Reverse. |
 | Pattern | Checkerboard, stripes, dots or a grid, in a colour over a background (which can be see-through), its size and angle. It moves and turns with the shape. |
 | Opacity, Blend mode | How it's laid over the fills and strokes below it. |
 | Width | A stroke's width in pixels. |
 | Align | Centre (straddling the outline), Inside or Outside. Inside and outside apply to closed paths. |
 | Corners, Ends | Miter (with its limit), round or bevel corners; butt, round or square ends. |
-| Dashes | Lengths, dash then gap: "8 4" is dashes of 8 with gaps of 4. "0 6" with round ends makes dots. Dash offset slides them along. |
+| Dashes | Lengths, dash then gap: "8 4" is dashes of 8 with gaps of 4. "0 6" with round ends makes dots. Dash offset slides them along. **Align dashes to corners** stretches them a little so every corner and end has a dash, half either side of a corner. |
+| Profile | How wide the stroke is along the path: Uniform, Taper Both, Taper Start, Taper End, Bulge, Pinch or Brush, a profile you saved, or Custom when the Width tool has shaped it. **Flip Along** turns it end to end, **Flip Across** side to side; **Save…** keeps it by a name, listed after the presets (in this browser), and **Forget** takes a saved one out of the list. |
+| Start, End | An arrowhead at either end of an open path (Triangle, Stealth, Open, Circle, Square, Diamond or Bar), filled with the stroke's paint, and its size. |
+
+**Scale Strokes**, in the Move tool's options bar and Free Transform's,
+says whether scaling a shape scales its strokes with it (on, as before) or
+leaves them as wide as they were (off), as Illustrator's Scale Strokes &
+Effects does.
+
+In SVG and PDF a stroke with a profile, arrowheads or aligned dashes is
+written as its outline, filled, so it looks exactly the same; a PSD keeps
+the look in the layer's pixels, and its live stroke is a plain one.
 
 A path's **Fill rule** says what's filled where it crosses itself: Non-zero
 fills it all, Even-odd leaves holes where outlines overlap.
@@ -980,6 +1137,76 @@ strokes and their effects together.
   their looks.
 
 Copying a linked shape into another document brings its style too.
+
+### Vector brushes
+
+A stroke can draw artwork along its path instead of a plain line, as
+Illustrator's brushes do. **Window → Vector Brushes** lists the
+document's brushes and the built-in ones, each drawn along a curve:
+
+- **Art** brushes bend one piece of artwork along the whole path
+  (Tapered Ink, Arrow, Ribbon).
+- **Scatter** brushes put copies of it along the path, each varied in
+  size, spacing, distance from the path and rotation (Dots, Stars,
+  Confetti).
+- **Pattern** brushes repeat a tile along the path, bent with it, with
+  their own tiles at the ends and the corners if they have them (Rope,
+  Railroad, Beads).
+
+**Click a brush** to stroke the selected shapes and text with it (a shape
+without a stroke gets one). The stroke's **width** is how tall the
+artwork is on the path, its width profile shapes it, and its opacity,
+blend mode and effects are the whole brush's; its dashes, corners, ends
+and arrowheads don't apply. In Properties a stroke's **Brush** chooses
+one, or None for a plain stroke.
+
+**New from Selection** (or Layer → Brushes) makes an art, scatter or
+pattern brush of the selected shapes: their fills, and their strokes as
+outlines, each in its colour. **Brush Options** (double-click a brush, or
+its sliders button) sets:
+
+| Setting | What it does |
+| --- | --- |
+| Colorization | **None** keeps the art's colours. **Tints** uses the stroke's colour, lighter where the art is lighter; **Tints and Shades** darker too; **Hue Shift** turns the art's main colour into the stroke's and the rest with it. |
+| Fit (art) | **Stretch to fit** the path's length; **Scale in proportion** (a longer path is a wider stroke); **Stretch between guides**, where the art's start and end (a share of its length each) keep their shape, as an arrowhead should. |
+| Width, Flip | How tall the art is as a share of the stroke's width; flipped end to end or side to side. |
+| Size, Spacing, Scatter, Rotation (scatter) | Each a lowest and highest value, every copy taking one between them: size as a share of the stroke's width, spacing as a share of a copy (100% touches), scatter off the path either side, rotation in degrees from the path's direction or the page's. **Vary Again** shuffles them. |
+| Fit, tiles (pattern) | Tiles **stretched** to fit a whole number along the path, or kept their length with **space** added; the side, start, end and corner tiles each taken from the selected shapes. Corners are where the path turns sharply; without a corner tile the side tiles bend round them. |
+
+OK keeps the brush in the document (a built-in one edited is kept under
+its name) and, if you leave it ticked, changes the strokes drawn with it.
+Each stroke keeps its own copy of its brush, so it looks the same pasted
+into another document. **Remove Brush Stroke** makes the selected strokes
+plain again; **Outline Stroke** makes a brush stroke's artwork shapes of
+their own, grouped.
+
+In SVG and PDF a brush stroke is written as its artwork, filled, so it
+looks the same; a PSD keeps the look in the layer's pixels and its live
+stroke is plain.
+
+### Image Trace
+
+**Layer → Image Trace** turns a pixel layer (or a placed image) into
+shapes, as Illustrator's does. It opens beside the canvas and shows the
+result as you change it, with how many paths, anchors and colours it
+makes:
+
+| Setting | What it does |
+| --- | --- |
+| Preset | Default (black and white), High and Low Fidelity Photo, 3, 6 and 16 Colours, Shades of Gray, Black and White Logo, Sketched Art, Silhouettes. Changing a setting makes it Custom. |
+| Mode | **Black and White** (pixels darker than the **Threshold** are black), **Grayscale** or **Colour**, with how many grays or colours. |
+| Paths | How far curves may stray from the pixels' edges: small for detail, large for smooth, simple shapes. |
+| Corners | A turn sharper than this stays a sharp corner. |
+| Noise | Specks smaller than this many pixels join what's round them. |
+| Blur first | Softens a photo's grain before its colours are counted. |
+| Ignore white | Leaves the white out, for line art over a white background. |
+
+**Trace** makes a group above the layer with one shape per colour (every
+area of that colour in one path), and hides the layer unless you untick
+**Hide the image once traced**. Neighbouring shapes share their edges
+exactly, so there are no gaps between them and nothing overlaps. Images
+larger than 2,400 pixels a side are traced at that size and scaled back
+up. See-through pixels are left out.
 
 ### Compound shapes
 
@@ -1048,8 +1275,15 @@ strokes; Release Compound Shape gives back the paths.
   outside strokes as they look).
 - **Offset Path…**: a new shape just below, its outline moved out (or in)
   by the offset, with mitred, round or bevelled corners.
-- **Join**: the two open ends nearest each other joined; one open path
-  closed.
+- **Join**: with two end points selected (of one shape or two), joined
+  by a straight segment, or made one point where they meet (the second
+  shape's path goes into the first). With shapes selected and no points,
+  their paths joined into one shape, open ends nearest each other first;
+  one shape's two nearest open ends joined, or one open path closed.
+- **Break at Points**: the paths cut at the selected points; a closed path
+  opens there.
+- **Separate**: each part of a shape (a compound path) a shape of its own,
+  with the same look.
 - **Simplify…**: the path redrawn with fewer anchors, within a precision,
   keeping corners sharper than an angle; the dialog counts the anchors.
 - **Smooth**: every anchor made smooth.
@@ -1068,7 +1302,11 @@ the same submenu; Shift-click its thumbnail to turn it off and on.
 ### Transforming and rasterizing
 
 Free Transform (Ctrl+Alt+T), the Move tool and the arrow keys work on shapes
-and compound shapes; a stroke scales with its shape. **Layer → Rasterize**
+and compound shapes; a stroke scales with its shape. With the **Move tool**,
+selected shapes (one or several) show Free Transform's box and handles
+without Ctrl+Alt+T: drag a handle to scale (Shift freely, Alt from the
+centre, Ctrl on an edge to skew), just outside a corner to turn, inside to
+move. Each drag is one step. **Layer → Rasterize**
 turns a shape into a pixel layer that looks the same.
 
 ## 9. Type
@@ -1299,8 +1537,8 @@ swatch's name for its options:
 | Global process | Fills and strokes given it stay linked: change the swatch, and they all change. |
 | Spot | A named ink (a Pantone colour, a varnish, a house colour), linked like a global one. On screen and in raster output it's drawn through the colour you gave it, its process equivalent. |
 
-**Use Foreground** sets a swatch to the foreground colour; everything
-linked to it follows. **Delete** removes it; fills and strokes linked to it
+The swatch's **Colour** chip changes its colour (its picker can take the
+foreground); everything linked to it follows. **Delete** removes it; fills and strokes linked to it
 keep their colour. A swatch keeps its own space: a CMYK or Lab spot colour
 stays those numbers through any conversion, and fills linked to it are
 made again from it in the new mode.
@@ -1363,13 +1601,14 @@ pattern fill layers come in as their pixels and Pattern Overlay with one of
 Plexel's patterns; Hue/Saturation's settings for single colour ranges;
 Selective Colour, Photo Filter and Colour Lookup; smart filters; linked
 smart objects whose file isn't inside the document; warped text and text
-on a path (as their pixels); colour per character; spot and alpha channels.
+on a path (as their pixels); colour per character. Alpha and spot channels
+come in as channels (chapter 20), named and coloured as the file has them.
 32-bit documents open at 16 bits, Lab and indexed documents as RGB,
 duotones, bitmaps and multichannel documents as Gray.
 
 ### Exporting
 
-**File → Export** (Ctrl+Alt+Shift+W) has three formats that keep layers or
+**File → Export** (Ctrl+Alt+Shift+W) has four formats that keep layers or
 vectors:
 
 - **Photoshop (PSD)** and **Photoshop Large Document (PSB)**: everything
@@ -1390,22 +1629,31 @@ vectors:
   and strokes linked to a spot swatch print on their own plate, named for
   the swatch. Blend modes PDF doesn't have (Linear Burn and the like)
   flatten what's under them into a picture.
+- **EPS**: Encapsulated PostScript, for print tools and workflows that
+  still ask for it. The document's size, its colours as the printer's
+  device takes them (CMYK as ink; EPS has no colour profiles), spot colours
+  and spot channels on their own plates. PostScript has no transparency,
+  so everything up to the topmost layer with pixels, opacity below 100%, a
+  blend mode or effects is one picture (its see-through parts left
+  unpainted); fully opaque shapes and text above that are vectors, text as
+  outlines. For the most vectors, keep shapes and text at the top at full
+  opacity, or use PDF, which holds transparency.
 
-| Kept as | PSD | SVG | PDF |
-| --- | --- | --- | --- |
-| Layers and groups | Yes | Groups | Transparency groups |
-| Shapes | Shape layers | Paths | Paths |
-| Text | Type layers | Text, or outlines | Outlines |
-| Adjustments and effects | Yes | Pictures | Pictures |
-| CMYK | Yes | Converted to sRGB | Yes, with an output intent |
+| Kept as | PSD | SVG | PDF | EPS |
+| --- | --- | --- | --- | --- |
+| Layers and groups | Yes | Groups | Transparency groups | Opaque groups of shapes; the rest one picture |
+| Shapes | Shape layers | Paths | Paths | Paths, when opaque and above any picture |
+| Text | Type layers | Text, or outlines | Outlines | Outlines |
+| Adjustments and effects | Yes | Pictures | Pictures | One picture |
+| CMYK | Yes | Converted to sRGB | Yes, with an output intent | Yes, as device CMYK |
 | Spot colours | As their process colours | As their process colours | Their own plates |
+| Alpha and spot channels | Yes | Left out | Spot channels as their own plates; alpha channels left out |
 
 ### What's still to come
 
 PDF with live, selectable text and its fonts embedded; bleed beyond the
-document's edge; opening PDF and Illustrator files; Photoshop's patterns,
-spot channels and smart filters; TIFF export and Photoshop's layers inside
-TIFFs.
+document's edge; opening PDF and Illustrator files; Photoshop's patterns
+and smart filters; TIFF export and Photoshop's layers inside TIFFs.
 
 ## 12. Brushes
 
@@ -1665,6 +1913,10 @@ been scaled or turned has to be rasterized first. It takes a moment on a
 big selection, and the canvas keeps working meanwhile. The blend mode,
 opacity and Preserve Transparency apply to what it makes.
 
+**Long jobs** (content-aware fill, opening a large Photoshop file, a filter
+applied for good) show a bar at the foot of the canvas: what's working, how
+far it's got, and **Cancel**. **Esc** cancels too; nothing is changed.
+
 ### The Gradient tool
 
 **The Gradient tool** (G) draws a gradient from where you press to where
@@ -1753,7 +2005,8 @@ on the edge of what you want, then move along it without holding the
 button: the outline follows the strongest edge near the pointer, and
 points drop by themselves where it has settled. Click to drop a point
 yourself (it lands on the nearest edge), for corners or where the edge is
-faint. Click the first point, double-click or press **Enter** to close
+faint; **Alt-click** for a straight side to the point clicked, and
+**Backspace** takes the last point back. Click the first point, double-click or press **Enter** to close
 it; **Esc** cancels. In the options bar, **Width** is how far from the
 pointer an edge is looked for, **Contrast** how strong an edge must be to
 be followed, and **Frequency** how often points drop.
@@ -1820,18 +2073,16 @@ or intersecting with what's there. **Select → Load Selection** makes a
 channel the selection again, inverted or not, or combines it with the
 selection there is.
 
-The **Channels** panel (Window → Channels) lists the channels. Click the
-square beside one to load it (Shift adds, Alt takes away, both
-intersect); pick one with the circle to **Save Into**, **Duplicate** or
-**Delete** it; double-click a name to rename it. Channels are saved in
-the file, and Crop and Canvas Size move them with everything else.
+The **Channels** panel lists them, and they can be painted and filled
+like a mask: see chapter 20. Channels are saved in the file, and Crop and
+Canvas Size move them with everything else.
 
 ### What's still to come
 
 Patterns from pixels in Pattern Overlay (a layer style's patterns are
 still the four drawn ones), a gradient editor with presets of your own,
-painting an alpha channel, Photoshop's patterns and alpha channels in PSD
-files, Decontaminate Colours, and Select Subject, which needs a model.
+Photoshop's patterns, Decontaminate Colours, and Select Subject, which
+needs a model.
 
 ## 15. Help as you work, and the workspace
 
@@ -1842,6 +2093,10 @@ what it does, and every key and gesture it answers to, such as **Shift**
 adds to the selection, or **Alt and a right-drag** sizes the brush. Keys
 marked *while dragging* matter once the press has started. Once a card is
 showing, the next tool's shows at once.
+
+An **ⓘ** beside a setting's name explains it: rest the pointer on it. Panels
+and dialogs keep their explanations there rather than in sentences under
+each field, and a dialog's ⓘ by its title says what the dialog does.
 
 A greyed-out menu item says why it's greyed out: "Needs a selection: draw
 one with a selection tool", "Select a layer first", "Works on a pixel layer,
@@ -1930,9 +2185,22 @@ press **Esc** to call the drag off.
 
 **Floating windows** move by their tab bar, and resize by their bottom right
 corner (double-click the corner to fit the window to what's in it). Drag a
-floating window's bar to a dock to dock it again. Drag the foot of a
-docked group to give it a height of its own, with what's in it scrolling;
-double-click the foot to let it take the height of what's in it again.
+floating window's bar to a dock to dock it again.
+
+**A column's height is shared.** The groups in a docked column fit it:
+each takes the height of what's in it while there's room (the last one
+the rest), and when there isn't, the tallest give up room first, so a
+short panel such as Layers with a few layers stays whole while a long one
+such as Properties scrolls what's in it. The column itself never scrolls
+as well, and a tab bar is never covered: every group keeps its tab bar
+and a strip of what's in it. Drag the **divider** under a group to trade
+height with the group below; from then on the column's groups keep those
+proportions as the window changes size. Double-click a divider to fit them
+to what's in them again.
+
+**Tabs that don't fit** a group's bar go into a **»** menu at its end;
+choose one there to bring it to the front. The front tab always stays on
+the bar.
 
 Each group's **⋯** menu does the same from the keyboard: **Float in a
 Window**, **Dock on the Left**, **Dock on the Right**, **Collapse to Icons**
@@ -1956,6 +2224,35 @@ column. A window with more than one group has a dotted **grip** along its
 top: drag it to move the whole window, or to a dock to dock every group in
 it, in order (onto a group's tabs, they all join it as tabs). Each group's
 own bar drags just that group out.
+
+### Numbers, sliders and choices
+
+- **A slider is one bar**: its name at the left, its value at the right,
+  filled to the value. Press anywhere on the bar to set the value there
+  and drag; click the value to type one.
+- **Drag a number's name sideways** to change it (a slider's, a box
+  field's X or W, the options bar's Size, a dialog's Width or Radius):
+  **Shift** goes ten times as fast, **Alt** ten times as slow.
+- **In a number**, the up and down arrow keys step it (**Shift** ten steps,
+  **Alt** a tenth of one); **Enter** or clicking away keeps what you typed,
+  **Esc** puts the value back.
+- **A few choices side by side** (a stroke's Align, Corners and Ends, a
+  shape's corner style, Knockout, the paint's kind) are buttons, one
+  pressed; the arrow keys move between them.
+- **A dot before a setting's name** means it's set to something other than
+  its default (an opacity under 100%, a blur's radius changed).
+  **Double-click the name** to put the default back.
+
+### Your toolbar
+
+**Edit → Toolbar…** (or right-click the toolbar's empty part, or choose
+**Edit Toolbar…** under its **…** slot) arranges the toolbar, as
+Photoshop's Edit Toolbar does. Drag a slot by its grip, or use its arrows,
+to move it; untick it to take it off the bar. Tools taken off are under the
+**…** slot at the foot of the bar, and their keys still work. **Columns**:
+one, two, or **Auto** (two when the window is too short for one). **Restore
+Defaults** puts the toolbar back as Plexel ships it. It's kept by your
+browser.
 
 ### Your own workspaces
 
@@ -1992,6 +2289,16 @@ top to find a command by its name or a key by what it's called (`ctrl+j`).
   it here** takes it from that command.
 - The arrow at the end of a changed command's row (marked with a dot) puts
   its keys back as Plexel ships them; **Reset All** puts every one back.
+- **Set** starts from another app's keys: **Photoshop** (Plexel's own),
+  **Affinity** (Affinity Photo's, which follow Photoshop's for the tools
+  and commands Plexel has, so they're the same keys) or **Illustrator**
+  (its tools: the Paintbrush on B, the Blob Brush on Shift+B, the Pencil on
+  N, the Shape tool on M, the Shape Builder on Shift+M, the Live Paint
+  Bucket on K, the Lasso on Q, the Magic Wand on Y, the Width tool on
+  Shift+W, the Eraser on Shift+E, Rotate View on Shift+H, Free Transform on
+  E; and Create Outlines on Ctrl+Shift+O, Show or Hide Layer on Ctrl+3,
+  Swap Colours on Shift+X too). Change any of them after; the menu then
+  says **Your own**.
 
 Nothing changes until you press **Save**; **Cancel** forgets it all. Some
 keys can't be given to anything: those the browser keeps for itself (Ctrl+W,
@@ -2184,8 +2491,6 @@ remembered by your browser; **Restore Defaults** puts them all back.
   smart guides.
 - Snapping a path's segments (not only its points) and a layer's visible
   edge rather than its box; snapping text to its baseline.
-- Free Transform on several layers at once: today it works on the key
-  layer.
 
 ## 17. Tiled documents
 
@@ -2220,6 +2525,11 @@ on the document itself, not on the copies.
 With Tiled View on, you can work in any copy: a press there acts on the
 document, at the same place, and a drag over the edge between copies stays
 in one piece.
+
+The document itself is framed in the accent colour, so you can tell it from
+its copies. Moved far enough that it's mostly out of view, a **Back to the
+document** button appears at the top of the canvas and centres it again
+(Ctrl+0 fits it on screen).
 
 ### Painting
 
@@ -2445,3 +2755,185 @@ it. Liquify again on the same layer carries on with the same warp.
 - Warped shapes and text in SVG and PDF as warped outlines (they go out as
   the shape unwarped today, as other live filters do).
 - Perspective Crop.
+
+## 20. Channels
+
+A document's **channels** are its colours, one at a time, and whatever it
+keeps alongside them: **alpha channels** (selections kept for later) and
+**spot channels** (inks printed on plates of their own). The **Channels**
+panel (Window → Channels) lists them all: the composite first (RGB, CMYK
+or Gray), then each colour channel (Red, Green and Blue; Cyan, Magenta,
+Yellow and Black), then the alpha and spot channels, each with an eye and a
+thumbnail.
+
+### Showing and picking
+
+A click on a row **picks** that channel: it's what the tools change, and
+it's shown alone. One colour channel alone shows in gray, as its own
+brightness (a CMYK ink as white where there's none). An alpha or spot
+channel picked alone shows in gray too, white where it selects (black
+where a spot has ink). **Shift**-click adds a channel to those picked;
+click the composite to pick them all again. The **eyes** only show and
+hide, without changing what's picked: with Blue hidden, an RGB picture
+shows without its blue; with the composite's eye on as well as an alpha
+channel's, the channel shows as a tint over the picture.
+
+The keys: **Ctrl+2** the composite, **Ctrl+3** onwards the channels after
+it in the panel's order. Picking a layer in the Layers panel picks the
+colour channels again, so painting goes back to the layer.
+
+### Painting and filling a channel
+
+With an **alpha or spot channel** picked, the Brush and the Eraser paint
+it, and Fill, Delete, the Gradient tool and the Paint Bucket fill it, all
+through the selection when there is one. The colours are gray levels:
+white selects and black deselects on an alpha channel; on a spot channel
+black is full ink and white none, as in Photoshop. The Eraser paints the
+background colour. The Magic Wand and the Paint Bucket read the channel
+itself, not the layer. Delete with nothing selected fills the whole channel
+with the background colour; it never deletes the layer.
+
+With **some colour channels** picked (Red alone, say), painting and
+filling change only those: the Brush, Fill, Delete, the Gradient tool, the
+Paint Bucket, content-aware fill, and filters and adjustments applied for
+good (a filter is applied for good here rather than added live, since a
+live one would change every channel). The Eraser paints the background
+colour into them, and Delete fills them with it. Nothing changes where the
+layer is transparent.
+
+### Alpha channels
+
+**New** (or Document → Channels → New Channel) makes an empty alpha
+channel, picked and shown alone, ready to paint. **Save Selection** keeps
+the selection as a new one, and **Save Into** puts it into the picked one.
+**Ctrl**-click a row (or click the selection button at the foot of the
+panel) to load a channel as the selection: Shift adds, Alt takes away, both
+intersect.
+
+**Channel Options** (double-click a thumbnail, or Document → Channels →
+Channel Options) sets the name, the tint it shows in over the picture
+(red by default), its opacity, and whether the tint marks the **masked**
+areas (the default) or the **selected** ones.
+
+### Spot channels
+
+**New Spot…** (Document → Channels → New Spot Channel) makes a spot
+channel: a name (the ink's), its colour (the foreground, one of the
+document's spot swatches, whose name it takes, or a colour picked there)
+and its **solidity**, which is only how it looks: 0% shows the ink as
+see-through, multiplied over what's under it; 100% as opaque. With a
+selection, the new channel starts filled where the selection is.
+
+Spot channels show over the picture as their ink, and in the Separations
+panel as inks of their own, with their readings under the pointer counted
+in the total. In a PDF each is printed on its own plate, sharing its plate
+with spot-coloured shapes of the same ink; in a PSD each is a spot channel.
+Channel Options changes a spot's ink and solidity, or makes it an alpha
+channel (or an alpha a spot).
+
+### Loading colour channels
+
+**Ctrl**-click a colour channel to load it as the selection by its
+brightness (a CMYK ink selects where there's none of it), and the
+composite (or **Select → Load Luminosity**, **Ctrl+Alt+2**) to load the
+picture's luminosity. Transparent parts count as white.
+
+### In files
+
+Alpha and spot channels are saved in Plexel's own files with how they
+show. PSD and PSB files bring theirs in, named and coloured as Photoshop
+had them, and Plexel writes them back the same way.
+
+### What's still to come
+
+- Filters and adjustments on an alpha or spot channel (Gaussian Blur on
+  an alpha channel, say), and Image → Calculations and Apply Image.
+- Split Channels, Merge Channels and Merge Spot Channel.
+- The Smudge, Mixer, Clone and healing tools on an alpha or spot channel.
+- Showing more than four alpha and spot channels on the canvas at once.
+
+## 21. Artboards and symbols
+
+### Artboards
+
+An **artboard** is a page of the document with its own size: a phone
+screen and a tablet screen side by side, a set of social posts, the pages
+of a leaflet. Each is exported on its own, as in Photoshop, Illustrator
+and Affinity.
+
+- **Start with one**: tick **Artboard** in File → New. The document starts
+  as an artboard the size you asked for, with an empty layer on it, on a
+  *pasteboard* round it.
+- **Layer → Artboards → New Artboard** adds one the size of the last, to the
+  right of the others. In a document without artboards, the first turns the
+  canvas into Artboard 1, every layer on it.
+- **Layer → Artboards → Artboard from Layers** puts the selected layers on a
+  new artboard the size of the box round them.
+- **The Artboard tool** (V, with Move; Shift+V goes between them): drag on
+  the pasteboard to draw an artboard; drag one to move it, its layers with
+  it (Shift keeps it straight); drag the handles of the selected one to size
+  it, its layers staying where they are. The options bar sets its size, by
+  number or from presets (phones, tablets, the web, social posts, pages), and
+  **Add Artboard** adds one beside it.
+- **Its name**, over its top left corner, selects it when clicked, moves it
+  when dragged (with any tool) and renames it when double-clicked.
+
+In the Layers panel an artboard is a group, its layers inside it. A layer
+you draw on an artboard goes onto it, even when a layer on another one is
+selected; one you drag onto another artboard with the Move tool goes onto
+that one, and dragged off every artboard, it goes to the top level.
+
+**Properties** for an artboard: its place and size (drag the letters to
+scrub them), a preset size, Portrait / Landscape, its **Background**
+(white, black, none or a colour of your own) and **Clip contents**: on, its
+layers show only inside it, as in Photoshop; off, they run over its edge
+onto the pasteboard (exporting still crops to it). **Layer → Artboards →
+Release Artboard** lets its layers go to the top level and takes the
+artboard away.
+
+The canvas is the pasteboard round the artboards, shaded dark, and grows
+to keep them on it; layers can sit on the pasteboard too, outside every
+artboard.
+
+**Exporting**: with artboards, File → Export offers **All artboards** (each
+a file of its own, cropped to it, together in a zip), **Selected** (the
+artboard the selection is on) or the **Whole canvas**, in every format.
+
+### Symbols
+
+A **symbol** is artwork kept once and placed as **instances**: a logo, an
+icon, a button. Edit the symbol and every instance follows. Each instance
+keeps its own place, size, turn, opacity and blend mode.
+
+- **Layer → Symbols → New Symbol** (**F8**, as in Illustrator) makes the
+  selected layers a symbol, with an instance where they were.
+- **The Symbols panel** (Window → Symbols) lists the document's symbols,
+  each with a picture and how many instances it has. Click a symbol's
+  picture to place an instance in the middle of the view, or drag it onto
+  the canvas. Rename one by double-clicking its name; Duplicate and Delete
+  are on its row (deleting a symbol makes its instances groups of their own).
+- **Edit Symbol** (double-click a symbol in the panel, its edit button,
+  Layer → Symbols → Edit Symbol, or the button in an instance's Properties)
+  opens it in a tab of its own, with every tool. What you do there shows in
+  every instance at once, and is one step in the document's history (undo
+  it there and the tab follows). Close the tab when you're done; there's
+  nothing to save.
+- With an instance selected, Properties and the panel **Replace** the symbol
+  it shows, and **Break Link** (also in Layer → Symbols) makes it a group of
+  its own that no longer follows the symbol.
+
+Instances are moved, scaled and turned like any layer (Free Transform
+works on them), stay sharp at any size, and can be rasterized. Copying an
+instance to another document takes its symbol with it. Symbols are saved in
+Plexel's files; a PSD, SVG or PDF gets each instance as the layers it shows.
+
+### What's still to come
+
+- Photoshop's artboards in PSD files, read and written as artboards (they're
+  written as groups for now), and a multi-page PDF with a page per artboard
+  (today each artboard is a PDF of its own in the zip).
+- Guides per artboard, and Paste on All Artboards.
+- Editing a symbol in place on the canvas, as Illustrator's isolation mode
+  does; and Affinity's per-instance changes to a symbol's parts.
+- Symbol libraries shared between documents, and 9-slice scaling.
+

@@ -73,6 +73,32 @@ export const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms))
  * longer. Returns whether the condition came true, rather than throwing, so
  * the assertion after it still reports what was wrong.
  */
+/**
+ * What most suites do to the page, bound to it: `press` a combination
+ * ('Control+Shift+KeyK': modifiers held, the last key pressed, a frame
+ * waited), and `idle`, a frame and then the engine with nothing left to do.
+ */
+export function pageHelpers(page) {
+  return {
+    press: async (combo) => {
+      const keys = combo.split('+')
+      for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
+      await page.keyboard.press(keys[keys.length - 1])
+      for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
+      await frames(page)
+    },
+    idle: async () => {
+      await frames(page)
+      await page.evaluate(() => globalThis.plexel.engine().call('render.idle', {}))
+    },
+  }
+}
+
+/** Whether the dialog `id` opens, waiting for it a moment: dialogs load the first time they're opened (App.tsx). */
+export async function dialogShown(page, id, timeout = 5000) {
+  return !!(await page.waitForSelector(`[data-dialog="${id}"]`, { timeout }).catch(() => null))
+}
+
 export async function waitUntil(page, fn, { timeout = 5000, args = [], polling = 'raf' } = {}) {
   try {
     await page.waitForFunction(fn, { timeout, polling }, ...args)
@@ -88,10 +114,14 @@ export async function waitUntil(page, fn, { timeout = 5000, args = [], polling =
  * chip says `ready`. The first device on a cold Chrome can take a couple of
  * seconds, hence the longer default.
  */
-export const waitForEngine = (page, timeout = 15000) =>
-  waitUntil(page, () => document.querySelector('[data-engine-status]')?.getAttribute('data-engine-status') === 'ready', {
+export const waitForEngine = async (page, timeout = 15000) => {
+  const ready = await waitUntil(page, () => document.querySelector('[data-engine-status]')?.getAttribute('data-engine-status') === 'ready', {
     timeout,
   })
+  // And the dialogs' code (src/ui/lazyDialogs.ts): a check that opens one then reads it mustn't race its first load.
+  await page.evaluate(() => globalThis.plexel?.dialogsLoaded?.())
+  return ready
+}
 
 /** Wait for every finite CSS transition and animation to finish. Looping ones never do, so they're left out. */
 export const waitForAnimations = (page, timeout = 5000) =>
@@ -221,6 +251,24 @@ export async function startDevServer() {
   })
   await server.listen()
   return { url: `http://localhost:${port}/`, close: () => server.close() }
+}
+
+/**
+ * The app built for production (into node_modules/.cache, where nothing
+ * else looks) and served by Vite's preview server, with the project's
+ * config (so its COOP/COEP headers): what the browser suites run against
+ * by default (run-checks.mjs), since it's what ships, and nothing edited
+ * under src/ can reload it mid-run. DEV_URL, when set, is used instead.
+ */
+export async function startPreviewServer() {
+  if (process.env.DEV_URL) return { url: process.env.DEV_URL, close: async () => {} }
+  const outDir = join(root, 'node_modules/.cache/check-dist')
+  const { build, preview } = await import('vite')
+  await build({ root, logLevel: 'warn', build: { outDir, emptyOutDir: true } })
+  let port = await freePort()
+  while (AVOID.has(port)) port = await freePort()
+  const server = await preview({ root, logLevel: 'warn', build: { outDir }, preview: { port, strictPort: true, host: 'localhost' } })
+  return { url: `http://localhost:${port}/`, close: () => new Promise((resolve) => server.httpServer.close(() => resolve())) }
 }
 
 /** Run fn(url) with a dev server up, and take it down afterwards however fn ends. */

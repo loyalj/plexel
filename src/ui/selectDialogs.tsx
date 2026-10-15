@@ -32,6 +32,7 @@ import type { ColourRangePreset, CombineOp, Refine } from '../tiles/coverage'
 import { ellipsePoints } from '../tiles/coverage'
 import { Dialog } from './Dialog'
 import { Field, Footer, parseNumber } from './docDialogs'
+import { Hint, SliderField } from './controls'
 
 /** A pixel radius typed in a field: a number from 0 to `max`. */
 function radiusError(text: string, max: number): string | null {
@@ -56,10 +57,9 @@ export function FeatherDialog({ onClose }: { onClose(): void }) {
           modifySelection({ kind: 'feather', radius: parseNumber(radius)! }, 'Feather')
         }}
       >
-        <Field id="feather-radius" label="Feather radius (px)" error={error}>
+        <Field id="feather-radius" label="Feather radius (px)" error={error} hint="Softens the selection’s edge over this many pixels, so what’s done through it fades out rather than stopping.">
           <input id="feather-radius" inputMode="decimal" value={radius} onChange={(e) => setRadius(e.target.value)} autoFocus onFocus={(e) => e.target.select()} />
         </Field>
-        <p>Softens the selection’s edge over this many pixels, so what’s done through it fades out rather than stopping.</p>
         <button type="submit" hidden />
       </form>
     </Dialog>
@@ -71,7 +71,7 @@ export function GrowDialog({ kind, onClose }: { kind: 'expand' | 'contract'; onC
   const error = radiusError(by, 256)
   const title = kind === 'expand' ? 'Expand Selection' : 'Contract Selection'
   return (
-    <Dialog id={kind} title={title} onClose={onClose} footer={<Footer form="grow-form" primary={kind === 'expand' ? 'Expand' : 'Contract'} onCancel={onClose} disabled={!!error} />}>
+    <Dialog id={kind} title={title} hint={`Moves the selection’s edge ${kind === 'expand' ? 'outwards' : 'inwards'} by up to 256 pixels.`} onClose={onClose} footer={<Footer form="grow-form" primary={kind === 'expand' ? 'Expand' : 'Contract'} onCancel={onClose} disabled={!!error} />}>
       <form
         id="grow-form"
         className="form"
@@ -86,7 +86,6 @@ export function GrowDialog({ kind, onClose }: { kind: 'expand' | 'contract'; onC
         <Field id="grow-by" label={`${kind === 'expand' ? 'Expand' : 'Contract'} by (px)`} error={error}>
           <input id="grow-by" inputMode="decimal" value={by} onChange={(e) => setBy(e.target.value)} autoFocus onFocus={(e) => e.target.select()} />
         </Field>
-        <p>{kind === 'expand' ? 'Moves the selection’s edge outwards' : 'Moves the selection’s edge inwards'} by up to 256 pixels.</p>
         <button type="submit" hidden />
       </form>
     </Dialog>
@@ -168,7 +167,7 @@ function usePreview(key: string, make: () => Promise<string | null>, skip = fals
         .finally(() => n === asked.current && setBusy(false))
     }, 120)
     return () => clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // The settings' key and skip are what it depends on; the rest are read when it runs.
   }, [key, skip])
   const done = () => {
     asked.current++
@@ -235,12 +234,7 @@ export function ColourRangeDialog({ onClose }: { onClose(): void }) {
         {preset === 'sampled' && (
           <>
             <p data-range-samples={samples.length}>{samples.length ? `${samples.length} colour${samples.length === 1 ? '' : 's'} sampled. Click the canvas for another, Shift-click to add one.` : 'Click the canvas to sample a colour; Shift-click adds more.'}</p>
-            <div className="field" title="How far from the sampled colours a colour may be and still be selected, fading out towards the limit">
-              <label htmlFor="range-fuzz">
-                Fuzziness <span className="unit">{fuzziness}</span>
-              </label>
-              <input id="range-fuzz" type="range" min={0} max={200} value={fuzziness} onChange={(e) => setFuzziness(Number(e.target.value))} />
-            </div>
+            <SliderField id="range-fuzz" label="Fuzziness" hint="How far from the sampled colours a colour may be and still be selected, fading out towards the limit" min={0} max={200} value={fuzziness} onChange={setFuzziness} />
           </>
         )}
         <label className="check">
@@ -273,7 +267,7 @@ export function SaveSelectionDialog({ doc, onClose }: { doc: Doc; onClose(): voi
   const [name, setName] = useState(() => freshChannelName(doc))
   const [op, setOp] = useState<CombineOp>('replace')
   return (
-    <Dialog id="saveSelection" title="Save Selection" onClose={onClose} footer={<Footer form="save-sel-form" primary="OK" onCancel={onClose} disabled={!channel && !name.trim()} />}>
+    <Dialog id="saveSelection" title="Save Selection" hint="Alpha channels keep selections with the document, in the Channels panel, to load again whenever they’re wanted." onClose={onClose} footer={<Footer form="save-sel-form" primary="OK" onCancel={onClose} disabled={!channel && !name.trim()} />}>
       <form
         id="save-sel-form"
         className="form"
@@ -307,7 +301,6 @@ export function SaveSelectionDialog({ doc, onClose }: { doc: Doc; onClose(): voi
             </select>
           </Field>
         )}
-        <p>Alpha channels keep selections with the document, in the Channels panel, to load again whenever they’re wanted.</p>
         <button type="submit" hidden />
       </form>
     </Dialog>
@@ -430,7 +423,7 @@ export function SelectMaskDialog({ onClose }: { onClose(): void }) {
   }
 
   return (
-    <Dialog id="selectMask" title="Select and Mask" floating onClose={() => close(false)} footer={<Footer form="refine-form" primary="OK" onCancel={() => close(false)} disabled={p.busy && !zero} />}>
+    <Dialog id="selectMask" title="Select and Mask" hint="The canvas shows the result as you go: the edge worked out again first, then smooth, feather, contrast and shift, as Photoshop does them." floating onClose={() => close(false)} footer={<Footer form="refine-form" primary="OK" onCancel={() => close(false)} disabled={p.busy && !zero} />}>
       <form
         id="refine-form"
         className="form"
@@ -441,27 +434,18 @@ export function SelectMaskDialog({ onClose }: { onClose(): void }) {
       >
         <fieldset className="form-group">
           <legend>Edge Detection</legend>
-          <div className="field" title="How far either side of the edge it's worked out again from the image's colours: wider for hair and fur.">
-            <label htmlFor="refine-radius">
-              Radius <span className="unit">{radius} px</span>
-            </label>
-            <input id="refine-radius" type="range" min={0} max={250} value={radius} onChange={(e) => setRadius(Number(e.target.value))} />
-          </div>
-          <label className="check" title="Narrower where the edge is crisp, wider where it's soft or busy">
+          <SliderField id="refine-radius" label="Radius" hint="How far either side of the edge it's worked out again from the image's colours: wider for hair and fur." min={0} max={250} unit="px" value={radius} onChange={setRadius} />
+          <label className="check">
             <input type="checkbox" checked={smart} onChange={(e) => setSmart(e.target.checked)} />
             Smart Radius
+            <Hint text="Narrower where the edge is crisp, wider where it's soft or busy" />
           </label>
-          <label className="check" title="Brush on the canvas over hair or fur the edge should be worked out again for">
+          <label className="check" data-tip="Brush on the canvas over hair or fur the edge should be worked out again for">
             <input type="checkbox" checked={brushing} data-refine-brush onChange={(e) => setBrushing(e.target.checked)} />
             Refine Edge brush
           </label>
           {brushing && (
-            <div className="field">
-              <label htmlFor="refine-brush-size">
-                Brush size <span className="unit">{brushSize} px</span>
-              </label>
-              <input id="refine-brush-size" type="range" min={2} max={500} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} />
-            </div>
+            <SliderField id="refine-brush-size" label="Brush size" min={2} max={500} unit="px" value={brushSize} onChange={setBrushSize} />
           )}
           {strokes.length > 0 && (
             <button type="button" className="button small" onClick={() => setStrokes([])}>
@@ -470,20 +454,7 @@ export function SelectMaskDialog({ onClose }: { onClose(): void }) {
           )}
         </fieldset>
         {SLIDERS.map((s) => (
-          <div className="field" key={s.key} title={s.hint}>
-            <label htmlFor={`refine-${s.key}`}>
-              {s.label} <span className="unit">{`${Math.round(o[s.key] * s.scale * 10) / 10} ${s.unit}`}</span>
-            </label>
-            <input
-              id={`refine-${s.key}`}
-              type="range"
-              min={s.min}
-              max={s.max}
-              step={s.step}
-              value={o[s.key] * s.scale}
-              onChange={(e) => setO({ ...o, [s.key]: Number(e.target.value) / s.scale })}
-            />
-          </div>
+          <SliderField key={s.key} id={`refine-${s.key}`} label={s.label} hint={s.hint} min={s.min} max={s.max} step={s.step} unit={s.unit} value={Math.round(o[s.key] * s.scale * 10) / 10} onChange={(v) => setO({ ...o, [s.key]: v / s.scale })} />
         ))}
         <Field id="refine-output" label="Output to">
           <select id="refine-output" value={output} onChange={(e) => setOutput(e.target.value as Output)}>
@@ -492,7 +463,6 @@ export function SelectMaskDialog({ onClose }: { onClose(): void }) {
             <option value="layer">New Layer</option>
           </select>
         </Field>
-        <p>The canvas shows the result as you go: the edge worked out again first, then smooth, feather, contrast and shift, as Photoshop does them.</p>
         <button type="submit" hidden />
       </form>
     </Dialog>

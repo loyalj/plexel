@@ -13,7 +13,7 @@
  *
  * Run with: npm run check:tools
  */
-import { check, finish, frames, open, settle, waitUntil, waitForEngine } from './harness.mjs'
+import { check, finish, frames, open, pageHelpers, settle, waitForEngine, waitUntil } from './harness.mjs'
 import { decodePng, pixelAt } from './png.mjs'
 
 const { page, url } = await open({ viewport: { width: 1280, height: 860 } })
@@ -21,13 +21,7 @@ await page.goto(url)
 await waitForEngine(page)
 
 // --- helpers ---------------------------------------------------------------------------
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
+const { press } = pageHelpers(page)
 const clickMenu = async (menu, command, submenu) => {
   await page.evaluate((m) => [...document.querySelectorAll('.menu-title')].find((b) => b.textContent === m).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })), menu)
   await frames(page)
@@ -38,10 +32,7 @@ const clickMenu = async (menu, command, submenu) => {
   await page.click(`[data-command="${command}"]`)
   await frames(page)
 }
-const idle = async () => {
-  await frames(page)
-  await page.evaluate(() => globalThis.plexel.engine().call('render.idle', {}))
-}
+const { idle } = pageHelpers(page)
 const rect = () => page.$eval('[data-engine-canvas]', (e) => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height } })
 const shot = async () => decodePng(Buffer.from(await page.screenshot()))
 /** The screen's colour at an offset from the canvas's centre. */
@@ -202,7 +193,43 @@ await setForeground(0, 0, 255)
 await fill()
 check('and it fills as drawn', near(await at(200, 100), [0, 0, 255]) && near(await at(70, 180), WHITE), `${await at(200, 100)} / ${await at(70, 180)}`)
 await press('Control+KeyD')
+// Photoshop's habits: Backspace takes the last corner back; Shift keeps a side to 45°.
+await clickAt(-300, 100)
+await clickAt(-200, 100)
+await clickAt(-150, 180)
+await press('Backspace')
+check('Backspace takes the Polygonal Lasso’s last corner back', /2 corners/.test(await page.$eval('[data-session="polygon"]', (e) => e.textContent)))
+await clickAt(-150, 190, ['Shift'])
+await press('Enter')
+const shifted = (await doc()).selection
+check('Shift put the next corner on the 45° line', (await stepIs('Polygonal Lasso')) && !!shifted)
+await setForeground(0, 0, 0)
+await fill()
+// The triangle (-300, 100), (-200, 100), (-127, 173): its middle filled; where the corner taken back was, not.
+check('the corner taken back isn’t in it, the 45° one is', near(await at(-209, 120), [0, 0, 0]) && near(await at(-152, 175), WHITE) && near(await at(-150, 157), [0, 0, 0]), `${await at(-152, 175)} ${await at(-150, 157)}`)
+await press('Control+KeyD')
 await page.click('[data-lasso="freehand"]')
+// The Lasso drawn freehand, the button let go with Alt held: straight sides from there, Alt let go to close.
+{
+  const r = await rect()
+  const cx = r.x + r.w / 2
+  const cy = r.y + r.h / 2
+  await page.mouse.move(cx - 300, cy - 260)
+  await page.mouse.down()
+  await page.mouse.move(cx - 150, cy - 260, { steps: 10 })
+  await page.keyboard.down('Alt')
+  await page.mouse.up()
+  await settle(80)
+  check('Alt held as the button comes up carries the Lasso on in straight sides', /straight sides/.test(await page.$eval('[data-session="polygon"]', (e) => e.textContent)))
+  await page.mouse.click(cx - 150, cy - 110)
+  await settle(60)
+  await page.keyboard.up('Alt')
+}
+check('letting go of Alt closes it', await stepIs('Lasso'))
+await setForeground(200, 0, 200)
+await fill()
+check('freehand and straight sides together make the selection', near(await at(-200, -210), [200, 0, 200]) && near(await at(-280, -130), WHITE), `${await at(-200, -210)} ${await at(-280, -130)}`)
+await press('Control+KeyD')
 await press('KeyW')
 // W's group starts with Quick Selection, as Photoshop's does; Shift+W goes on to the wand.
 if (!(await page.$('[data-wand="contiguous"]'))) await press('Shift+KeyW')

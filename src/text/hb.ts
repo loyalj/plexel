@@ -73,7 +73,7 @@ export interface Metrics {
  */
 export type GlyphOutline = number[]
 
-export const tagNumber = (tag: string) => ((tag.charCodeAt(0) << 24) | (tag.charCodeAt(1) << 16) | (tag.charCodeAt(2) << 8) | tag.charCodeAt(3)) >>> 0
+const tagNumber = (tag: string) => ((tag.charCodeAt(0) << 24) | (tag.charCodeAt(1) << 16) | (tag.charCodeAt(2) << 8) | tag.charCodeAt(3)) >>> 0
 const tagString = (hi: number, lo: number) => String.fromCharCode((hi >> 8) & 255, hi & 255, (lo >> 8) & 255, lo & 255)
 
 export class HarfBuzz {
@@ -325,8 +325,9 @@ export class Font {
   }
 }
 
-export async function startHarfBuzz(wasmBinary: ArrayBuffer | Uint8Array): Promise<HarfBuzz> {
-  return new HarfBuzz(await createPxHb({ wasmBinary }))
+/** HarfBuzz, from the wasm's bytes (the checks) or its URL, compiled as it downloads (as startCms). */
+export async function startHarfBuzz(wasm: ArrayBuffer | Uint8Array | { url: string }): Promise<HarfBuzz> {
+  return new HarfBuzz(await createPxHb('url' in wasm ? { locateFile: () => wasm.url } : { wasmBinary: wasm }))
 }
 
 /**

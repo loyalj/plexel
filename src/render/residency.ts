@@ -36,6 +36,9 @@ export class NotReady extends Error {
 
 export class AtlasFull extends Error {}
 
+/** The frame's upload ring is full: the frame stops, and the tile is uploaded next frame. */
+export class UploadsFull extends Error {}
+
 const EMPTY = { kind: 'empty' } as const
 
 export class Residency {
@@ -45,6 +48,8 @@ export class Residency {
   private waiting = new Map<TileId, Promise<void>>()
   uploads = 0
   mipsBuilt = 0
+  /** Whether `enc` is a frame's: a full upload ring stops a frame, and falls back to the CPU for work outside the frames. */
+  isFrame: (enc: GPUCommandEncoder) => boolean = () => false
 
   constructor(
     private device: GPUDevice,
@@ -52,6 +57,8 @@ export class Residency {
     private kernels: Kernels,
     /** Where each mip pass's parameters go, for the frame being built. */
     private params: Ring,
+    /** Where uploads' samples go, unchanged, for the GPU to pack into the atlas. */
+    private uploadRing: Ring,
     readonly mode: ColourMode,
     readonly depth: Depth,
     budget: number,
@@ -116,9 +123,17 @@ export class Residency {
       if (have !== undefined) return { kind: 'slot', slot: have }
       const samples = this.store.peek(t)
       if (!samples) throw new NotReady([this.fetch(t)])
+      // Packed on the GPU while the upload ring has room. Past that, a frame
+      // stops (before taking a slot) and goes on next frame, as it does when
+      // the atlas is full; work outside the frames (a thumbnail or export of
+      // a big document reads many tiles in one go) interleaves here and
+      // writes directly instead.
+      const fits = this.uploadRing.fits(samples.byteLength)
+      if (!fits && this.isFrame(enc)) throw new UploadsFull()
       const slot = this.atlas.alloc(key)
       if (slot === null) throw new AtlasFull()
-      uploadTile(this.device, this.atlas, slot, this.mode, this.depth, samples)
+      if (fits) this.upload(enc, slot, this.uploadRing.put(samples))
+      else uploadTile(this.device, this.atlas, slot, this.mode, this.depth, samples)
       this.uploads++
       return { kind: 'slot', slot }
     }
@@ -150,6 +165,23 @@ export class Residency {
       this.waiting.set(t, p)
     }
     return p
+  }
+
+  /** A tile's planar samples, already in the upload ring, packed into its atlas layer (shaders/upload.ts). */
+  private upload(enc: GPUCommandEncoder, slot: number, data: { buffer: GPUBuffer; offset: number; size: number }) {
+    const pipeline = this.kernels.uploadPipeline(this.mode, this.depth)
+    const pass = enc.beginRenderPass({
+      label: 'upload',
+      colorAttachments: this.atlas.textures.map((t) => ({
+        view: t.createView({ dimension: '2d', baseArrayLayer: slot, arrayLayerCount: 1 }),
+        loadOp: 'clear' as const,
+        storeOp: 'store' as const,
+      })),
+    })
+    pass.setPipeline(pipeline)
+    pass.setBindGroup(0, this.device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: data.buffer, offset: data.offset, size: data.size } }] }))
+    pass.draw(3)
+    pass.end()
   }
 
   private buildMip(enc: GPUCommandEncoder, slot: number, kids: Resolved[]) {

@@ -11,16 +11,13 @@ import type { ColourMode, Depth, ProfileRef } from '../doc/types'
 import { convertSet } from '../tiles/convert'
 import { buildConvertLut, runConvertLut } from '../color/convertLut'
 import { colour } from './colourHost'
-import { pinSet, store, unpinSet } from './tileHost'
+import { held, store } from './tileHost'
 
 export interface ConvertSpace {
   mode: ColourMode
   profile: ProfileRef
   depth: Depth
 }
-
-/** New sets are held this long for the page to commit them, as selection results are. */
-const HOLD_MS = 60_000
 
 const sameProfile = (a: ProfileRef, b: ProfileRef) => JSON.stringify(a) === JSON.stringify(b)
 
@@ -32,9 +29,7 @@ export async function convertSets(sets: string[], from: ConvertSpace, to: Conver
   for (const id of sets) {
     if (!store.hasSet(id)) continue
     const next = await convertSet(store, id, { mode: to.mode, depth: to.depth }, lut ? (c, n) => runConvertLut(lut, c, n) : null)
-    pinSet(next)
-    setTimeout(() => unpinSet(next), HOLD_MS)
-    out[id] = next
+    out[id] = held(next)
   }
   return out
 }

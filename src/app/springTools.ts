@@ -13,6 +13,7 @@
  */
 import { canvasGesture } from './gesture'
 import { tools, type ToolId } from '../tools'
+import { Listeners } from '../lib/listeners'
 
 /** How long a key has to stay down to be a hold rather than a tap. */
 export const HOLD_MS = 250
@@ -39,7 +40,7 @@ export class Spring {
   held: Held | null = null
   /** Waiting for a drag to end before going back. */
   private pending: ToolId | null = null
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
 
   constructor(
     private now: Clock,
@@ -48,15 +49,12 @@ export class Spring {
   ) {}
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
   get = () => this.held
 
   private emit() {
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   /** A tool key went down and chose `to`, over `from`. */

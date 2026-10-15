@@ -6,35 +6,56 @@
  * Preview and Illustrator's Separations Preview have it.
  *
  * The readings are the composite's own values (render.sample), on white
- * paper: a half-transparent pixel prints half its ink.
+ * paper: a half-transparent pixel prints half its ink. Spot channels are
+ * inks too, listed after the process ones: shown and hidden with the
+ * Channels panel's eyes, read from their own coverage, and counted in the
+ * total.
  */
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { documents } from '../app/documents'
 import { pointer } from '../app/pointer'
 import { proofing } from '../app/proofing'
 import { engine } from '../engine/EngineHost'
+import { channels, channelSrgb, extraShown } from '../app/channels'
+import { apply, invert } from '../geom/affine'
+import type { DocChannel } from '../doc/types'
+import { Hint, Label } from './controls'
 
 const INKS = ['Cyan', 'Magenta', 'Yellow', 'Black'] as const
 
-export function SeparationsPanel() {
+export const SeparationsPanel = memo(function SeparationsPanel() {
   const active = useSyncExternalStore(documents().subscribe, () => documents().active())
   const look = useSyncExternalStore(proofing.subscribe, proofing.active)
   const at = useSyncExternalStore(pointer.subscribe, pointer.get)
   const [reading, setReading] = useState<number[] | null>(null)
+  const [spotReading, setSpotReading] = useState<number[] | null>(null)
+  const view = useSyncExternalStore(channels.subscribe, () => channels.active())
   const busy = useRef(false)
   const wanted = useRef(at)
   wanted.current = at
   const doc = active?.history.present
   const cmyk = doc?.mode === 'cmyk'
+  const spotChannels = (doc?.channels ?? []).filter((c) => c.kind === 'spot')
+  const spotsRef = useRef<DocChannel[]>(spotChannels)
+  spotsRef.current = spotChannels
 
   // One sample at a time; the newest place is read when the last answer comes.
   useEffect(() => {
     if (!cmyk || !at || at.key !== active?.key || busy.current) return
     busy.current = true
+    // A spot channel's ink under the pointer: its coverage at the point in its own pixels.
+    const spotsAt = (p: NonNullable<typeof at>) => {
+      const list = spotsRef.current.filter((c) => c.tiles)
+      if (!list.length) return Promise.resolve([] as number[])
+      return engine().call('tiles.valuesAt', { points: list.map((c) => {
+        const [x, y] = apply(invert(c.transform), p.x, p.y)
+        return { set: c.tiles!, x: Math.floor(x), y: Math.floor(y), kind: 'cover' as const }
+      }) }).then((v) => spotsRef.current.map((c) => (c.tiles ? (v[list.indexOf(c)] ?? 0) : 0)))
+    }
     const ask = (p: NonNullable<typeof at>) =>
-      engine()
-        .call('render.sample', { key: p.key, x: p.x, y: p.y, size: 1 })
-        .then((v) => {
+      Promise.all([engine().call('render.sample', { key: p.key, x: p.x, y: p.y, size: 1 }), spotsAt(p)])
+        .then(([v, s]) => {
+          setSpotReading(v ? s : null)
           if (!v) return setReading(null)
           const a = v[v.length - 1]
           setReading(v.slice(0, 4).map((x) => x * a))
@@ -48,10 +69,15 @@ export function SeparationsPanel() {
     void ask(at)
   }, [at, cmyk, active?.key])
 
-  if (!active || !doc) return <p className="panel-empty">The inks of a CMYK document, one at a time or together, and how much ink is under the pointer.</p>
-  if (!cmyk) return <p className="panel-empty">Separations are for CMYK documents. Document → Mode → CMYK Colour converts this one.</p>
+  if (!active || !doc) return <p className="panel-empty">No document open</p>
+  if (!cmyk)
+    return (
+      <p className="panel-empty">
+        For CMYK documents <Hint text="Document → Mode → CMYK Colour converts this one." />
+      </p>
+    )
   const pct = (v: number) => `${Math.round(v * 100)}%`
-  const total = reading ? reading.reduce((a, b) => a + b, 0) : null
+  const total = reading ? reading.reduce((a, b) => a + b, 0) + (spotReading ?? []).reduce((a, b) => a + b, 0) : null
   const over = total !== null && total * 100 > look.inkLimit + 0.5
   const spots = (doc.swatches ?? []).filter((s) => s.kind === 'spot')
   const set = (patch: Partial<typeof look>) => proofing.update(active.key, patch)
@@ -82,6 +108,24 @@ export function SeparationsPanel() {
               </td>
             </tr>
           ))}
+          {view &&
+            spotChannels.map((c, j) => {
+              const [r, g, b] = channelSrgb(c).map((v) => Math.round(v * 255))
+              return (
+                <tr key={c.id} data-spot-ink={c.id}>
+                  <td>
+                    <label className="check">
+                      <input type="checkbox" data-spot-toggle={c.id} checked={extraShown(view, c)} onChange={() => channels.toggleExtra(active.key, c.id)} />
+                      <span className="ink-chip" style={{ background: `rgb(${r}, ${g}, ${b})` }} aria-hidden="true" />
+                      {c.name}
+                    </label>
+                  </td>
+                  <td className="num" data-spot-reading={c.id}>
+                    {spotReading ? pct(spotReading[j] ?? 0) : '–'}
+                  </td>
+                </tr>
+              )
+            })}
           <tr className={over ? 'over' : undefined}>
             <td>Total</td>
             <td className="num" data-ink-total>
@@ -96,8 +140,10 @@ export function SeparationsPanel() {
         </button>
       </div>
       <div className="field">
-        <label htmlFor="ink-limit">Total ink limit</label>
-        <div className="slider-row">
+        <Label htmlFor="ink-limit" hint="Most coated papers take 300–340%, uncoated 260–300%, newsprint about 240%. Ask the printer.">
+          Total ink limit
+        </Label>
+        <div className="input-row">
           <input
             id="ink-limit"
             type="number"
@@ -112,17 +158,17 @@ export function SeparationsPanel() {
           />
           <span className="unit">%</span>
         </div>
-        <span className="field-note">Most coated papers take 300–340%, uncoated 260–300%, newsprint about 240%. Ask the printer.</span>
       </div>
       <label className="check">
         <input type="checkbox" data-ink-warning checked={look.inkWarning} onChange={(e) => set({ inkWarning: e.target.checked })} />
-        Mark coverage over the limit on the canvas
+        Mark over the limit
+        <Hint text="Coverage over the limit is marked on the canvas" />
       </label>
       {spots.length > 0 && (
-        <p className="field-note">
-          Spot colours ({spots.map((s) => s.name).join(', ')}) are shown through their process equivalents; a raster document has no separate plates for them.
+        <p className="field-meta">
+          Spot colours: {spots.map((s) => s.name).join(', ')} <Hint text="Shapes in spot colours are shown through their process equivalents here; in a PDF they print on plates of their own. Spot channels (the Channels panel) are plates of their own on screen too." />
         </p>
       )}
     </div>
   )
-}
+})

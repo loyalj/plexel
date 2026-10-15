@@ -75,6 +75,46 @@ export class CoverReader {
     return v
   }
 
+  /**
+   * The tile's coverage if it's one value, worked out from the store's
+   * bookkeeping without reading pixels: a number, or null for a tile of
+   * pixels.
+   */
+  uniformAt(tx: number, ty: number): number | null {
+    const have = this.cache.get(`${tx},${ty}`)
+    if (have !== undefined) return typeof have === 'number' ? have : null
+    const t = this.set ? this.store.tileAt(this.set, tx, ty) : undefined
+    if (t === undefined) return this.outside
+    const u = this.store.isUniform(t)
+    if (!u) return null
+    const max = this.store.formatOf(t).depth === 16 ? 65535 : 255
+    const a = u[u.length - 1] / max
+    return (u[0] / max) * a + (1 - a) * this.outside
+  }
+
+  /**
+   * The value of a rectangle if every tile under it is that one value, or
+   * null; never on a torus, whose windows wrap. Lets a filter skip a tile
+   * deep inside (or outside) a selection without building its window.
+   */
+  uniformOver(x0: number, y0: number, w: number, h: number): number | null {
+    if (this.torus && wraps(this.torus)) return null
+    let value: number | null = null
+    for (let ty = Math.floor(y0 / TILE); ty <= Math.floor((y0 + h - 1) / TILE); ty++) {
+      for (let tx = Math.floor(x0 / TILE); tx <= Math.floor((x0 + w - 1) / TILE); tx++) {
+        const u = this.uniformAt(tx, ty)
+        if (u === null || (value !== null && u !== value)) return null
+        value = u
+      }
+    }
+    return value
+  }
+
+  /** Lets go of decoded tiles above row `ty`: a pass that goes down the canvas row by row won't read them again. */
+  forgetAbove(ty: number) {
+    for (const k of [...this.cache.keys()]) if (Number(k.slice(k.indexOf(',') + 1)) < ty) this.cache.delete(k)
+  }
+
   /** A rectangle of coverage, in document pixels, row by row; on a torus, wrapped round its edges. */
   async window(x0: number, y0: number, w: number, h: number): Promise<Float32Array> {
     const t = this.torus
@@ -147,7 +187,7 @@ export function coverTile(store: TileStore, v: Float32Array): TileId | null {
   return store.data(COVER, s)
 }
 
-const uniformCover = (store: TileStore, v: number) => store.uniform(COVER, [Math.round(v * 255), 255])
+export const uniformCover = (store: TileStore, v: number) => store.uniform(COVER, [Math.round(v * 255), 255])
 
 /** The tiles that cover the canvas, as [x0, y0, x1, y1] inclusive. */
 const canvasTiles = (w: number, h: number) => [0, 0, Math.ceil(w / TILE) - 1, Math.ceil(h / TILE) - 1]
@@ -177,16 +217,36 @@ export function ellipsePoints(cx: number, cy: number, rx: number, ry: number): [
 export function rasterizePolygon(store: TileStore, points: [number, number][], width: number, height: number, antialias = true, torus: Torus | null = null): SetId {
   const entries: [number, number, TileId][] = []
   if (points.length < 3) return store.createSet(COVER, entries)
-  const ys = points.map((p) => p[1])
-  const xs = points.map((p) => p[0])
+  // Bounds by loop: a long lasso spread into Math.min would overflow the stack.
+  let xmin = Infinity
+  let xmax = -Infinity
+  let ymin = Infinity
+  let ymax = -Infinity
+  for (const [x, y] of points) {
+    if (x < xmin) xmin = x
+    if (x > xmax) xmax = x
+    if (y < ymin) ymin = y
+    if (y > ymax) ymax = y
+  }
   const [, , cx1, cy1] = canvasTiles(width, height)
   const wx = !!torus?.x
   const wy = !!torus?.y
-  const ymin = Math.min(...ys)
-  const ymax = Math.max(...ys)
   const ty0 = wy ? 0 : Math.max(0, Math.floor(ymin / TILE))
   const ty1 = wy ? cy1 : Math.min(cy1, Math.floor(ymax / TILE))
   const edges = points.map((p, i) => [p, points[(i + 1) % points.length]] as const).filter(([a, b]) => a[1] !== b[1])
+  // Each band of TILE rows, in the polygon's own space, with the edges that
+  // cross it: a sub-row tries only those, not every edge (an ellipse has up
+  // to 4,096).
+  const bands = new Map<number, (typeof edges)[number][]>()
+  for (const e of edges) {
+    const lo = Math.min(e[0][1], e[1][1])
+    const hi = Math.max(e[0][1], e[1][1])
+    for (let k = Math.floor(lo / TILE); k <= Math.floor(hi / TILE); k++) {
+      let list = bands.get(k)
+      if (!list) bands.set(k, (list = []))
+      list.push(e)
+    }
+  }
   // The polygon's rows a canvas row stands for: itself, or on a torus each copy of it the polygon reaches.
   const rowsFor = (y: number) => {
     if (!wy) return [y]
@@ -208,7 +268,7 @@ export function rasterizePolygon(store: TileStore, points: [number, number][], w
       const row: [number, number][] = []
       for (const yy of rowsFor(y)) {
         const cross: number[] = []
-        for (const [a, b] of edges) {
+        for (const [a, b] of bands.get(Math.floor(yy / TILE)) ?? []) {
           if ((yy >= a[1] && yy < b[1]) || (yy >= b[1] && yy < a[1])) cross.push(a[0] + ((yy - a[1]) / (b[1] - a[1])) * (b[0] - a[0]))
         }
         cross.sort((p, q) => p - q)
@@ -236,8 +296,8 @@ export function rasterizePolygon(store: TileStore, points: [number, number][], w
       }
       spans.push(row)
     }
-    const tx0 = wx ? Math.max(0, txLo) : Math.max(0, Math.floor(Math.min(...xs) / TILE))
-    const tx1 = wx ? Math.min(cx1, txHi) : Math.min(cx1, Math.floor(Math.max(...xs) / TILE))
+    const tx0 = wx ? Math.max(0, txLo) : Math.max(0, Math.floor(xmin / TILE))
+    const tx1 = wx ? Math.min(cx1, txHi) : Math.min(cx1, Math.floor(xmax / TILE))
     for (let tx = tx0; tx <= tx1; tx++) {
       const left = tx * TILE
       const right = Math.min(width, left + TILE)
@@ -301,6 +361,20 @@ export function selectAll(store: TileStore, width: number, height: number): SetI
   return store.createSet(COVER, entries)
 }
 
+/**
+ * What `fn` makes of any x against one side's value u: x itself, the same
+ * number whatever x is, or neither (null). The functions here are mins and
+ * maxes of x with constants (and 1 − x), so agreeing at these points is
+ * agreeing everywhere.
+ */
+function against(fn: (x: number, y: number) => number, u: number, uOnRight: boolean): 'x' | number | null {
+  const at = (x: number) => (uOnRight ? fn(x, u) : fn(u, x))
+  const xs = [0, 0.25, 0.5, 0.75, 1]
+  if (xs.every((x) => at(x) === x)) return 'x'
+  const c = at(0)
+  return xs.every((x) => at(x) === c) ? c : null
+}
+
 /** Applies `fn` to two sets' coverage, pixel by pixel, over the canvas. */
 async function perPixel(store: TileStore, a: SetId | null, b: SetId | null, width: number, height: number, fn: (x: number, y: number) => number): Promise<SetId> {
   const ra = new CoverReader(store, a)
@@ -308,10 +382,31 @@ async function perPixel(store: TileStore, a: SetId | null, b: SetId | null, widt
   const [, , x1, y1] = canvasTiles(width, height)
   const entries: [number, number, TileId][] = []
   for (let ty = 0; ty <= y1; ty++) {
+    ra.forgetAbove(ty)
+    rb.forgetAbove(ty)
     for (let tx = 0; tx <= x1; tx++) {
+      const onEdge = (tx + 1) * TILE > width || (ty + 1) * TILE > height
+      // One side all one value: the result may be the other side's tile as
+      // it is (adding nothing, intersecting with everything), kept rather
+      // than made again, or one value.
+      const ua = ra.uniformAt(tx, ty)
+      const ub = rb.uniformAt(tx, ty)
+      if (!onEdge && (ua === null) !== (ub === null)) {
+        const r = ua === null ? against(fn, ub!, true) : against(fn, ua, false)
+        const other = ua === null ? a : b
+        const tile = other ? store.tileAt(other, tx, ty) : undefined
+        const f = tile !== undefined ? store.formatOf(tile) : null
+        if (r === 'x' && tile !== undefined && f!.mode === COVER.mode && f!.depth === COVER.depth) {
+          entries.push([tx, ty, tile])
+          continue
+        }
+        if (typeof r === 'number') {
+          if (r > 0) entries.push([tx, ty, uniformCover(store, r)])
+          continue
+        }
+      }
       const ta = await ra.tile(tx, ty)
       const tb = await rb.tile(tx, ty)
-      const onEdge = (tx + 1) * TILE > width || (ty + 1) * TILE > height
       if (typeof ta === 'number' && typeof tb === 'number' && !onEdge) {
         const v = fn(ta, tb)
         if (v > 0) entries.push([tx, ty, uniformCover(store, v)])
@@ -364,19 +459,28 @@ async function filterTiles(store: TileStore, set: SetId | null, width: number, h
   const [, , x1, y1] = canvasTiles(width, height)
   const entries: [number, number, TileId][] = []
   const size = TILE + 2 * margin
+  const reach = Math.ceil(margin / TILE)
   for (let ty = 0; ty <= y1; ty++) {
+    reader.forgetAbove(ty - reach)
     for (let tx = 0; tx <= x1; tx++) {
+      const onEdge = (tx + 1) * TILE > width || (ty + 1) * TILE > height
+      // A neighbourhood all one value filters to that value: no work. Most
+      // tiles of a big selection are, and the tiles' bookkeeping says so
+      // without building the window.
+      const u = onEdge ? null : reader.uniformOver(tx * TILE - margin, ty * TILE - margin, size, size)
+      if (u !== null) {
+        if (u > 0) entries.push([tx, ty, uniformCover(store, u)])
+        continue
+      }
       const win = await reader.window(tx * TILE - margin, ty * TILE - margin, size, size)
-      // A neighbourhood all one value filters to that value: no work.
       let same = true
       for (let i = 1; i < win.length && same; i++) if (win[i] !== win[0]) same = false
-      const onEdge = (tx + 1) * TILE > width || (ty + 1) * TILE > height
       if (same && !onEdge) {
         if (win[0] > 0) entries.push([tx, ty, uniformCover(store, win[0])])
         continue
       }
       const out = fn(win, size)
-      for (let y = 0; y < TILE; y++) for (let x = 0; x < TILE; x++) if (tx * TILE + x >= width || ty * TILE + y >= height) out[y * TILE + x] = 0
+      if (onEdge) for (let y = 0; y < TILE; y++) for (let x = 0; x < TILE; x++) if (tx * TILE + x >= width || ty * TILE + y >= height) out[y * TILE + x] = 0
       const t = coverTile(store, out)
       if (t !== null) entries.push([tx, ty, t])
     }
@@ -391,21 +495,45 @@ function centre(win: Float32Array, size: number, margin: number): Float32Array {
   return out
 }
 
-/** One box blur of radius r along rows (horizontal) or columns, in place, edges clamped. */
+/**
+ * One box blur of radius r along rows (horizontal) or columns, in place,
+ * edges clamped. Columns are swept a row at a time with a running sum for
+ * each, so memory is read in order; the sums are the same, in the same
+ * order, as a column at a time.
+ */
 function boxPass(v: Float32Array, size: number, r: number, horizontal: boolean) {
   if (r <= 0) return
-  const line = new Float32Array(size)
   const n = 2 * r + 1
-  for (let k = 0; k < size; k++) {
-    const at = (i: number) => (horizontal ? k * size + i : i * size + k)
-    let sum = 0
-    for (let i = -r; i <= r; i++) sum += v[at(Math.min(size - 1, Math.max(0, i)))]
-    for (let i = 0; i < size; i++) {
-      line[i] = sum / n
-      sum += v[at(Math.min(size - 1, i + r + 1))] - v[at(Math.max(0, i - r))]
+  const last = size - 1
+  if (horizontal) {
+    const line = new Float32Array(size)
+    for (let base = 0; base < size * size; base += size) {
+      let sum = 0
+      for (let i = -r; i <= r; i++) sum += v[base + (i < 0 ? 0 : i > last ? last : i)]
+      for (let i = 0; i < size; i++) {
+        line[i] = sum / n
+        const add = i + r + 1
+        const sub = i - r
+        sum += v[base + (add > last ? last : add)] - v[base + (sub < 0 ? 0 : sub)]
+      }
+      v.set(line, base)
     }
-    for (let i = 0; i < size; i++) v[at(i)] = line[i]
+    return
   }
+  const sums = new Float64Array(size)
+  for (let i = -r; i <= r; i++) {
+    const row = (i < 0 ? 0 : i > last ? last : i) * size
+    for (let x = 0; x < size; x++) sums[x] += v[row + x]
+  }
+  const out = new Float32Array(size * size)
+  for (let y = 0; y < size; y++) {
+    const o = y * size
+    for (let x = 0; x < size; x++) out[o + x] = sums[x] / n
+    const add = (y + r + 1 > last ? last : y + r + 1) * size
+    const sub = (y - r < 0 ? 0 : y - r) * size
+    for (let x = 0; x < size; x++) sums[x] += v[add + x] - v[sub + x]
+  }
+  v.set(out)
 }
 
 /** Three box radii whose passes together approximate a Gaussian of sigma s. */
@@ -420,7 +548,7 @@ export function gaussBoxes(s: number): number[] {
 }
 
 /** A Gaussian blur of a window, in place. */
-export function gaussian(win: Float32Array, size: number, sigma: number) {
+function gaussian(win: Float32Array, size: number, sigma: number) {
   for (const r of gaussBoxes(sigma)) {
     boxPass(win, size, r, true)
     boxPass(win, size, r, false)
@@ -508,26 +636,48 @@ export async function exactBounds(store: TileStore, set: SetId): Promise<[number
 export function grow(store: TileStore, set: SetId, radius: number, width: number, height: number, torus: Torus | null = null): Promise<SetId> {
   const r = Math.min(TILE, Math.round(Math.abs(radius)))
   if (!r) return Promise.resolve(set)
-  const pick = radius > 0 ? Math.max : Math.min
+  const most = radius > 0
   return filterTiles(store, set, width, height, r, (win, size) => {
     const tmp = new Float32Array(win.length)
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        let v = win[y * size + x]
-        for (let k = Math.max(0, x - r); k <= Math.min(size - 1, x + r); k++) v = pick(v, win[y * size + k])
-        tmp[y * size + x] = v
-      }
-    }
+    const g = new Float64Array(size + 2 * r)
+    const h = new Float64Array(size + 2 * r)
+    for (let y = 0; y < size; y++) slidingExtreme(win, y * size, 1, size, r, most, tmp, y * size, 1, g, h)
+    // Columns r .. r + TILE - 1 of the window, rows r .. r + TILE - 1: each has its whole reach inside it.
     const out = new Float32Array(TILE_PIXELS)
-    for (let y = 0; y < TILE; y++) {
-      for (let x = 0; x < TILE; x++) {
-        let v = tmp[(y + r) * size + x + r]
-        for (let k = y; k <= y + 2 * r; k++) v = pick(v, tmp[k * size + x + r])
-        out[y * TILE + x] = v
-      }
+    const col = new Float32Array(size)
+    for (let x = 0; x < TILE; x++) {
+      slidingExtreme(tmp, x + r, size, size, r, most, col, 0, 1, g, h)
+      for (let y = 0; y < TILE; y++) out[y * TILE + x] = col[y + r]
     }
     return out
   }, 0, torus)
+}
+
+/**
+ * The most (or least) of each window of 2r + 1 along a line of n values,
+ * read from `src` at `at + i * step` and clipped at the line's ends, written
+ * to `dst` at `to + i * dstep`: van Herk and Gil-Werman's three
+ * comparisons a value, whatever r is (where trying the window costs 2r).
+ * `g` and `h` are scratch, at least n + 2r long.
+ */
+function slidingExtreme(src: Float32Array, at: number, step: number, n: number, r: number, most: boolean, dst: Float32Array, to: number, dstep: number, g: Float64Array, h: Float64Array) {
+  const w = 2 * r + 1
+  const len = n + 2 * r
+  const pad = most ? -Infinity : Infinity
+  const pick = most ? Math.max : Math.min
+  // The line padded by r each side: g runs forwards within blocks of w, h backwards.
+  for (let i = 0; i < len; i++) {
+    const j = i - r
+    const v = j >= 0 && j < n ? src[at + j * step] : pad
+    g[i] = i % w === 0 ? v : pick(g[i - 1], v)
+  }
+  for (let i = len - 1; i >= 0; i--) {
+    const j = i - r
+    const v = j >= 0 && j < n ? src[at + j * step] : pad
+    h[i] = i === len - 1 || (i + 1) % w === 0 ? v : pick(h[i + 1], v)
+  }
+  // The window round j covers padded i = j .. j + 2r: from h's block and g's.
+  for (let j = 0; j < n; j++) dst[to + j * dstep] = pick(h[j], g[j + 2 * r])
 }
 
 export interface Refine {
@@ -542,7 +692,7 @@ export interface Refine {
 }
 
 /** The coverage a refinement gives a value, after smoothing and feathering. */
-export function refineValue(v: number, o: Pick<Refine, 'contrast' | 'shift'>): number {
+function refineValue(v: number, o: Pick<Refine, 'contrast' | 'shift'>): number {
   const shifted = v + o.shift * 0.5
   const k = 1 / Math.max(0.01, 1 - o.contrast)
   return Math.min(1, Math.max(0, (shifted - 0.5) * k + 0.5))

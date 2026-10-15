@@ -15,6 +15,7 @@ import { FILTER_BY_ID } from '../filters/defs'
 import { FX_DEFS, FX_BY_KIND, type FxKind } from '../fx/defs'
 import { Dialog } from './Dialog'
 import { ParamControls } from './ParamControls'
+import { Hint } from './controls'
 
 /** Runs `fn` a moment after the last change, so a drag previews at the rate the engine keeps up with. */
 function useSoon(fn: () => void, deps: unknown[]) {
@@ -51,6 +52,7 @@ export function FilterDialog({ doc: d, filter, onClose }: { doc: OpenDoc; filter
   return (
     <Dialog
       id="filter"
+      floating="preview"
       title={def.label}
       onClose={() => close(false)}
       footer={
@@ -67,12 +69,12 @@ export function FilterDialog({ doc: d, filter, onClose }: { doc: OpenDoc; filter
       <div className="form" data-filter={filter}>
         {!target && <p>Select a layer to filter.</p>}
         <ParamControls defs={def.params} values={values} doc={present} docKey={d.key} idPrefix={`filter-${filter}`} onChange={(v) => setValues(v)} />
-        <label className="check" title="A live filter stays in the layer’s effects, where its settings can be changed later; otherwise the layer’s pixels are changed for good.">
+        <label className="check">
           <input id="filter-live" type="checkbox" checked={live} disabled={!canBake} onChange={(e) => setLive(e.target.checked)} />
           Live (editable later)
+          <Hint text={`A live filter stays in the layer’s effects, where its settings can be changed later; otherwise the layer’s pixels are changed for good.${selected && canBake ? ' A live filter works on the whole layer: untick Live to filter only what’s selected.' : ''}`} />
         </label>
-        {selected && live && canBake && <p className="field-note">A live filter works on the whole layer. Untick Live to filter only what’s selected.</p>}
-        {selected && !live && <p className="field-note">Only what’s selected is filtered.</p>}
+        {selected && !live && <p className="field-meta">Only what’s selected</p>}
       </div>
     </Dialog>
   )
@@ -98,6 +100,7 @@ export function AdjustDialog({ doc: d, adjustment, onClose }: { doc: OpenDoc; ad
   return (
     <Dialog
       id="adjust"
+      floating="preview"
       title={def.label}
       onClose={() => close(false)}
       footer={
@@ -114,11 +117,12 @@ export function AdjustDialog({ doc: d, adjustment, onClose }: { doc: OpenDoc; ad
       <div className="form" data-adjust={adjustment}>
         {!target && <p>Select a layer to adjust.</p>}
         <ParamControls defs={def.params} values={values} doc={present} docKey={d.key} idPrefix={`adjust-${adjustment}`} onChange={(v) => setValues(v)} />
-        <label className="check" title="A live adjustment stays in the layer’s effects, where its settings can be changed later; otherwise the layer’s pixels are changed for good.">
+        <label className="check">
           <input id="adjust-live" type="checkbox" checked={live} disabled={!canBake} onChange={(e) => setLive(e.target.checked)} />
           Live (editable later)
+          <Hint text="A live adjustment stays in the layer’s effects, where its settings can be changed later; otherwise the layer’s pixels are changed for good." />
         </label>
-        {selected && !live && <p className="field-note">Only what’s selected is changed.</p>}
+        {selected && !live && <p className="field-meta">Only what’s selected</p>}
       </div>
     </Dialog>
   )
@@ -154,6 +158,7 @@ export function LayerStyleDialog({ doc: d, node: id, start, onClose }: { doc: Op
   return (
     <Dialog
       id="layerStyle"
+      floating="preview"
       title={`Layer Style: ${node.name}`}
       onClose={() => close(false)}
       footer={

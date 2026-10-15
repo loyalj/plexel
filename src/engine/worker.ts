@@ -17,7 +17,7 @@ import { openPsd } from './psdHost'
 import { convertSets } from './convertHost'
 import type { DocLook } from '../color/proof'
 import { acquireDevice, describeGpu } from './gpu'
-import { pinSet, setOnCollected, store, tileHandlers, tilesReady, unpinSet, type Handler } from './tileHost'
+import { held, pinSet, setOnCollected, store, tileHandlers, tilesReady, unpinSet, type Handler } from './tileHost'
 import type { EngineCalls, FromEngine, Rgb, ToEngine } from './protocol'
 import { Renderer } from '../render/renderer'
 import { registerTip, tipFromBytes } from '../brush/tips'
@@ -27,15 +27,18 @@ import type { SceneUpdate } from '../render/scene'
 import type { View } from '../render/view'
 import type { Overlay } from '../render/overlay'
 import { addProfile, colour } from './colourHost'
-import { exportImage, importImage } from './imageHost'
+import { exportImage, importImage, optimizeImage } from './imageHost'
 import { bakeEffects, rasterizeNode, readPixels8, renderSmall, samplePoint, shrink } from '../render/readback'
 import { alphaBounds, valueAt } from '../tiles/coverage'
 import { encodePng } from '../io/png'
-import { held, selectHandlers, selectionIdle } from './selectHost'
+import { selectHandlers } from './selectHost'
+import { guarded, workIdle } from './work'
 import { clipHandlers } from './clipHost'
 import { fillHandlers } from './fillHost'
+import { channelHandlers } from './channelHost'
 import { dabCoverage, onWholePixels, retouchArea, selectionCoverage } from './retouchHost'
 import { selectImageHandlers } from './selectImageHost'
+import { cancelJob, cancelledError, endJob, isCancelled, progress, setJobPost } from './jobs'
 
 /**
  * The worker's global, typed by hand. The project compiles against the DOM
@@ -47,6 +50,7 @@ const scope = self as unknown as {
   onmessage: ((e: MessageEvent<ToEngine>) => void) | null
 }
 const post = (m: FromEngine, transfer: Transferable[] = []) => scope.postMessage(m, transfer)
+setJobPost((m) => post(m))
 
 /** Workers with an OffscreenCanvas get requestAnimationFrame; anything else gets a 60 Hz timer. */
 const nextFrame: (fn: () => void) => void =
@@ -180,6 +184,9 @@ scope.onmessage = (e) => {
     case 'stroke.samples':
       gpu?.renderer.addSamples(m.id, m.samples)
       break
+    case 'job.cancel':
+      cancelJob(m.job)
+      break
     case 'stroke.cancel':
       gpu?.renderer.cancelStroke(m.id)
       break
@@ -189,11 +196,23 @@ scope.onmessage = (e) => {
       break
     case 'call':
       handleCall(m.method, m.args).then(
-        ({ value, transfer }) => post({ type: 'reply', id: m.id, ok: true, value }, transfer),
-        (e) => post({ type: 'reply', id: m.id, ok: false, error: e instanceof Error ? e.message : String(e) }),
+        ({ value, transfer }) => {
+          // A result that can't be sent (one that won't clone) is the call's failure, not a call that never answers.
+          try {
+            post({ type: 'reply', id: m.id, ok: true, value }, transfer)
+          } catch (e) {
+            post(failure(m.id, e))
+          }
+        },
+        (e) => post(failure(m.id, e)),
       )
       break
   }
+}
+
+/** A call's failure as a reply: what went wrong, and what kind of error it was. */
+function failure(id: number, e: unknown): FromEngine {
+  return { type: 'reply', id, ok: false, error: e instanceof Error ? e.message : String(e), name: e instanceof Error ? e.name : 'Error' }
 }
 
 /** A scene with an update applied to it, as one full update. */
@@ -330,6 +349,7 @@ const handlers: { [M in keyof EngineCalls]: Handler<M> } = {
   ...selectHandlers(renderer),
   ...clipHandlers(renderer),
   ...fillHandlers(renderer),
+  ...channelHandlers(renderer, () => display),
   'retouch.patch': async (a) => {
     const r = await renderer()
     const cov = await selectionCoverage(a.selection, a.transform)
@@ -338,20 +358,21 @@ const handlers: { [M in keyof EngineCalls]: Handler<M> } = {
     return set === a.layer ? set : held(set)
   },
   ...selectImageHandlers(renderer),
-  // Not while selection work is making sets nobody holds yet.
+  // Not while any call may be making tiles nobody holds yet (work.ts).
   'tiles.gc': async (a) => {
-    await selectionIdle()
+    await workIdle()
     return tileHandlers['tiles.gc'](a)
   },
   'image.import': ({ bytes, name, into }) => importImage(store, bytes, name, into),
-  'psd.open': ({ bytes, name, working, intent, bpc }) => openPsd(bytes, name, working, intent, bpc),
+  'psd.open': ({ bytes, name, working, intent, bpc, job }) => openPsd(bytes, name, working, intent, bpc, job).finally(() => endJob(job)),
   'psd.write': async ({ plan }) => writePsdPlan(await renderer(), plan),
   'render.nodeImage': async ({ key, node, srgb }) => nodeImage(await renderer(), key, node, srgb),
   'tiles.convert': ({ sets, from, to, intent, bpc, profiles }) => {
     for (const p of profiles) addProfile(p.hash, p.bytes)
     return convertSets(sets, from, to, intent, bpc)
   },
-  'image.export': async ({ key, format, quality }) => exportImage(await renderer(), key, { format, quality }),
+  'image.optimize': async ({ key, o }) => optimizeImage(await renderer(), key, o),
+  'image.export': async ({ key, format, quality, lossless }) => exportImage(await renderer(), key, { format, quality, lossless }),
   'render.thumbnails': async ({ key, nodes, size }) => {
     const r = await renderer()
     const out: EngineCalls['render.thumbnails']['result'] = {}
@@ -375,13 +396,16 @@ const handlers: { [M in keyof EngineCalls]: Handler<M> } = {
   'render.stats': async () => (await renderer()).gpuStats(),
   'tiles.alphaBounds': ({ set }) => (store.hasSet(set) ? alphaBounds(store, set) : null),
   'tiles.valuesAt': ({ points }) => Promise.all(points.map((p) => valueAt(store, p.set, p.x, p.y, p.kind, p.outside ?? 0))),
-  'render.bake': async ({ key, node, effects, selection }) => {
-    const set = await bakeEffects(await renderer(), store, key, node, effects, selection)
-    if (set) {
-      pinSet(set)
-      setTimeout(() => unpinSet(set), 60_000)
+  'render.bake': async ({ key, node, effects, selection, job }) => {
+    try {
+      progress(job, null)
+      const set = held(await bakeEffects(await renderer(), store, key, node, effects, selection))
+      // The GPU's work can't be stopped part way; called off meanwhile, the result is let go.
+      if (isCancelled(job)) throw cancelledError()
+      return set
+    } finally {
+      endJob(job)
     }
-    return set
   },
   'render.histogram': async ({ key }) => {
     const r = await renderer()
@@ -401,13 +425,8 @@ const handlers: { [M in keyof EngineCalls]: Handler<M> } = {
     return bins
   },
   'render.rasterize': async ({ key, node }) => {
-    const set = await rasterizeNode(await renderer(), store, key, node)
     // Kept until the page has committed it.
-    if (set) {
-      pinSet(set)
-      setTimeout(() => unpinSet(set), 60_000)
-    }
-    return set
+    return held(await rasterizeNode(await renderer(), store, key, node))
   },
   'stroke.end': async ({ id }) => (await renderer()).endStroke(id),
   'render.sample': async ({ key, x, y, size }) => samplePoint(await renderer(), key, x, y, size),
@@ -430,7 +449,7 @@ const handlers: { [M in keyof EngineCalls]: Handler<M> } = {
     return r.store8
   },
   'test.probe': async (args) => {
-    const { probe } = await import('../render/probe')
+    const { probe } = await import('../checks/probe')
     return probe(await renderer(), store, gpu?.features ?? [], args)
   },
 }
@@ -451,7 +470,7 @@ async function handleCall(method: keyof EngineCalls, args: unknown): Promise<{ v
   await tilesReady()
   const fn = handlers[method] as (a: unknown) => unknown
   if (!fn) throw new Error(`The engine has no call “${method}”`)
-  const value = await fn(args)
+  const value = method === 'tiles.gc' ? await fn(args) : await guarded(async () => fn(args))
   if (method.startsWith('tiles.') && method !== 'tiles.gc' && method !== 'tiles.stats' && method !== 'tiles.describe') requestFrame()
   return { value, transfer: transferables(value) }
 }

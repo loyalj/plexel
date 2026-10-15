@@ -5,7 +5,7 @@
  * filters, magnified and through a mip; and the display table's sampling
  * against sampleLut.
  *
- * The probes run inside the engine worker (src/render/probe.ts), render
+ * The probes run inside the engine worker (src/checks/probe.ts), render
  * through the real render graph, and send back the worst error and the
  * share of pixels past the tolerance. This suite judges them. It also
  * prints the numbers behind the 16-bit storage decision (PERFORMANCE.md).

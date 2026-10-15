@@ -9,11 +9,10 @@
  * id through the same `run`, so a command behaves the same however it was
  * reached.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Autosave } from './app/autosave'
 import { documents, isDirty, newId, selectedIds } from './app/documents'
 import { guidePrefs } from './app/guidePrefs'
-import { GuideLayoutDialog, GuideSettingsDialog, NewGuideDialog } from './ui/guideDialogs'
 import { alignLayers, alignWhy, distributeLayers, distributeWhy, guidesFromShape } from './app/align'
 import { clearGuides } from './doc/guides'
 import { closeIfClean, exportDoc, newDocument, openDialog as openFileDialog, openFile, openImage, openRecent, placeDialog, placeImage, save, saveAs } from './app/files'
@@ -45,16 +44,19 @@ import {
 import { makeNode } from './doc/nodes'
 import { colours } from './app/colours'
 import * as selection from './app/selection'
-import { beginFreeTransform, beginTransformSelection, cropToSelection, nudge, rasterize, sessions, transformBy } from './app/canvasTools'
+import { cropToSelection, nudge, rasterize, sessions, transformBy } from './app/canvasTools'
+import { beginFreeTransform, beginTransformSelection } from './app/freeTransform'
 import { beginLiquify } from './app/liquify'
 import * as construct from './app/construct'
-import { OffsetPathDialog, SimplifyDialog } from './ui/constructDialogs'
-import { BorderDialog, ColourRangeDialog, FeatherDialog, GrowDialog, LoadSelectionDialog, SaveSelectionDialog, SelectMaskDialog } from './ui/selectDialogs'
-import { DefinePatternDialog, FillDialog } from './ui/fillDialogs'
 import * as fills from './app/fills'
 import * as effects from './app/effects'
 import * as vectors from './app/vectors'
 import './app/toolGestures'
+import './app/transformControls'
+import './app/freehand'
+import './app/artboardTool'
+import { freehand } from './app/freehand'
+import { deleteSelectedWidthPoints, widthEditing } from './app/widthTool'
 import { selectTools } from './app/selectTools'
 import * as clipboard from './app/clipboard'
 import * as typing from './app/typing'
@@ -62,18 +64,21 @@ import { addFontFiles, loadSystemFonts } from './app/fonts'
 import { CharacterPanel, ParagraphPanel } from './ui/TypePanels'
 import { SeparationsPanel } from './ui/SeparationsPanel'
 import { ChannelsPanel, PatternsPanel } from './ui/ChannelsPanel'
+import { channels, channelTarget } from './app/channels'
+import * as channelActions from './app/channelActions'
 import { GraphicStylesPanel } from './ui/GraphicStylesPanel'
-import { AdjustDialog, FilterDialog, LayerStyleDialog } from './ui/effectDialogs'
+import { VectorBrushesPanel } from './ui/VectorBrushesPanel'
+import { SymbolsPanel } from './ui/SymbolsPanel'
+import * as vectorBrushes from './app/vectorBrushes'
+import { canTrace } from './app/imageTrace'
 import { ColourPanel } from './ui/ColourPanel'
-import { AssignProfileDialog, ColourSettingsDialog, ConvertProfileDialog, ProofSetupDialog } from './ui/colourDialogs'
 import { convertDepth, convertDocument, convertMode } from './app/convert'
 import { proofing } from './app/proofing'
-import { freshName, placeOf } from './doc/tree'
+import { freshName, placeOf, whereNew } from './doc/tree'
 import { engine } from './engine/EngineHost'
 import { matches, parseShortcut } from './input/shortcuts'
 import { canSaveInPlace, downloadAs, pickExportFile, writeToHandle } from './io/files'
 import { keyChanges, setKeyChanges, subscribeKeys } from './input/keymap'
-import { ShortcutsDialog } from './ui/ShortcutsDialog'
 import { WORKSPACE_FILE_TYPE, readWorkspaceFile, workspaceFileName, workspaceFileText, type WorkspaceFile } from './ui/workspaceFile'
 import { memoryStore } from './io/journal'
 import { opfsAvailable, opfsStore, requestPersistence } from './io/opfs'
@@ -82,17 +87,18 @@ import { startCollecting } from './app/pixels'
 import { colourEngine } from './app/colour'
 import { PXLL_EXTENSION } from './io/pxll'
 import { CommandPalette } from './ui/CommandPalette'
+import { installLabelScrub } from './ui/controls'
 import { DocTabs } from './ui/DocTabs'
 import { Dock, DropIndicator, FloatingPanels, iconPanel, showIconPanel } from './ui/Dock'
 import { activate, inIcons, isOpen, isShown, openPanel, openPanels, togglePanel, type Layout } from './ui/layout'
-import { ImportWorkspaceDialog, ManageWorkspacesDialog, NewWorkspaceDialog } from './ui/workspaceDialogs'
 import { CanvasSizeDialog, CloseDocDialog, NewDocDialog, RecentDialog, RenameDocDialog, ResolutionDialog } from './ui/docDialogs'
 import { AboutDialog, GpuDialog } from './ui/dialogs'
 import { HistoryPanel } from './ui/HistoryPanel'
-import { LayersPanel } from './ui/LayersPanel'
+import { LayersPanel, type LayerActions } from './ui/LayersPanel'
 import { MenuBar } from './ui/MenuBar'
 import { Notices } from './ui/Notices'
-import { PropertiesPanel } from './ui/PropertiesPanel'
+import { PropertiesPanel, type PropertyActions } from './ui/PropertiesPanel'
+import { useStable } from './lib/stable'
 import { StatusBar } from './ui/StatusBar'
 import { applyAppearance, loadAppearance, saveAppearance, type Appearance } from './ui/theme'
 import { Unsupported } from './ui/Unsupported'
@@ -100,13 +106,13 @@ import { Viewport } from './ui/Viewport'
 import { WORKSPACES, addWorkspace, deleteWorkspace, isPristine, loadWorkspace, newWorkspace, renameWorkspace, resetWorkspace, saveChanges, saveWorkspace, switchWorkspace, workspaceName, type Workspace } from './ui/workspace'
 import { ContextMenu } from './ui/ContextMenu'
 import { Tooltips } from './ui/Tooltips'
-import { InterfaceDialog } from './ui/InterfaceDialog'
 import { interfacePrefs } from './ui/interface'
 import { springTools } from './app/springTools'
 import { Icon } from './ui/Icon'
 import { tilingOf, type NodeId } from './doc/types'
 import { notify } from './app/notices'
 import { views } from './app/views'
+import { zoomToLayer, zoomToSelection } from './app/zoomTo'
 import { colourSettings } from './app/colourSettings'
 import { tools } from './tools'
 import { Toolbar } from './ui/Toolbar'
@@ -114,15 +120,17 @@ import { OptionsBar, stepSize } from './ui/OptionsBar'
 import { SwatchesPanel } from './ui/SwatchesPanel'
 import { BrushesPanel } from './ui/BrushesPanel'
 import { BrushSettingsPanel } from './ui/BrushSettingsPanel'
-import { DefineBrushDialog } from './ui/DefineBrushDialog'
 import { pickBrushFiles } from './app/brushImport'
-import { PenDialog } from './ui/PenDialog'
 import { brushes } from './app/brushes'
 import { TOOL_BY_ID } from './tools'
-import { ExportDialog } from './ui/ExportDialog'
 import { isImageName } from './io/raster'
 import { hasPageSelection, isTyping } from './input/guard'
 import { docPoint } from './render/view'
+
+import { GuideLayoutDialog, GuideSettingsDialog, NewGuideDialog, OffsetPathDialog, SimplifyDialog, BorderDialog, ColourRangeDialog, FeatherDialog, GrowDialog, LoadSelectionDialog, SaveSelectionDialog, SelectMaskDialog, DefinePatternDialog, FillDialog, AdjustDialog, FilterDialog, LayerStyleDialog, AssignProfileDialog, ColourSettingsDialog, ConvertProfileDialog, ProofSetupDialog, ShortcutsDialog, ImportWorkspaceDialog, ManageWorkspacesDialog, NewWorkspaceDialog, InterfaceDialog, ToolbarDialog, DefineBrushDialog, PenDialog, ExportDialog, NewSpotChannelDialog, ChannelOptionsDialog, WidthPointDialog, BrushOptionsDialog, SaveForWebDialog, ImageTraceDialog, preloadDialogs } from './ui/lazyDialogs'
+import * as artboards from './app/artboards'
+import * as symbols from './app/symbols'
+
 
 /**
  * Every command's keys now (your changes included), parsed: again only when
@@ -205,6 +213,13 @@ export default function App() {
   /** A workspace read from a file, while Import Workspace asks what to call it. */
   const [importing, setImporting] = useState<WorkspaceFile | null>(null)
   const keys = useSyncExternalStore(subscribeKeys, keyChanges)
+  // Labels of number fields scrub them, in dialogs as in panels.
+  useEffect(() => installLabelScrub(), [])
+  // When the page is first idle (or after two seconds at most).
+  useEffect(() => {
+    const id = requestIdleCallback(() => void preloadDialogs(), { timeout: 2000 })
+    return () => cancelIdleCallback(id)
+  }, [])
   // The last number key typed with a painting tool, so two quick digits make one value.
   const lastDigit = useRef<{ digit: number; flow: boolean; at: number } | null>(null)
   const [palette, setPalette] = useState(false)
@@ -227,7 +242,10 @@ export default function App() {
   const solos = useRef(new Map<string, { id: NodeId; saved: Map<NodeId, boolean> }>())
   const prefs = useSyncExternalStore(interfacePrefs().subscribe, interfacePrefs().get)
   const aids = useSyncExternalStore(guidePrefs().subscribe, guidePrefs().get)
-  const state = useSyncExternalStore(engine().subscribe, engine().getState)
+  // Health alone: the full state changes every frame, and the whole app mustn't draw again with it.
+  const health = useSyncExternalStore(engine().subscribeHealth, engine().getHealth)
+  const widthEdit = useSyncExternalStore(widthEditing.subscribe, widthEditing.get)
+  const brushEdit = useSyncExternalStore(vectorBrushes.brushOptions.subscribe, vectorBrushes.brushOptions.get)
   const docs = useSyncExternalStore(documents().subscribe, documents().getState)
   const clips = useSyncExternalStore(clipboard.subscribeClipboard, clipboard.clipVersion)
   const tool = useSyncExternalStore(tools().subscribe, tools().get)
@@ -368,11 +386,13 @@ export default function App() {
         await openFile(file, handle && handle.kind === 'file' ? (handle as FileSystemFileHandle) : null)
       }
     }
+    // The listener itself plain: the drop's work goes on after it returns.
+    const dropped = (e: DragEvent) => void drop(e)
     addEventListener('dragover', over)
-    addEventListener('drop', drop)
+    addEventListener('drop', dropped)
     return () => {
       removeEventListener('dragover', over)
-      removeEventListener('drop', drop)
+      removeEventListener('drop', dropped)
     }
   }, [])
 
@@ -502,10 +522,7 @@ export default function App() {
       newPixelLayer: () => {
         const d = store.active()
         if (!d) return
-        const docNow = d.history.present
-        const place = d.selected ? placeOf(docNow, d.selected) : null
-        const parent = place?.slot === 'children' ? place.parent : docNow.root
-        const index = place?.slot === 'children' ? place.index + 1 : (docNow.nodes[docNow.root].children?.length ?? 0)
+        const { parent, index } = whereNew(d.history.present, d.selected)
         const id = newId('n')
         store.commit((x) => insertNode(x, makeNode('pixel', id, freshName(x, 'Layer')), parent, index))
         store.select(id)
@@ -518,11 +535,8 @@ export default function App() {
       newGroup: () => {
         const d = store.active()
         if (!d) return
-        const docNow = d.history.present
-        // Above the selected layer, in its group; otherwise at the top.
-        const place = d.selected ? placeOf(docNow, d.selected) : null
-        const parent = place?.slot === 'children' ? place.parent : docNow.root
-        const index = place?.slot === 'children' ? place.index + 1 : (docNow.nodes[docNow.root].children?.length ?? 0)
+        // Above the selected layer, in its group (into the artboard, one being selected); otherwise at the top.
+        const { parent, index } = whereNew(d.history.present, d.selected)
         const id = newId('n')
         store.commit((x) => addGroup(x, id, freshName(x, 'Group'), parent, index))
         store.select(id)
@@ -563,6 +577,15 @@ export default function App() {
         void fills.newFillLayer(a === 'fill-layer-solid' ? 'solid' : a === 'fill-layer-gradient' ? 'gradient' : 'pattern').then((id) => id && showLayers())
       },
       hasChannels: () => !!active?.history.present.channels?.length,
+      channel: (a) => {
+        if (a === 'new') channelActions.newChannel()
+        else if (a === 'duplicate') channelActions.duplicatePicked()
+        else if (a === 'delete') channelActions.deletePicked()
+        else if (a === 'load-luminosity') selection.loadColourChannel(null, 'replace')
+        else channelActions.pickNth(a.pick)
+      },
+      channelPicked: () => !!active && !!channelTarget(active),
+      channelCount: () => (active ? (active.history.present.mode === 'gray' ? 0 : active.history.present.mode === 'rgb' ? 3 : 4) + (active.history.present.channels?.length ?? 0) : 0),
       canCopy: (merged) => clipboard.canCopy(merged),
       copy: (o) => clipboard.copy(o),
       paste: (how) => void clipboard.paste(how),
@@ -579,11 +602,14 @@ export default function App() {
       zoomOut: () => views().zoomStep(-1),
       fitOnScreen: () => views().fit(),
       actualPixels: () => views().actualSize(),
+      zoomToSelection: () => void zoomToSelection(),
+      zoomToLayer: () => void zoomToLayer(),
       rotateView: (deg) => views().rotateBy(deg),
       resetRotation: () => views().rotate(0),
       tool: () => tools().get(),
       setTool: (id) => tools().set(id),
       resizeBrush: (dir) => {
+        if (tools().get() === 'blob') return freehand().update({ blobSize: stepSize(freehand().get().blobSize, dir) })
         if (tools().get() === 'quick') return selectTools().update('quick', { size: stepSize(selectTools().get().quick.size, dir) })
         const t = TOOL_BY_ID.get(tools().get())?.paints ?? 'brush'
         brushes().update(t, { size: stepSize(brushes().get()[t].size, dir) })
@@ -621,9 +647,10 @@ export default function App() {
       deleteOrClear: () => {
         const d = store.active()
         if (!d) return
-        // Direct Selection or the Pen with points selected: those points go.
-        if (vectors.deleteSelectedAnchors()) return
-        if (d.history.present.selection && selection.pixelTarget(d)) void selection.clearTarget()
+        // Direct Selection or the Pen with points selected: those points go; the Width tool's width points too.
+        if (vectors.deleteSelectedAnchors() || deleteSelectedWidthPoints()) return
+        // A channel targeted is cleared whole when nothing is selected, never a layer deleted from under it.
+        if ((d.history.present.selection && selection.canFill(d)) || channelTarget(d)) void selection.clearTarget()
         else if (!d.history.present.selection && d.selected) {
           const ids = selectedIds(d)
           store.commit((x) => ids.reduce((y, id) => (y.nodes[id] ? removeNode(y, id) : y), x), ids.length > 1 ? { label: 'Delete Layers' } : {})
@@ -685,6 +712,33 @@ export default function App() {
         const n = d?.selected ? d.history.present.nodes[d.selected] : undefined
         return n?.kind === 'vector' && !!n.props.geometry
       },
+      vectorBrush: (action) => {
+        if (action === 'remove') vectorBrushes.removeBrushStroke()
+        else if (action === 'options') vectorBrushes.openSelectedBrushOptions()
+        else vectorBrushes.newBrushFromSelection(action.slice(4) as 'art' | 'scatter' | 'pattern')
+      },
+      hasBrushStroke: () => vectorBrushes.hasBrushStroke(),
+      canTrace: () => canTrace(store.active()),
+      artboard: (action) => {
+        if (action === 'new') artboards.newArtboard()
+        else if (action === 'from-layers') void artboards.artboardFromLayers()
+        else artboards.releaseArtboard()
+        showLayers()
+      },
+      inArtboard: () => {
+        const d = store.active()
+        return !!d && !!artboards.selectedArtboard(d)
+      },
+      symbol: (action) => {
+        const d = store.active()
+        if (action === 'new') void symbols.newSymbolFromSelection().then((id) => id && setLayout((l) => (isOpen(l, 'symbols') ? l : openPanel(l, 'symbols'))))
+        else if (action === 'edit') {
+          const s = symbols.selectedSymbol(d)
+          if (s) symbols.editSymbol(s)
+        } else symbols.breakLinkSelected()
+      },
+      canMakeSymbol: () => symbols.canMakeSymbol(store.active()),
+      instanceSelected: () => !!symbols.selectedSymbol(store.active()),
       isLivePaint: () => {
         const d = store.active()
         return construct.isLivePaint(d?.selected ? d.history.present.nodes[d.selected] : undefined)
@@ -692,7 +746,9 @@ export default function App() {
       construct: (kind) => {
         if (kind.startsWith('pf-')) construct.pathfinder(kind.slice(3) as construct.PathfinderOp)
         else if (kind === 'outline-stroke') construct.outlineStroke()
-        else if (kind === 'join') construct.joinShape()
+        else if (kind === 'join') vectors.joinPaths(construct.joinShape)
+        else if (kind === 'break') vectors.breakAtPoints()
+        else if (kind === 'separate') vectors.separatePaths()
         else if (kind === 'smooth') construct.smoothShape()
         else if (kind === 'live-make') construct.makeLivePaint()
         else if (kind === 'live-expand') construct.expandLivePaint()
@@ -813,12 +869,24 @@ export default function App() {
   // Shortcuts. While a dialog or the palette is open, keys belong to it.
   // In a text field a shortcut needs Ctrl, so typing a letter types it,
   // and Ctrl+Z and Ctrl+A there are the field's own undo and select-all.
-  // `keys` is what shortcutsOf reads: a change to your keys parses them again.
-  const shortcuts = useMemo(() => parsedShortcuts([...COMMANDS, ...runtimeCommands(ctx)]), [ctx, keys])
+  // The listeners are added once and read what they need from `keyState`,
+  // kept current after every render: the command context is new with every
+  // commit, and adding the listeners again (and parsing every command's keys
+  // again) each time cost every edit. The keys are parsed when a key is
+  // pressed after the commands or your keys (`keys`, what shortcutsOf reads)
+  // have changed.
+  const keyState = useRef({ ctx, run, dialog, palette, closing, prefs, keys })
+  useLayoutEffect(() => {
+    keyState.current = { ctx, run, dialog, palette, closing, prefs, keys }
+  })
+  const parsed = useRef<{ ctx: CommandContext; keys: unknown; list: ReturnType<typeof parsedShortcuts> } | null>(null)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const { ctx, run, dialog, palette, closing, prefs, keys } = keyState.current
       if (dialog || palette || closing) return
-      for (const { id, s } of shortcuts) {
+      let p = parsed.current
+      if (!p || p.ctx !== ctx || p.keys !== keys) p = parsed.current = { ctx, keys, list: parsedShortcuts([...COMMANDS, ...runtimeCommands(ctx)]) }
+      for (const { id, s } of p.list) {
         if (!matches(s, e)) continue
         const def = commandById(id, ctx)
         if (e.repeat && !def?.repeats) return
@@ -861,7 +929,7 @@ export default function App() {
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
     }
-  }, [run, ctx, dialog, palette, closing, prefs, shortcuts])
+  }, [])
 
   // Paste, from the browser's paste event: Ctrl+V (Ctrl+Shift+V in place) anywhere but a text field.
   useEffect(() => {
@@ -876,7 +944,87 @@ export default function App() {
     return () => document.removeEventListener('paste', onPaste)
   }, [dialog, palette, closing])
 
-  if (state.status === 'unsupported') return <Unsupported reason={state.reason ?? 'WebGPU is not available.'} />
+  // The panels' actions: the same functions every render (lib/stable.ts),
+  // so the memoised panels draw again for their own documents, not whenever
+  // App does (a tool chosen, a menu opened). Each reads the front document
+  // when it runs.
+  const layerActions = useStable<LayerActions>({
+    onRenaming: (id) => setRenaming(id),
+    onSelect: (id, mask) => {
+      documents().select(id, undefined, mask ?? false)
+      // A layer clicked is what's edited: an alpha or spot channel picked in the Channels panel no longer is.
+      const d = documents().active()
+      if (d && channelTarget(d)) channels.pickComposite(d.key)
+    },
+    onSelectMany: (ids, key) => documents().selectMany(ids, key),
+    onToggleEffect: (id) => effects.toggleEffect(id),
+    onStyle: (id) => {
+      documents().select(id)
+      setDialog('layerStyle')
+    },
+    onMaskClick: (layer, mask, how) => {
+      const m = documents().active()?.history.present.nodes[mask]
+      documents().select(layer, undefined, m?.kind === 'mask' && m.props.source === 'vector' ? 'vector' : 'pixel')
+      if (how === 'toggle') selection.toggleMaskEnabled()
+      else selection.selectionFromMask(mask)
+    },
+    onToggleVisible: (id) => documents().commit((x) => setVisible(x, id, !x.nodes[id].visible)),
+    onSolo: (id) => {
+      const front = documents().active()
+      if (!front) return
+      const docNow = front.history.present
+      const was = solos.current.get(front.key)
+      if (was && was.id === id) {
+        // The second Alt-click: everything as it was before the first.
+        solos.current.delete(front.key)
+        documents().commit((x) => setVisibleMany(x, was.saved), { label: 'Show All Layers' })
+        return
+      }
+      // Every layer outside this one is hidden, but the groups it's in stay shown; its own clipped layers and children stay as they are.
+      const ancestors = new Set<NodeId>()
+      for (let p = placeOf(docNow, id); p; p = placeOf(docNow, p.parent)) ancestors.add(p.parent)
+      const saved = new Map<NodeId, boolean>()
+      const next = new Map<NodeId, boolean>()
+      const walk = (n: NodeId) => {
+        for (const c of docNow.nodes[n]?.children ?? []) {
+          if (!docNow.nodes[c]) continue
+          saved.set(c, docNow.nodes[c].visible)
+          next.set(c, c === id || ancestors.has(c))
+          if (c !== id) walk(c)
+        }
+      }
+      walk(docNow.root)
+      solos.current.set(front.key, { id, saved })
+      documents().commit((x) => setVisibleMany(x, next), { label: 'Show Only This Layer' })
+    },
+    onToggleLock: (id) => documents().commit((x) => setLocked(x, id, { all: !x.nodes[id].locked.all })),
+    onDuplicate: (id) => {
+      documents().select(id)
+      clipboard.duplicateLayer()
+    },
+    onDeleteLayer: (id) => documents().commit((x) => removeNode(x, id)),
+    onToggleFold: (id) => documents().toggleFolded(id),
+    onRename: (id, name) => documents().commit((x) => renameNode(x, id, name)),
+    onMove: (id, parent, index) => documents().commit((x) => moveNode(x, id, parent, index)),
+    onNewLayer: () => run('layer.new-pixel'),
+    onNewAdjustment: (at) => setMenuAt({ x: at.x, y: at.y, kind: 'adjustment' }),
+    onDuplicateSelected: () => run('layer.duplicate'),
+    onDelete: () => run('layer.delete'),
+  })
+  const propertyActions = useStable<PropertyActions>({
+    onOpacity: (id, o) => documents().commit((x) => setOpacity(x, id, o), { coalesce: `opacity:${id}` }),
+    onFill: (id, o) => documents().commit((x) => setFillOpacity(x, id, o), { coalesce: `fill:${id}` }),
+    onBlend: (id, b) => documents().commit((x) => setBlend(x, id, b)),
+    onVisible: (id, v) => documents().commit((x) => setVisible(x, id, v)),
+    onLockAll: (id, all) => documents().commit((x) => setLocked(x, id, { all })),
+    onLockPosition: (id, position) => documents().commit((x) => setLocked(x, id, { position })),
+    onResample: (id, r) => documents().commit((x) => setResample(x, id, r)),
+    onKnockout: (id, k) => documents().commit((x) => setKnockout(x, id, k)),
+    onStyle: () => setDialog('layerStyle'),
+  })
+  const historyActions = useStable({ onJump: (i: number) => documents().jumpTo(i) })
+
+  if (health.status === 'unsupported') return <Unsupported reason={health.reason ?? 'WebGPU is not available.'} />
 
   const store = documents()
   const closeDialog = () => setDialog(null)
@@ -885,66 +1033,9 @@ export default function App() {
   const content = active
     ? {
         layers: (
-          <LayersPanel
-            doc={active}
-            renaming={renaming}
-            onRenaming={setRenaming}
-            onSelect={(id, mask) => store.select(id, undefined, mask ?? false)}
-            onSelectMany={(ids, key) => store.selectMany(ids, key)}
-            onToggleEffect={(id) => effects.toggleEffect(id)}
-            onStyle={(id) => {
-              store.select(id)
-              setDialog('layerStyle')
-            }}
-            onMaskClick={(layer, _mask, how) => {
-              const m = active.history.present.nodes[_mask]
-              store.select(layer, undefined, m?.kind === 'mask' && m.props.source === 'vector' ? 'vector' : 'pixel')
-              if (how === 'toggle') selection.toggleMaskEnabled()
-              else selection.selectionFromMask(_mask)
-            }}
-            onToggleVisible={(id) => store.commit((x) => setVisible(x, id, !x.nodes[id].visible))}
-            onSolo={(id) => {
-              const docNow = active.history.present
-              const was = solos.current.get(active.key)
-              if (was && was.id === id) {
-                // The second Alt-click: everything as it was before the first.
-                solos.current.delete(active.key)
-                store.commit((x) => setVisibleMany(x, was.saved), { label: 'Show All Layers' })
-                return
-              }
-              // Every layer outside this one is hidden, but the groups it's in stay shown; its own clipped layers and children stay as they are.
-              const ancestors = new Set<NodeId>()
-              for (let p = placeOf(docNow, id); p; p = placeOf(docNow, p.parent)) ancestors.add(p.parent)
-              const saved = new Map<NodeId, boolean>()
-              const next = new Map<NodeId, boolean>()
-              const walk = (n: NodeId) => {
-                for (const c of docNow.nodes[n]?.children ?? []) {
-                  if (!docNow.nodes[c]) continue
-                  saved.set(c, docNow.nodes[c].visible)
-                  next.set(c, c === id || ancestors.has(c))
-                  if (c !== id) walk(c)
-                }
-              }
-              walk(docNow.root)
-              solos.current.set(active.key, { id, saved })
-              store.commit((x) => setVisibleMany(x, next), { label: 'Show Only This Layer' })
-            }}
-            onToggleLock={(id) => store.commit((x) => setLocked(x, id, { all: !x.nodes[id].locked.all }))}
-            onDuplicate={(id) => {
-              store.select(id)
-              clipboard.duplicateLayer()
-            }}
-            onDeleteLayer={(id) => store.commit((x) => removeNode(x, id))}
-            onToggleFold={(id) => store.toggleFolded(id)}
-            onRename={(id, name) => store.commit((x) => renameNode(x, id, name))}
-            onMove={(id, parent, index) => store.commit((x) => moveNode(x, id, parent, index))}
-            onNewLayer={() => run('layer.new-pixel')}
-            onNewAdjustment={(at) => setMenuAt({ x: at.x, y: at.y, kind: 'adjustment' })}
-            onDuplicateSelected={() => run('layer.duplicate')}
-            onDelete={() => run('layer.delete')}
-          />
+          <LayersPanel doc={active} renaming={renaming} {...layerActions} />
         ),
-        history: <HistoryPanel doc={active} onJump={(i) => store.jumpTo(i)} />,
+        history: <HistoryPanel doc={active} {...historyActions} />,
         colour: <ColourPanel doc={doc} />,
         swatches: <SwatchesPanel />,
         brushes: <BrushesPanel />,
@@ -952,25 +1043,14 @@ export default function App() {
         character: <CharacterPanel />,
         paragraph: <ParagraphPanel />,
         separations: <SeparationsPanel />,
-        channels: <ChannelsPanel />,
+        channels: <ChannelsPanel openDialog={setDialog} />,
         patterns: <PatternsPanel openDialog={setDialog} />,
         'graphic-styles': <GraphicStylesPanel />,
-        properties: (
-          <PropertiesPanel
-            doc={active}
-            onOpacity={(id, o) => store.commit((x) => setOpacity(x, id, o), { coalesce: `opacity:${id}` })}
-            onFill={(id, o) => store.commit((x) => setFillOpacity(x, id, o), { coalesce: `fill:${id}` })}
-            onBlend={(id, b) => store.commit((x) => setBlend(x, id, b))}
-            onVisible={(id, v) => store.commit((x) => setVisible(x, id, v))}
-            onLockAll={(id, all) => store.commit((x) => setLocked(x, id, { all }))}
-            onLockPosition={(id, position) => store.commit((x) => setLocked(x, id, { position }))}
-            onResample={(id, r) => store.commit((x) => setResample(x, id, r))}
-            onKnockout={(id, k) => store.commit((x) => setKnockout(x, id, k))}
-            onStyle={() => setDialog('layerStyle')}
-          />
-        ),
+        'vector-brushes': <VectorBrushesPanel />,
+        symbols: <SymbolsPanel />,
+        properties: <PropertiesPanel doc={active} {...propertyActions} />,
       }
-    : { colour: <ColourPanel doc={null} />, swatches: <SwatchesPanel />, brushes: <BrushesPanel />, 'brush-settings': <BrushSettingsPanel />, character: <CharacterPanel />, paragraph: <ParagraphPanel />, separations: <SeparationsPanel />, channels: <ChannelsPanel />, patterns: <PatternsPanel openDialog={setDialog} />, 'graphic-styles': <GraphicStylesPanel /> }
+    : { colour: <ColourPanel doc={null} />, swatches: <SwatchesPanel />, brushes: <BrushesPanel />, 'brush-settings': <BrushSettingsPanel />, character: <CharacterPanel />, paragraph: <ParagraphPanel />, separations: <SeparationsPanel />, channels: <ChannelsPanel openDialog={setDialog} />, patterns: <PatternsPanel openDialog={setDialog} />, 'graphic-styles': <GraphicStylesPanel />, 'vector-brushes': <VectorBrushesPanel />, symbols: <SymbolsPanel /> }
 
   const showDock = anyPanel && !panelsHidden && !dockHidden
   return (
@@ -1006,13 +1086,13 @@ export default function App() {
       {/* The tool's settings across the whole window, as Photoshop's options bar; under it the toolbar at the left edge, the docks, and the tabs over the canvas, all starting level. */}
       {!panelsHidden && <OptionsBar />}
       <div className={`main${showDock ? '' : ' no-dock'}`}>
-        {!panelsHidden && <Toolbar />}
+        {!panelsHidden && <Toolbar onEdit={() => setDialog('toolbar')} />}
         {showDock && <Dock side="left" layout={workspace.layout} content={content} scale={prefs.scale} onLayout={setLayout} />}
         <div className="center">
           {screen === 'standard' && <DocTabs docs={docs.docs} active={docs.active} onActivate={(k) => store.activate(k)} onClose={requestClose} />}
           <div className="stage">
             <Viewport
-              state={state}
+              health={health}
               hasDoc={!!active || !restored}
               active={!!active}
               canRecent={canSaveInPlace()}
@@ -1035,11 +1115,13 @@ export default function App() {
       </div>
       {showDock && <FloatingPanels layout={workspace.layout} content={content} scale={prefs.scale} onLayout={setLayout} />}
       <DropIndicator />
-      {screen === 'standard' && <ViewStatus state={state} doc={doc} autosave={saveStatus} />}
+      {screen === 'standard' && <ViewStatus doc={doc} autosave={saveStatus} />}
       {palette && <CommandPalette ctx={ctx} onRun={run} onClose={() => setPalette(false)} />}
       {menuAt && <ContextMenu items={menuAt.kind === 'ruler' ? rulerMenu() : menuAt.kind === 'adjustment' ? adjustmentMenu() : contextMenu(ctx)} up={menuAt.kind === 'adjustment'} ctx={ctx} x={menuAt.x} y={menuAt.y} onRun={run} onClose={closeMenu} />}
       <Tooltips />
+      <Suspense fallback={null}>
       {dialog === 'interface' && <InterfaceDialog onClose={closeDialog} />}
+      {dialog === 'toolbar' && <ToolbarDialog onClose={closeDialog} />}
       {dialog === 'newGuide' && doc && <NewGuideDialog doc={doc} onClose={closeDialog} />}
       {dialog === 'guideLayout' && doc && <GuideLayoutDialog doc={doc} onClose={closeDialog} />}
       {dialog === 'guideSettings' && <GuideSettingsDialog onClose={closeDialog} />}
@@ -1057,7 +1139,7 @@ export default function App() {
         <ManageWorkspacesDialog ws={workspace} onClose={closeDialog} onRename={(id, name) => setWorkspace((w) => renameWorkspace(w, id, name))} onDelete={(id) => setWorkspace((w) => deleteWorkspace(w, id))} />
       )}
       {dialog === 'about' && <AboutDialog onClose={closeDialog} />}
-      {dialog === 'gpu' && <GpuDialog state={state} onClose={closeDialog} />}
+      {dialog === 'gpu' && <GpuDialog onClose={closeDialog} />}
       {dialog === 'shortcuts' && <ShortcutsDialog defs={[...COMMANDS, ...runtimeCommands(ctx)]} changes={keys} onSave={setKeyChanges} onClose={closeDialog} />}
       {dialog === 'importWorkspace' && importing && (
         <ImportWorkspaceDialog
@@ -1081,9 +1163,9 @@ export default function App() {
       {dialog === 'new' && (
         <NewDocDialog
           onClose={closeDialog}
-          onCreate={(o, background) => {
+          onCreate={(o, background, artboard) => {
             closeDialog()
-            void newDocument(o, background).catch((e) => notify('error', 'The document couldn’t be made.', [String(e)]))
+            void newDocument(o, background, artboard).catch((e) => notify('error', 'The document couldn’t be made.', [String(e)]))
           }}
         />
       )}
@@ -1095,6 +1177,10 @@ export default function App() {
       {dialog === 'colourRange' && <ColourRangeDialog onClose={closeDialog} />}
       {dialog === 'saveSelection' && active && <SaveSelectionDialog doc={active.history.present} onClose={closeDialog} />}
       {dialog === 'loadSelection' && active && <LoadSelectionDialog doc={active.history.present} onClose={closeDialog} />}
+      {dialog === 'newSpotChannel' && active && <NewSpotChannelDialog doc={active.history.present} onClose={closeDialog} />}
+      {dialog === 'channelOptions' && active && channelTarget(active) && <ChannelOptionsDialog doc={active.history.present} channel={channelTarget(active)!} onClose={closeDialog} />}
+      {widthEdit && <WidthPointDialog />}
+      {brushEdit && <BrushOptionsDialog />}
       {dialog === 'fill' && active && <FillDialog doc={active.history.present} onClose={closeDialog} />}
       {dialog === 'definePattern' && active && <DefinePatternDialog doc={active.history.present} onClose={closeDialog} />}
       {dialog?.startsWith('filter:') && active && <FilterDialog doc={active} filter={dialog.slice(7)} onClose={closeDialog} />}
@@ -1104,9 +1190,15 @@ export default function App() {
       {dialog === 'layerStyle' && active?.selected && <LayerStyleDialog doc={active} node={active.selected} onClose={closeDialog} />}
       {dialog === 'pen' && <PenDialog onClose={closeDialog} />}
       {dialog === 'defineBrush' && <DefineBrushDialog onClose={closeDialog} />}
+      {dialog === 'saveForWeb' && active && <SaveForWebDialog doc={active} onClose={closeDialog} />}
+      {dialog === 'imageTrace' && active && <ImageTraceDialog onClose={closeDialog} />}
       {dialog === 'export' && doc && (
         <ExportDialog
           doc={doc}
+          selectedArtboard={(() => {
+            const id = active ? artboards.selectedArtboard(active) : null
+            return id ? (doc.nodes[id]?.name ?? null) : null
+          })()}
           onClose={closeDialog}
           onExport={(format, quality, o) => {
             closeDialog()
@@ -1191,6 +1283,7 @@ export default function App() {
           }}
         />
       )}
+      </Suspense>
     </div>
   )
 }
@@ -1199,9 +1292,10 @@ export default function App() {
  * The status bar with the front view's zoom and rotation. It follows the
  * view itself, so panning (a new view every frame) redraws the status bar
  * and not the whole app: with hundreds of layers, the Layers panel alone
- * would cost frames.
+ * would cost frames. The engine's frame figures likewise.
  */
-function ViewStatus(props: Omit<Parameters<typeof StatusBar>[0], 'zoom' | 'rotation'>) {
+function ViewStatus(props: Omit<Parameters<typeof StatusBar>[0], 'zoom' | 'rotation' | 'state'>) {
   const view = useSyncExternalStore(views().subscribe, views().front)
-  return <StatusBar {...props} zoom={view?.zoom ?? null} rotation={view?.rotation ?? 0} />
+  const state = useSyncExternalStore(engine().subscribe, engine().getState)
+  return <StatusBar {...props} state={state} zoom={view?.zoom ?? null} rotation={view?.rotation ?? 0} />
 }

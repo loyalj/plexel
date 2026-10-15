@@ -29,7 +29,7 @@ import { DUAL_INDEX, colourOffset, layoutOf, strokeStride, type StrokeLayout } f
 import { COLOUR_CHANNELS, TILE, TILE_PIXELS, newSamples, planesOf, type Samples, type TileFormat } from '../tiles/format'
 import type { TileId, TileStore } from '../tiles/store'
 import type { Kernels, Ring } from './gpu/kernels'
-import { NotReady, type Residency } from './residency'
+import type { Residency } from './residency'
 import { transformRect, union, type Rect, type Scene } from './scene'
 import { DAB_FLOATS, STAMP_PARAMS_BYTES } from './shaders/paint'
 import { DEPOSIT_PARAMS_BYTES, PICK_ALL_PARAMS_BYTES, PICK_PARAMS_BYTES } from './shaders/sample'
@@ -69,6 +69,17 @@ export interface StrokeStart {
    * then is a preview.
    */
   retouch?: 'heal' | 'spot'
+  /**
+   * The colour channels painted, when only some are (the Channels panel's
+   * target): the others, and alpha, stay as they were. Absent is all.
+   */
+  planes?: boolean[]
+}
+
+/** The planes a stroke leaves alone, as bits (bit c for colour channel c): 0 when it paints them all. */
+export function keptPlanes(planes: boolean[] | undefined): number {
+  if (!planes || planes.every(Boolean)) return 0
+  return planes.reduce((bits, on, c) => (on ? bits : bits | (1 << c)), 0)
 }
 
 export interface StrokeSampling {
@@ -100,6 +111,11 @@ export interface Reservoir {
 
 /** The node id a stroke paints when it paints the selection itself, in Quick Mask. */
 export const SELECTION_NODE = '#selection'
+
+/** The node id a stroke paints when it paints an alpha or spot channel. */
+export const channelNode = (id: string) => `#channel:${id}`
+/** The channel a stroke's node id names, or null. */
+export const channelOfNode = (node: string): string | null => (node.startsWith('#channel:') ? node.slice(9) : null)
 
 /** What a stroke paints: a tile set in a format, through a transform. */
 export interface StrokeTarget {
@@ -899,8 +915,9 @@ export class LiveStroke {
 
   /** The kernel's stroke fields. */
   kernelStroke() {
-    if (this.replaces) return { stride: this.stride, blend: 0, eraser: false, replace: true, colour: this.fg, selection: !!this.selBuffer, colourOffset: 1 }
-    return { stride: this.stride, blend: blendIndex(this.start.eraser ? 'normal' : this.start.settings.mode), eraser: this.start.eraser, colour: this.fg, selection: !!this.selBuffer, colourOffset: colourOffset(this.layout) }
+    const keep = keptPlanes(this.start.planes)
+    if (this.replaces) return { stride: this.stride, blend: 0, eraser: false, replace: true, colour: this.fg, selection: !!this.selBuffer, colourOffset: 1, keep }
+    return { stride: this.stride, blend: blendIndex(this.start.eraser ? 'normal' : this.start.settings.mode), eraser: this.start.eraser, colour: this.fg, selection: !!this.selBuffer, colourOffset: colourOffset(this.layout), keep }
   }
 
   /** Every GPU buffer the stroke owns, to be destroyed once the frame using them is done. */
@@ -1008,4 +1025,4 @@ export async function bake(
   }
 }
 
-export { NotReady }
+

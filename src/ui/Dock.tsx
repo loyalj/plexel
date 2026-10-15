@@ -14,6 +14,20 @@
  * the foot of a group in a window, stacks under it). The ⋯ menu does the
  * same moves from the keyboard.
  *
+ * A column never scrolls as well as the panels in it: its groups share its
+ * height. Each takes the height of what's in it while there's room (the
+ * last of them the room left), and when there isn't, the tallest give it
+ * up first: every group is held to one height, the most that lets them all
+ * fit, so a short panel (Layers with a few layers, Colour) stays whole while
+ * a long one (Properties with a shape's appearance) scrolls what's in it.
+ * None goes below its tab bar and a strip of what's in it. Dragging the divider between two groups trades
+ * height between them; from then on the column's groups keep those
+ * proportions as the window changes size. Double-clicking a divider fits
+ * the column's groups to what's in them again.
+ *
+ * Tabs that don't fit a group's bar go into a » menu at its end; the front
+ * tab always stays on the bar.
+ *
  * Each column has a strip along its top whose button folds it to icons, as
  * Photoshop's do: a button a panel, grouped as the tabs are. Clicking one
  * shows its group beside the column, over the canvas, until it's clicked
@@ -24,7 +38,7 @@
  * change, from a little store of their own, so a move of the pointer never
  * redraws the app or the panels in it.
  */
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
 import { PANELS, type PanelId } from './panels'
 import {
   closeGroup,
@@ -39,7 +53,8 @@ import {
   raiseFloat,
   resizeFloat,
   setColumnWidth,
-  setGroupHeight,
+  setColumnHeights,
+  fitColumn,
   toggleCollapsed,
   COLUMN_DEFAULT,
   type Column,
@@ -51,6 +66,7 @@ import {
 } from './layout'
 import { Icon } from './Icon'
 import type { IconName } from './icons'
+import { Listeners } from '../lib/listeners'
 
 const TITLE = new Map(PANELS.map((p) => [p.id, p.title]))
 const PANEL_ICON = new Map(PANELS.map((p) => [p.id, `panel.${p.id}` as IconName]))
@@ -97,14 +113,13 @@ interface DragState {
 }
 
 let drag: DragState | null = null
-const listeners = new Set<() => void>()
+const changes = new Listeners()
 const setDrag = (d: DragState | null) => {
   drag = d
-  for (const l of listeners) l()
+  changes.emit()
 }
 const subscribe = (l: () => void) => {
-  listeners.add(l)
-  return () => void listeners.delete(l)
+  return changes.subscribe(l)
 }
 
 /** The panel at the front of the group shown by a `[data-group]` element. */
@@ -164,8 +179,10 @@ function targetAt(x: number, y: number, src: DragSource, ctrl: boolean, scale: n
       const foot = floating && y >= r.bottom - Math.max(18 * scale, r.height * 0.22)
       if (foot) return { target: { kind: 'stack', near: anchor, where: 'after' }, box: { left: r.left, top: r.bottom - 2, width: r.width, height: 4, kind: 'stack' } }
       if (y <= head.bottom || floating) {
-        const tabs = [...g.querySelectorAll('[data-panel-tab]')]
-        const index = y <= head.bottom ? tabs.filter((t) => { const b = t.getBoundingClientRect(); return b.left + b.width / 2 < x }).length : tabs.length
+        // Before the first tab shown past the pointer, as the group orders its tabs (some may be in the » menu).
+        const order = g.getAttribute('data-group')!.split(' ')
+        const past = y <= head.bottom ? [...g.querySelectorAll<HTMLElement>('.panel-tabs:not(.panel-tabs-measure) [data-panel-tab]')].find((t) => { const b = t.getBoundingClientRect(); return b.left + b.width / 2 >= x }) : undefined
+        const index = past ? order.indexOf(past.dataset.panelTab!) : order.length
         return { target: { kind: 'tab', group: anchor, index }, box: { left: r.left, top: r.top, width: r.width, height: r.height, kind: 'tab' } }
       }
       const where = y < r.top + r.height / 2 ? 'before' : 'after'
@@ -289,28 +306,36 @@ interface GroupProps extends Common {
   group: PanelGroup
   /** The floating window it's in, or null when docked. */
   float: number | null
-  /** Docked groups can be given a height; a window sets its own. */
+  /** Docked groups share their column's height; a window sets its own. */
   resizable: boolean
+  /** How it takes its share of the column (docked only). */
+  flex?: string
+  /** Where it is, for the divider under it: none for the last group open in its column. */
+  divider?: { side: Side; col: number } | null
   onMenu(panel: PanelId, at: DOMRect): void
   /** What folding does, when not the group's own folding: a group shown from icons goes back to them. */
   onFold?(): void
 }
 
-function Group({ group: g, float, resizable, content, scale, onLayout, onMenu, onFold }: GroupProps) {
+function Group({ group: g, float, resizable, flex, divider, content, scale, onLayout, onMenu, onFold }: GroupProps) {
   const fold = (p: PanelId) => (onFold ? onFold() : onLayout((l) => toggleCollapsed(l, p)))
   const active = g.active
   const title = TITLE.get(active) ?? active
   const body = content[active]
   const section = useRef<HTMLElement>(null)
   const single = g.panels.length === 1
+  const tabs = useRef<HTMLDivElement>(null)
+  const measure = useRef<HTMLDivElement>(null)
+  const over = useOverflow(tabs, measure, g.panels, active)
+  const [more, setMore] = useState<DOMRect | null>(null)
   return (
     <section
       ref={section}
-      className={`panel${g.collapsed ? ' collapsed' : ''}${g.height !== null && !g.collapsed ? ' sized' : ''}`}
+      className={`panel${g.collapsed ? ' collapsed' : ''}${g.height !== null && !g.collapsed && resizable ? ' sized' : ''}`}
       data-panel={active}
       data-group={g.panels.join(' ')}
       aria-label={title}
-      style={g.height !== null && !g.collapsed && resizable ? { height: g.height } : undefined}
+      style={resizable && flex ? { flex } : undefined}
     >
       <header
         className="panel-head"
@@ -324,8 +349,8 @@ function Group({ group: g, float, resizable, content, scale, onLayout, onMenu, o
             <Icon name="ui.fold" />
           </span>
         </button>
-        <div className={`panel-tabs${single ? ' single' : ''}`} role="tablist" aria-label={`${title} group`}>
-          {g.panels.map((p) => (
+        <div ref={tabs} className={`panel-tabs${single ? ' single' : ''}`} role="tablist" aria-label={`${title} group`}>
+          {g.panels.filter((p) => !over.includes(p)).map((p) => (
             <button
               key={p}
               type="button"
@@ -333,7 +358,7 @@ function Group({ group: g, float, resizable, content, scale, onLayout, onMenu, o
               className="panel-tab"
               data-panel-tab={p}
               aria-selected={p === active}
-              data-tip={single ? 'Drag to move the panel; click to fold it' : undefined}
+              data-tip={`${EMPTY.get(p)}${single ? ' Drag to move the panel; click to fold it.' : ''}`}
               onPointerDown={(e) => pressToDrag(e, { panel: p, whole: single, float }, scale, onLayout)}
               // The front tab folds the group, as the title did; another comes to the front.
               onClick={() => (p === active ? fold(p) : onLayout((l) => activate(l, p)))}
@@ -342,45 +367,174 @@ function Group({ group: g, float, resizable, content, scale, onLayout, onMenu, o
             </button>
           ))}
         </div>
+        {!single && (
+          // The tabs at their natural widths, unseen, to work out which fit.
+          <div ref={measure} className="panel-tabs panel-tabs-measure" aria-hidden>
+            {g.panels.map((p) => (
+              <span key={p} className="panel-tab">
+                {TITLE.get(p) ?? p}
+              </span>
+            ))}
+          </div>
+        )}
+        {over.length > 0 && (
+          <button type="button" className="panel-menu-button panel-tabs-more" aria-label={`${over.length} more ${over.length === 1 ? 'tab' : 'tabs'}`} aria-haspopup="menu" data-tip={over.map((p) => TITLE.get(p)).join(', ')} data-tabs-more="" onClick={(e) => setMore(e.currentTarget.getBoundingClientRect())}>
+            »
+          </button>
+        )}
+        {more && <TabsMenu panels={over} at={more} scale={scale} onPick={(p) => onLayout((l) => activate(l, p))} onClose={() => setMore(null)} />}
         <button type="button" className="panel-menu-button" aria-label={`${title} panel menu`} aria-haspopup="menu" onClick={(e) => onMenu(active, e.currentTarget.getBoundingClientRect())}>
           <Icon name="ui.more" />
         </button>
-        <button type="button" className="panel-close" title={`Close ${title}`} aria-label={`Close ${title}`} onClick={() => onLayout((l) => closePanel(l, active))}>
+        <button type="button" className="panel-close" data-tip={`Close ${title}`} aria-label={`Close ${title}`} onClick={() => onLayout((l) => closePanel(l, active))}>
           <Icon name="ui.close" />
         </button>
       </header>
       <div className={`panel-body${body ? ' live' : ''}`} data-panel-body={active} role="tabpanel">
-        {body ?? <p className="panel-empty">{EMPTY.get(active)}</p>}
+        {body ?? <p className="panel-empty">No document open</p>}
       </div>
-      {resizable && !g.collapsed && <GroupSizer panel={active} height={g.height} section={section} scale={scale} onLayout={onLayout} />}
+      {resizable && !g.collapsed && divider && <GroupSizer side={divider.side} col={divider.col} section={section} scale={scale} onLayout={onLayout} />}
     </section>
   )
 }
 
-/** The foot of a docked group: drag to set its height, double-click to fit it to what's in it again. */
-function GroupSizer({ panel, height, section, scale, onLayout }: { panel: PanelId; height: number | null; section: RefObject<HTMLElement | null>; scale: number; onLayout: Change }) {
-  const start = useRef<{ y: number; h: number } | null>(null)
+/** A group's tab bar is only so wide: the tabs that don't fit it, the front one always kept. */
+function useOverflow(tabs: RefObject<HTMLDivElement | null>, measure: RefObject<HTMLDivElement | null>, panels: PanelId[], active: PanelId): PanelId[] {
+  const [over, setOver] = useState<PanelId[]>([])
+  const key = panels.join(' ')
+  useLayoutEffect(() => {
+    const bar = tabs.current
+    const m = measure.current
+    if (!bar || !m || panels.length < 2) {
+      setOver((o) => (o.length ? [] : o))
+      return
+    }
+    const fit = () => {
+      // The room the bar has: its own, plus the » button's when that's showing.
+      const head = bar.parentElement!
+      const moreW = 26
+      const shownMore = head.querySelector('.panel-tabs-more')
+      const room = bar.clientWidth + (shownMore ? moreW + 4 : 0)
+      const widths = [...m.children].map((c) => (c as HTMLElement).offsetWidth + 1)
+      const all = widths.reduce((a, b) => a + b, 0)
+      let next: PanelId[] = []
+      if (all > room) {
+        const left = room - moreW - 4
+        const keep = new Set<PanelId>()
+        let used = widths[panels.indexOf(active)]
+        keep.add(active)
+        panels.forEach((p, i) => {
+          if (p === active || used + widths[i] > left) return
+          used += widths[i]
+          keep.add(p)
+        })
+        next = panels.filter((p) => !keep.has(p))
+      }
+      setOver((o) => (o.join() === next.join() ? o : next))
+    }
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(bar.parentElement!)
+    return () => ro.disconnect()
+  }, [key, active])
+  return over
+}
+
+/** The tabs that didn't fit, as a menu under the » button. */
+function TabsMenu({ panels, at, scale, onPick, onClose }: { panels: PanelId[]; at: DOMRect; scale: number; onPick(p: PanelId): void; onClose(): void }) {
+  const list = useRef<HTMLUListElement>(null)
+  useLayoutEffect(() => list.current?.querySelector<HTMLButtonElement>('.menu-button')?.focus(), [])
+  useEffect(() => {
+    const outside = (e: PointerEvent) => !list.current?.contains(e.target as Node) && onClose()
+    document.addEventListener('pointerdown', outside, true)
+    return () => document.removeEventListener('pointerdown', outside, true)
+  }, [onClose])
+  const left = Math.max(4, Math.min(at.right - 180 * scale, innerWidth - 184 * scale)) / scale
+  return (
+    <ul
+      ref={list}
+      className="menu context-menu"
+      role="menu"
+      aria-label="More tabs"
+      data-tabs-menu=""
+      style={{ left, top: at.bottom / scale }}
+      onKeyDown={(e) => {
+        const buttons = [...(list.current?.querySelectorAll<HTMLButtonElement>('.menu-button') ?? [])]
+        const i = buttons.indexOf(document.activeElement as HTMLButtonElement)
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          buttons[(i + (e.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus()
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          onClose()
+        }
+        e.stopPropagation()
+      }}
+    >
+      {panels.map((p) => (
+        <li key={p} className="menu-item">
+          <button
+            type="button"
+            className="menu-button"
+            role="menuitem"
+            data-tab-pick={p}
+            onClick={() => {
+              onClose()
+              onPick(p)
+            }}
+          >
+            <span className="menu-check" />
+            <span>{TITLE.get(p) ?? p}</span>
+            <span className="menu-shortcut" />
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** The least a group open in a column keeps: its tab bar and a strip of what's in it, in the interface's pixels. */
+const GROUP_FLOOR = 72
+
+/**
+ * The divider under a docked group: drag to trade height with the next
+ * group open below it (each keeping at least a strip), which from then on
+ * gives every group in the column its share; double-click to fit them all
+ * to what's in them again.
+ */
+function GroupSizer({ side, col, section, scale, onLayout }: { side: Side; col: number; section: RefObject<HTMLElement | null>; scale: number; onLayout: Change }) {
+  const start = useRef<{ y: number; heights: (number | null)[]; a: number; b: number } | null>(null)
   return (
     <div
       className="panel-sizer"
       role="separator"
       aria-orientation="horizontal"
-      aria-label="Resize the panel"
-      aria-valuenow={height ?? undefined}
+      aria-label="Resize the panels"
       onPointerDown={(e) => {
+        const me = section.current
+        const column = me?.closest('[data-dock-col]')
+        if (!me || !column) return
+        // Every group's height as drawn now, the folded ones left as they are.
+        const groups = [...column.querySelectorAll<HTMLElement>(':scope > [data-group]')]
+        const a = groups.indexOf(me)
+        const b = groups.findIndex((g, i) => i > a && !g.classList.contains('collapsed'))
+        if (a < 0 || b < 0) return
         e.currentTarget.setPointerCapture(e.pointerId)
-        start.current = { y: e.clientY, h: (section.current?.getBoundingClientRect().height ?? 200) / scale }
+        start.current = { y: e.clientY, heights: groups.map((g) => (g.classList.contains('collapsed') ? null : g.getBoundingClientRect().height / scale)), a, b }
       }}
       onPointerMove={(e) => {
         const s = start.current
         if (!s) return
         // Worked out now: React runs the update later, by which time the drag may have ended.
-        const h = s.h + (e.clientY - s.y) / scale
-        onLayout((l) => setGroupHeight(l, panel, h))
+        const ha = s.heights[s.a]!
+        const hb = s.heights[s.b]!
+        const na = Math.min(ha + hb - GROUP_FLOOR, Math.max(GROUP_FLOOR, ha + (e.clientY - s.y) / scale))
+        const heights = s.heights.map((h, i) => (i === s.a ? na : i === s.b ? ha + hb - na : h))
+        onLayout((l) => setColumnHeights(l, side, col, heights.map((h, i) => (h === null ? l[side][col]?.groups[i]?.height ?? null : h))))
       }}
       onPointerUp={() => (start.current = null)}
       onPointerCancel={() => (start.current = null)}
-      onDoubleClick={() => onLayout((l) => setGroupHeight(l, panel, null))}
+      onDoubleClick={() => onLayout((l) => fitColumn(l, side, col))}
     />
   )
 }
@@ -501,18 +655,17 @@ interface DockProps extends Common {
 
 /** The panel shown beside its column of icons, if one is: view state, not the layout's. */
 let flyout: PanelId | null = null
-const flyoutListeners = new Set<() => void>()
+const flyoutChanges = new Listeners()
 /** The panel shown from icons now. */
 export const iconPanel = () => flyout
 /** Shows a panel folded to icons beside its column, or with null puts it back. */
 export function showIconPanel(id: PanelId | null) {
   if (flyout === id) return
   flyout = id
-  for (const l of flyoutListeners) l()
+  flyoutChanges.emit()
 }
 const subscribeFlyout = (l: () => void) => {
-  flyoutListeners.add(l)
-  return () => void flyoutListeners.delete(l)
+  return flyoutChanges.subscribe(l)
 }
 
 /** One side's dock: its columns, each with the splitter on its canvas side (a column of icons has none). */
@@ -560,14 +713,95 @@ function ColumnHead({ side, icons, anchor, onLayout }: { side: Side; icons: bool
 }
 
 function DockColumn({ side, index, column, content, scale, onLayout, onMenu }: Common & { side: Side; index: number; column: Column; onMenu(p: PanelId, at: DOMRect): void }) {
+  const open = column.groups.map((g, i) => (g.collapsed ? -1 : i)).filter((i) => i >= 0)
+  const lastOpen = open[open.length - 1] ?? -1
+  const shared = column.groups.some((g) => !g.collapsed && g.height !== null)
+  const ref = useRef<HTMLElement>(null)
+  const level = useLevel(ref, !shared)
+  // A group with a share grows from nothing by it; one without takes what's in it, shrinking in proportion when the column's short; the last of those takes the room left.
+  const flexOf = (g: PanelGroup, i: number) => (g.collapsed ? 'none' : g.height !== null ? `${g.height} 1 0px` : !shared && i === lastOpen ? '1 1 auto' : '0 1 auto')
   return (
-    <aside className="dock" aria-label={`Panels, ${side}${index ? ` ${index + 1}` : ''}`} data-dock-col={index} data-side={side} style={{ width: column.width }}>
+    <aside
+      ref={ref}
+      className="dock"
+      aria-label={`Panels, ${side}${index ? ` ${index + 1}` : ''}`}
+      data-dock-col={index}
+      data-side={side}
+      data-level={level ?? undefined}
+      style={{ width: column.width, ...(level !== null ? ({ '--level': `${level}px` } as CSSProperties) : {}) }}
+    >
       <ColumnHead side={side} icons={false} anchor={column.groups[0].active} onLayout={onLayout} />
-      {column.groups.map((g) => (
-        <Group key={g.panels[0]} group={g} float={null} resizable content={content} scale={scale} onLayout={onLayout} onMenu={onMenu} />
+      {column.groups.map((g, i) => (
+        <Group key={g.panels[0]} group={g} float={null} resizable flex={flexOf(g, i)} divider={i !== lastOpen ? { side, col: index } : null} content={content} scale={scale} onLayout={onLayout} onMenu={onMenu} />
       ))}
     </aside>
   )
+}
+
+/**
+ * The one height a column's open groups are held to so they all fit, the
+ * tallest giving up room first ("water-filling"); null while they fit as
+ * they are, or when the column's groups have shares of their own. Worked out
+ * again as the column or what's in its groups changes size.
+ */
+function useLevel(col: RefObject<HTMLElement | null>, on: boolean): number | null {
+  const [level, setLevel] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const el = col.current
+    if (!el || !on) {
+      setLevel(null)
+      return
+    }
+    const work = () => {
+      const groups = [...el.querySelectorAll<HTMLElement>(':scope > [data-group]')]
+      const top = el.querySelector<HTMLElement>(':scope > .dock-col-head')?.offsetHeight ?? 0
+      let room = el.clientHeight - top - Math.max(0, groups.length - 1)
+      const wants: number[] = []
+      for (const g of groups) {
+        const head = g.querySelector<HTMLElement>(':scope > .panel-head')?.offsetHeight ?? 0
+        if (g.classList.contains('collapsed')) {
+          room -= g.offsetHeight
+          continue
+        }
+        const body = g.querySelector<HTMLElement>(':scope > .panel-body')
+        wants.push(Math.max(GROUP_FLOOR, head + (body?.scrollHeight ?? 0)))
+      }
+      const total = wants.reduce((a, b) => a + b, 0)
+      if (!wants.length || total <= room) return setLevel((l) => (l === null ? l : null))
+      // The smallest keep what they want; the rest share what's left equally.
+      const sorted = [...wants].sort((a, b) => a - b)
+      let left = room
+      let next = GROUP_FLOOR
+      for (let i = 0; i < sorted.length; i++) {
+        const each = left / (sorted.length - i)
+        if (sorted[i] > each) {
+          next = Math.max(GROUP_FLOOR, Math.floor(each))
+          break
+        }
+        left -= sorted[i]
+      }
+      setLevel((l) => (l === next ? l : next))
+    }
+    work()
+    // The column's size, and the size of what's in each group, both change it.
+    const ro = new ResizeObserver(work)
+    const watch = () => {
+      ro.disconnect()
+      ro.observe(el)
+      for (const b of el.querySelectorAll(':scope > [data-group] > .panel-body > *')) ro.observe(b)
+    }
+    watch()
+    const mo = new MutationObserver(() => {
+      watch()
+      work()
+    })
+    mo.observe(el, { childList: true, subtree: true })
+    return () => {
+      ro.disconnect()
+      mo.disconnect()
+    }
+  }, [col, on])
+  return level
 }
 
 /** A column folded to icons: a button a panel, grouped as its tabs are. */
@@ -656,7 +890,7 @@ interface SplitterProps {
  * by the workspace when the drag ends. Double-click goes back to the
  * default.
  */
-export function ColumnSplitter({ side, width, scale = 1, onWidth }: SplitterProps) {
+function ColumnSplitter({ side, width, scale = 1, onWidth }: SplitterProps) {
   const start = useRef<{ x: number; w: number } | null>(null)
   const [dragging, setDragging] = useState(false)
   return (

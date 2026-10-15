@@ -40,6 +40,7 @@ import {
   type Tiling,
   tilingOf,
 } from './types'
+import { deepEqual } from '../lib/equal'
 
 /** The document's current format; serialize.ts writes it and migrates older ones up to it. */
 export const DOC_FORMAT = 1
@@ -88,10 +89,14 @@ export function renameDoc(doc: Doc, name: string): Doc {
   return !n || n === doc.name ? doc : { ...doc, name: n }
 }
 
-/** Where the old canvas sits in the new one: 0 is the left (or top) edge, 0.5 the middle, 1 the right (or bottom). */
+/**
+ * Where the old canvas sits in the new one: 0 is the left (or top) edge, 0.5
+ * the middle, 1 the right (or bottom). Canvas Size's anchor is one of those;
+ * growing the canvas round artboards uses the share in between it needs.
+ */
 export interface Anchor {
-  x: 0 | 0.5 | 1
-  y: 0 | 0.5 | 1
+  x: number
+  y: number
 }
 
 /**
@@ -129,22 +134,9 @@ function mapTransforms(doc: Doc, fn: (t: Affine) => Affine, only?: ReadonlySet<N
   return { ...doc, nodes }
 }
 
-/** a after b, as affines. */
-export function compose(a: Affine, b: Affine): Affine {
-  return [
-    a[0] * b[0] + a[2] * b[1],
-    a[1] * b[0] + a[3] * b[1],
-    a[0] * b[2] + a[2] * b[3],
-    a[1] * b[2] + a[3] * b[3],
-    a[0] * b[4] + a[2] * b[5] + a[4],
-    a[1] * b[4] + a[3] * b[5] + a[5],
-  ]
-}
-
-export function invertAffine(t: Affine): Affine {
-  const det = t[0] * t[3] - t[1] * t[2] || 1e-12
-  return [t[3] / det, -t[1] / det, -t[2] / det, t[0] / det, (t[2] * t[5] - t[3] * t[4]) / det, (t[1] * t[4] - t[0] * t[5]) / det]
-}
+// Composing and inverting affines (geom/affine.ts), under the names the app has long imported them by from here.
+import { compose, invert as invertAffine } from '../geom/affine'
+export { compose, invertAffine }
 
 /**
  * The nodes a move or transform of `id` carries with it: the node, its
@@ -313,6 +305,8 @@ export function insertNode(doc: Doc, node: DocNode, parent: NodeId, index: numbe
   if (!p || doc.nodes[node.id] || !p.children) return doc
   const def = nodeDef(p.kind)
   if (!def.accepts?.(node.kind) || !isLayerKind(node.kind)) return doc
+  // An artboard is a page of the document: only ever at its top level.
+  if (node.kind === 'group' && node.props.artboard && parent !== doc.root) return doc
   const children = [...p.children]
   children.splice(Math.max(0, Math.min(index, children.length)), 0, node.id)
   return { ...doc, nodes: { ...doc.nodes, [node.id]: node, [parent]: { ...p, children } as DocNode } }
@@ -347,6 +341,7 @@ export function moveNode(doc: Doc, id: NodeId, parent: NodeId, index: number): D
   if (!node || !target?.children || !place || place.slot !== 'children' || id === doc.root) return doc
   if (isWithin(doc, parent, id)) return doc
   if (!nodeDef(target.kind).accepts?.(node.kind)) return doc
+  if (node.kind === 'group' && node.props.artboard && parent !== doc.root) return doc
 
   const nodes = { ...doc.nodes }
   const from = nodes[place.parent]
@@ -454,13 +449,20 @@ export function dropLostSets(doc: Doc, lost: ReadonlySet<string>): Doc {
       if (inner !== n.props.content) out = updateNode(out, n.id, (x) => ({ ...x, props: { ...(x as typeof n).props, content: inner } }) as DocNode)
     }
   }
+  if (out.symbols?.length) {
+    const symbols = out.symbols.map((s) => {
+      const content = dropLostSets(s.content, lost)
+      return content === s.content ? s : { ...s, content }
+    })
+    if (symbols.some((s, i) => s !== out.symbols![i])) out = { ...out, symbols }
+  }
   if (out.selection && lost.has(out.selection.tiles)) out = { ...out, selection: null }
   if (out.patterns?.some((p) => lost.has(p.tiles))) out = { ...out, patterns: out.patterns.filter((p) => !lost.has(p.tiles)) }
   if (out.channels?.some((c) => c.tiles && lost.has(c.tiles))) out = { ...out, channels: out.channels.map((c) => (c.tiles && lost.has(c.tiles) ? { ...c, tiles: null } : c)) }
   return out
 }
 
-/** Every tile set a document holds: in pixel layers, masks, smart objects' contents, and the selection. */
+/** Every tile set a document holds: in pixel layers, masks, smart objects' and symbols' contents, and the selection. */
 export function tileSetsOf(doc: Doc): string[] {
   let out = setsCache.get(doc.nodes)
   if (!out) {
@@ -471,7 +473,7 @@ export function tileSetsOf(doc: Doc): string[] {
     }
     setsCache.set(doc.nodes, out)
   }
-  const extra = [...(doc.patterns ?? []).map((p) => p.tiles), ...(doc.channels ?? []).flatMap((c) => (c.tiles ? [c.tiles] : [])), ...(doc.selection ? [doc.selection.tiles] : [])]
+  const extra = [...(doc.patterns ?? []).map((p) => p.tiles), ...(doc.channels ?? []).flatMap((c) => (c.tiles ? [c.tiles] : [])), ...(doc.selection ? [doc.selection.tiles] : []), ...(doc.symbols ?? []).flatMap((s) => tileSetsOf(s.content))]
   return extra.length ? [...out, ...extra] : out
 }
 
@@ -499,16 +501,48 @@ export function removePattern(doc: Doc, id: string): Doc {
   return out
 }
 
-/** An alpha channel added after the others (Save Selection as a new channel). */
-export function addChannel(doc: Doc, c: DocChannel): Doc {
+/** An alpha or spot channel added after the others (Save Selection as a new channel, New Channel), or at `index`. */
+export function addChannel(doc: Doc, c: DocChannel, index?: number): Doc {
   if (doc.channels?.some((x) => x.id === c.id)) return doc
-  return { ...doc, channels: [...(doc.channels ?? []), c] }
+  const list = [...(doc.channels ?? [])]
+  list.splice(index === undefined ? list.length : Math.max(0, Math.min(index, list.length)), 0, c)
+  return { ...doc, channels: list }
 }
 
-/** An alpha channel's coverage replaced (Save Selection into an existing channel), in document pixels. */
-export function setChannelTiles(doc: Doc, id: string, tiles: string | null): Doc {
-  if (!doc.channels?.some((c) => c.id === id)) return doc
-  return { ...doc, channels: doc.channels.map((c) => (c.id === id ? { ...c, tiles, transform: [...IDENTITY] as Affine } : c)) }
+/**
+ * A channel's coverage replaced: by default in document pixels (Save
+ * Selection into an existing channel), or in its own pixels, its transform
+ * kept, with `own` (a stroke or a fill on the channel, made in its pixels).
+ */
+export function setChannelTiles(doc: Doc, id: string, tiles: string | null, own = false): Doc {
+  const c = doc.channels?.find((x) => x.id === id)
+  if (!c || (own && c.tiles === tiles)) return doc
+  return { ...doc, channels: doc.channels!.map((x) => (x.id === id ? { ...x, tiles, transform: own ? x.transform : ([...IDENTITY] as Affine) } : x)) }
+}
+
+/** What Channel Options changes: how a channel shows, and for a spot its ink; the kind too (an alpha made a spot, or back). */
+export type ChannelOptions = Pick<DocChannel, 'kind' | 'tint' | 'opacity' | 'marks' | 'ink'> & { name?: string }
+
+export function setChannelOptions(doc: Doc, id: string, o: ChannelOptions): Doc {
+  const c = doc.channels?.find((x) => x.id === id)
+  if (!c) return doc
+  const next: DocChannel = { id: c.id, name: o.name?.trim() || c.name, tiles: c.tiles, transform: c.transform }
+  const kind = 'kind' in o ? o.kind : c.kind
+  const pick = <K extends keyof DocChannel>(k: K) => (k in o ? (o as DocChannel)[k] : c[k])
+  if (kind === 'spot') {
+    const ink = pick('ink')
+    if (!ink) return doc
+    next.kind = 'spot'
+    next.ink = ink
+  } else {
+    const tint = pick('tint')
+    if (tint) next.tint = tint
+    if (pick('marks') === 'selected') next.marks = 'selected'
+  }
+  // A change of kind starts from the new kind's default unless an opacity is given.
+  const opacity = 'opacity' in o ? o.opacity : kind === c.kind ? c.opacity : undefined
+  if (opacity !== undefined) next.opacity = opacity
+  return deepEqual(next, c) ? doc : { ...doc, channels: doc.channels!.map((x) => (x.id === id ? next : x)) }
 }
 
 export function renameChannel(doc: Doc, id: string, name: string): Doc {
@@ -525,7 +559,7 @@ export function removeChannel(doc: Doc, id: string): Doc {
   return out
 }
 
-/** Moves an alpha channel to `index` in the list. */
+/** Moves an alpha or spot channel to `index` in the list. */
 export function moveChannel(doc: Doc, id: string, index: number): Doc {
   const list = [...(doc.channels ?? [])]
   const at = list.findIndex((c) => c.id === id)
@@ -587,7 +621,7 @@ export const addAdjustment = (doc: Doc, id: NodeId, name: string, adjustment: st
 export function setParams(doc: Doc, id: NodeId, params: Record<string, unknown>): Doc {
   return updateNode(doc, id, (n) => {
     if (n.kind !== 'adjustment' && n.kind !== 'filter') return n
-    return JSON.stringify(n.props.params) === JSON.stringify(params) ? n : ({ ...n, props: { ...n.props, params } } as DocNode)
+    return deepEqual(n.props.params, params) ? n : ({ ...n, props: { ...n.props, params } } as DocNode)
   })
 }
 
@@ -616,7 +650,7 @@ export function moveEffect(doc: Doc, effect: NodeId, index: number): Doc {
 
 /** A node's layer effects, replaced: the Layer Style dialog's result. */
 export function setFx(doc: Doc, id: NodeId, fx: LayerFx[]): Doc {
-  return updateNode(doc, id, (n) => (JSON.stringify(n.fx) === JSON.stringify(fx) ? n : ({ ...n, fx } as DocNode)))
+  return updateNode(doc, id, (n) => (deepEqual(n.fx, fx) ? n : ({ ...n, fx } as DocNode)))
 }
 
 /**
@@ -667,7 +701,7 @@ const setsCache = new WeakMap<Doc['nodes'], string[]>()
  * numbers to keep the colours, arrives with print colour in phase 10.)
  */
 export function setProfile(doc: Doc, profile: ProfileRef): Doc {
-  return JSON.stringify(profile) === JSON.stringify(doc.profile) ? doc : { ...doc, profile }
+  return deepEqual(profile, doc.profile) ? doc : { ...doc, profile }
 }
 
 // --- vectors -----------------------------------------------------------------------------------

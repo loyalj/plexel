@@ -44,7 +44,7 @@ const fetchBytes = (url: string) => async () => new Uint8Array(await (await fetc
  */
 export function fontLibrary(): Promise<FontLibrary> {
   return (starting ??= (async () => {
-    const hb = await startHarfBuzz(await (await fetch(wasmUrl)).arrayBuffer())
+    const hb = await startHarfBuzz({ url: wasmUrl })
     const lib = new FontLibrary(hb)
     lib.addFile('/fonts/InterVariable.ttf', await fetchBytes('/fonts/InterVariable.ttf')(), 'builtin')
     const base = { family: 'Inter Variable', italic: true, index: 0 }

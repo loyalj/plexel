@@ -15,10 +15,13 @@
  */
 
 import type { GraphicStyle } from './graphicStyles'
+import type { VectorBrush } from './vectorBrush'
 import type { DocSwatch } from './swatches'
 import type { AppearanceItem, Geometry, Paint } from './vector'
 import type { TextContent, TextStyles } from './text'
 import type { GlyphSet } from '../geom/glyphs'
+import type { ColourValue } from '../color/value'
+import type { ParamColour } from './params'
 
 export type NodeId = string
 
@@ -96,6 +99,7 @@ export type NodeKind =
   | 'linked'
   | 'mask'
   | 'fill'
+  | 'symbol'
 
 /** The blend modes, Photoshop's set and order. `pass-through` is for groups only. */
 export const BLEND_MODES = [
@@ -147,6 +151,12 @@ export interface KindProps {
      * apart from the document so folding a group is never an undo step.
      */
     knockout: 'none' | 'shallow' | 'deep'
+    /**
+     * Present on an artboard: a group at the document's top level that is
+     * a page of its own (doc/artboards.ts), its corner at the group's
+     * transform's translation. Its layers are its children.
+     */
+    artboard?: Artboard
   }
   pixel: {
     /** The tile set holding this layer's pixels; null while it has none. */
@@ -243,6 +253,39 @@ export interface KindProps {
      */
     paint: Paint
   }
+  symbol: {
+    /**
+     * An instance of one of the document's symbols (doc/symbols.ts), by id:
+     * the symbol's contents, placed by the node's transform (from the
+     * symbol's own coordinates). Every instance shows the symbol as it is
+     * now; edit the symbol and they all change.
+     */
+    symbol: string
+  }
+}
+
+/**
+ * An artboard: a page of the document with its own size, as Photoshop's,
+ * Illustrator's and Affinity's are. Its corner is its group's translation.
+ */
+export interface Artboard {
+  width: number
+  height: number
+  /** What's under its layers: a colour in the document's mode, or null for transparent. */
+  background: ParamColour | null
+  /** Whether what's in it shows only inside it (Photoshop's way) or runs over its edge too. */
+  clip: boolean
+}
+
+/**
+ * A symbol: artwork kept once in the document and placed as instances
+ * (kind `symbol`). Its contents are a document of their own, as a smart
+ * object's are, at the origin.
+ */
+export interface DocSymbol {
+  id: string
+  name: string
+  content: Doc
 }
 
 export type PropsOf<K extends NodeKind> = KindProps[K]
@@ -287,12 +330,16 @@ export interface Doc {
   swatches?: DocSwatch[]
   /** Patterns made from pixels, which pattern paints name by id; absent is none. */
   patterns?: DocPattern[]
-  /** Alpha channels: saved selections, as coverage in document pixels; absent is none. */
+  /** Alpha and spot channels, in the Channels panel's order; absent is none. */
   channels?: DocChannel[]
   /** Whether the document is a seamless tile, and in which directions; absent is off. */
   tiled?: Tiling
   /** Graphic styles: named appearance stacks shapes and text can be linked to (doc/graphicStyles.ts); absent is none. */
   graphicStyles?: GraphicStyle[]
+  /** The vector brushes kept in the document, the Brushes panel's (doc/vectorBrush.ts); absent is none. */
+  vectorBrushes?: VectorBrush[]
+  /** Symbols: artwork placed as instances that all follow it (doc/symbols.ts); absent is none. */
+  symbols?: DocSymbol[]
 }
 
 /** A Live Paint group's fill: a point of the region it paints, and the paint. */
@@ -323,16 +370,36 @@ export interface DocPattern {
 }
 
 /**
- * An alpha channel (Save Selection): coverage tiles, as a selection is,
- * placed in the document by `transform` (Crop and Canvas Size move it with
- * the layers, without touching its pixels).
+ * An alpha or spot channel: coverage tiles, as a selection is, placed in
+ * the document by `transform` (Crop and Canvas Size move it with the
+ * layers, without touching its pixels).
+ *
+ * An alpha channel is a saved selection, shown as a tint. A spot channel
+ * is an ink printed on a plate of its own: its tiles are how much ink (1
+ * is full), its name is the ink's, and `ink` is the colour it shows and
+ * proofs as, kept in its own space as a swatch's is.
  */
 export interface DocChannel {
   id: string
   name: string
   tiles: string | null
   transform: Affine
+  /** Absent is alpha. */
+  kind?: 'alpha' | 'spot'
+  /** An alpha channel's tint on the canvas (sRGB, 0..1); absent is red. */
+  tint?: [number, number, number]
+  /** An alpha channel's tint opacity, or a spot ink's solidity, 0..1; absent is 0.5 for an alpha, 0 for a spot. */
+  opacity?: number
+  /** Whether an alpha channel's tint marks what's masked (absent) or what's selected. */
+  marks?: 'masked' | 'selected'
+  /** A spot channel's ink colour. */
+  ink?: ColourValue
 }
+
+/** An alpha channel's tint, opacity and what it marks, with the defaults filled in. */
+export const ALPHA_TINT: [number, number, number] = [1, 0, 0]
+export const channelKind = (c: DocChannel): 'alpha' | 'spot' => c.kind ?? 'alpha'
+export const channelOpacity = (c: DocChannel): number => c.opacity ?? (channelKind(c) === 'spot' ? 0 : 0.5)
 
 export interface Selection {
   tiles: string

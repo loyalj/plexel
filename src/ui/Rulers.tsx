@@ -25,7 +25,7 @@ import { startSnap } from '../app/snapping'
 import { readout, lengthText } from '../app/readout'
 
 /** The rulers' thickness, in CSS pixels. */
-export const RULER = 20
+const RULER = 20
 
 interface Props {
   /** A pointer event as a canvas pointer, wherever it is on the page. */

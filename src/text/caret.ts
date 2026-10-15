@@ -61,7 +61,7 @@ export function hitPosition(layout: TextLayout, x: number, y: number): number {
 }
 
 /** The position on a line whose caret is nearest x. */
-export function nearestOnLine(l: Line, x: number): number {
+function nearestOnLine(l: Line, x: number): number {
   let pos = l.start
   let bd = Infinity
   for (let p = l.start; p <= l.end; p++) {

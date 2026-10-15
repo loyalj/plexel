@@ -14,7 +14,8 @@ import { EdgeMap, liveWire, snapToEdge } from '../select/liveWire'
 import { edgeBand, refineEdge } from '../select/matte'
 import type { Renderer } from '../render/renderer'
 import { readPixels8 } from '../render/readback'
-import { guarded, held } from './selectHost'
+import { held } from './tileHost'
+import { guarded } from './work'
 import { store } from './tileHost'
 
 /** The most pixels read for selection work; past this, a mip level. */

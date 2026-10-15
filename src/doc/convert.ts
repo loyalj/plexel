@@ -21,7 +21,9 @@ import { FILTER_BY_ID } from '../filters/defs'
 import { FX_BY_KIND } from '../fx/defs'
 import { readParamValues, type GradientStop, type ParamDef } from './params'
 import type { ColourMode, Depth, Doc, DocNode, LayerFx, ProfileRef } from './types'
-import { appearanceIn, paintIn, type AppearanceItem, type Paint } from './vector'
+import { appearanceIn, brushIn, paintIn, type AppearanceItem, type Paint } from './vector'
+import { mapBrushPaints } from './vectorBrush'
+import { deepEqual } from '../lib/equal'
 
 export interface ConvertTarget {
   mode: ColourMode
@@ -70,13 +72,14 @@ const convertAppearance = (a: AppearanceItem[], from: ColourMode, fn: ColourFn):
       ({
         ...it,
         paint: convertPaint(it.paint, fn),
+        ...(it.kind === 'stroke' && it.brush ? { brush: mapBrushPaints(brushIn(it.brush, from), (p) => convertPaint(p, fn), fn) } : {}),
         // An item's effects' colours (a shadow's) go across as every colour parameter does.
         ...(it.effects ? { effects: it.effects.map((e) => ({ ...e, params: convertColourParams(FILTER_BY_ID.get(e.kind)?.params ?? [], e.params, from, fn) })) } : {}),
       }) as AppearanceItem,
   )
 
 /** A registry entry's colour parameters converted, the rest left as they are. */
-function convertColourParams(defs: ParamDef[], raw: Record<string, unknown>, from: ColourMode, fn: ColourFn): Record<string, unknown> {
+function convertColourParams(defs: readonly ParamDef[], raw: Record<string, unknown>, from: ColourMode, fn: ColourFn): Record<string, unknown> {
   if (!defs.some((d) => d.kind === 'colour')) return raw
   const v = readParamValues(defs, raw, from)
   const out = { ...raw }
@@ -89,7 +92,7 @@ function convertColourParams(defs: ParamDef[], raw: Record<string, unknown>, fro
  * `fn`, per-channel curves and levels kept for the master channel only when
  * the mode changes. `dropped` is told when that loses anything.
  */
-function convertParams(defs: ParamDef[], raw: Record<string, unknown>, from: ColourMode, to: ColourMode, fn: ColourFn, dropped: () => void): Record<string, unknown> {
+function convertParams(defs: readonly ParamDef[], raw: Record<string, unknown>, from: ColourMode, to: ColourMode, fn: ColourFn, dropped: () => void): Record<string, unknown> {
   const v = readParamValues(defs, raw, from)
   const out: Record<string, unknown> = { ...raw }
   for (const d of defs) {
@@ -97,7 +100,7 @@ function convertParams(defs: ParamDef[], raw: Record<string, unknown>, from: Col
     else if (d.kind === 'gradient') out[d.key] = (v[d.key] as GradientStop[]).map((s) => ({ ...s, colour: fn(s.colour) }))
     else if ((d.kind === 'curves' || d.kind === 'levels') && from !== to) {
       const per = v[d.key] as Record<string, unknown>
-      const changed = Object.entries(per).some(([ch, x]) => ch !== 'master' && JSON.stringify(x) !== JSON.stringify(d.kind === 'curves' ? [[0, 0], [1, 1]] : { inBlack: 0, inWhite: 1, gamma: 1, outBlack: 0, outWhite: 1 }))
+      const changed = Object.entries(per).some(([ch, x]) => ch !== 'master' && !deepEqual(x, d.kind === 'curves' ? [[0, 0], [1, 1]] : { inBlack: 0, inWhite: 1, gamma: 1, outBlack: 0, outWhite: 1 }))
       if (changed) dropped()
       out[d.key] = { master: per.master }
     }
@@ -152,6 +155,7 @@ export function convertDocColours(doc: Doc, target: ConvertTarget, fn: ColourFn,
   for (const [id, n] of Object.entries(doc.nodes)) nodes[id] = convertNode(n, doc.mode, target.mode, fn, sets, target, warn)
   const out: Doc = { ...doc, mode: target.mode, profile: target.profile, depth: target.depth, nodes }
   if (doc.graphicStyles?.length) out.graphicStyles = doc.graphicStyles.map((g) => ({ ...g, appearance: convertAppearance(g.appearance, doc.mode, fn) }))
+  if (doc.vectorBrushes?.length) out.vectorBrushes = doc.vectorBrushes.map((b) => mapBrushPaints(brushIn(b, doc.mode), (p) => convertPaint(p, fn), fn))
   if (doc.patterns?.length) {
     out.patterns = doc.patterns.flatMap((p) => {
       const tiles = sets.get(p.tiles)

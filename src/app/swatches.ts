@@ -8,13 +8,14 @@
  * are the document's (doc/swatches.ts, app/docSwatches.ts).
  */
 import { readColourValue, type ColourValue } from '../color/value'
+import { Listeners } from '../lib/listeners'
 
 const KEY = 'plexel.swatches.v1'
 const SRGB = { builtin: 'srgb' }
 const hex = (h: string): ColourValue => ({ space: 'rgb', profile: SRGB, c: [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255) })
 
 /** The starting set: greys, then the hue circle at full strength, then muted and earth colours. */
-export const DEFAULT_SWATCHES: ColourValue[] = [
+const DEFAULT_SWATCHES: ColourValue[] = [
   'ffffff', 'd9d9d9', 'a6a6a6', '737373', '404040', '000000',
   'e8402e', 'f08a24', 'f5c518', '6bbf3a', '24a78a', '2c8fd6', '3c4fc2', '8547c0', 'd23f8b',
   'f2b7ae', 'f9d6a4', 'fbeaa8', 'c7e3b0', 'a9ddd3', 'acd0ee', 'c1c4ec', 'dbc4ec',
@@ -35,15 +36,12 @@ function load(): ColourValue[] {
 
 class SwatchStore {
   private list = load()
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
 
   get = () => this.list
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   private set(next: ColourValue[]) {
@@ -53,7 +51,7 @@ class SwatchStore {
     } catch {
       // Kept for this tab only.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   add(c: ColourValue) {

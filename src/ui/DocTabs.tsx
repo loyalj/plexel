@@ -28,7 +28,7 @@ export function DocTabs({ docs, active, onActivate, onClose }: Props) {
             aria-selected={d.key === active}
             data-doc={d.key}
             data-dirty={dirty}
-            title={d.file ? d.file.name : `${d.history.present.name} (not saved yet)`}
+            data-tip={d.file ? d.file.name : `${d.history.present.name} (not saved yet)`}
             onPointerDown={(e) => {
               if (e.button === 0) onActivate(d.key)
             }}

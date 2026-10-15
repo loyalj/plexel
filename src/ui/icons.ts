@@ -26,7 +26,12 @@ export const ICONS = {
   'tool.wand': 'magic-wand',
   'tool.crop': 'crop',
   'tool.pen': 'pen-nib',
+  'tool.curvature': 'bezier-curve',
+  'tool.width': 'arrows-out-line-vertical',
   'tool.direct': 'cursor',
+  'tool.pencil': 'pencil-simple-line',
+  'tool.vbrush': 'paint-brush-broad',
+  'tool.blob': 'marker-circle',
   'tool.shape': 'shapes',
   'tool.builder': 'intersect-three',
   'tool.livepaint': 'drop-half',
@@ -78,6 +83,8 @@ export const ICONS = {
   'distribute.hspace': 'columns',
   'distribute.vspace': 'rows',
 
+  'ui.settings': 'sliders-horizontal',
+  'ui.duplicate': 'copy',
   'ui.close': 'x',
   'ui.check': 'check',
   'ui.submenu': 'caret-right',
@@ -85,6 +92,9 @@ export const ICONS = {
   'ui.up': 'caret-up',
   'ui.down': 'caret-down',
   'ui.warning': 'warning',
+  'ui.info': 'info',
+  'ui.home': 'house',
+  'ui.grip': 'dots-six-vertical',
   'ui.swap': 'arrows-left-right',
   'ui.reset': 'arrow-clockwise',
   'ui.workspace': 'layout',
@@ -106,6 +116,8 @@ export const ICONS = {
   'panel.channels': 'circles-three',
   'panel.patterns': 'checkerboard',
   'panel.history': 'clock-counter-clockwise',
+  'panel.symbols': 'shapes',
+  'tool.artboard': 'frame-corners',
 } as const satisfies Record<string, string>
 
 export type IconName = keyof typeof ICONS

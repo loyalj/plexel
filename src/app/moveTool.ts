@@ -1,24 +1,29 @@
 /**
  * The Move tool's own settings: Auto-Select, which picks the layer under
  * the pointer at each press, and whether it picks that layer or the
- * outermost group holding it, as Photoshop's does. Kept by the browser.
+ * outermost group holding it, as Photoshop's does; and Scale Strokes,
+ * whether transforming a shape scales its strokes (Illustrator's Scale
+ * Strokes & Effects). Kept by the browser.
  */
+import { Listeners } from '../lib/listeners'
 export interface MoveSettings {
   autoSelect: boolean
   target: 'layer' | 'group'
+  /** Free Transform and the transform controls scale shapes' strokes with them; off, the strokes keep their widths. */
+  scaleStrokes: boolean
 }
 
-export const DEFAULT_MOVE: MoveSettings = { autoSelect: false, target: 'layer' }
+const DEFAULT_MOVE: MoveSettings = { autoSelect: false, target: 'layer', scaleStrokes: true }
 
 const KEY = 'plexel.move.v1'
 
 /** Settings from their saved text; anything wrong is its default. */
-export function readMoveSettings(text: string | null): MoveSettings {
+function readMoveSettings(text: string | null): MoveSettings {
   try {
     const raw: unknown = text ? JSON.parse(text) : null
     if (typeof raw !== 'object' || raw === null) return DEFAULT_MOVE
     const r = raw as Record<string, unknown>
-    return { autoSelect: typeof r.autoSelect === 'boolean' ? r.autoSelect : DEFAULT_MOVE.autoSelect, target: r.target === 'group' ? 'group' : 'layer' }
+    return { autoSelect: typeof r.autoSelect === 'boolean' ? r.autoSelect : DEFAULT_MOVE.autoSelect, target: r.target === 'group' ? 'group' : 'layer', scaleStrokes: typeof r.scaleStrokes === 'boolean' ? r.scaleStrokes : DEFAULT_MOVE.scaleStrokes }
   } catch {
     return DEFAULT_MOVE
   }
@@ -26,7 +31,7 @@ export function readMoveSettings(text: string | null): MoveSettings {
 
 class MoveStore {
   private value: MoveSettings | null = null
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   get = (): MoveSettings => {
     if (!this.value) {
       let text: string | null = null
@@ -40,10 +45,7 @@ class MoveStore {
     return this.value
   }
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
   update(change: Partial<MoveSettings>) {
     this.value = { ...this.get(), ...change }
@@ -52,7 +54,7 @@ class MoveStore {
     } catch {
       // Kept for this visit only.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 }
 

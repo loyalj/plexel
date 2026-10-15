@@ -12,7 +12,7 @@
 import { crc32 } from './zip'
 import type { Raster } from './raster'
 
-export class PngError extends Error {}
+class PngError extends Error {}
 
 const SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10]
 
@@ -296,6 +296,41 @@ export interface PngHeader {
   icc: Uint8Array | null
   /** The profile's name for the iCCP chunk. */
   iccName?: string
+}
+
+/**
+ * An indexed (palette) PNG, 8 bits an index, for PNG-8: `palette` RGB, three
+ * bytes an entry; `alpha` each entry's opacity (a tRNS chunk, written only
+ * when some entry isn't opaque). Rows aren't filtered, as the PNG spec
+ * advises for palette images.
+ */
+export async function encodePngIndexed(h: { width: number; height: number; palette: Uint8Array; alpha: Uint8Array; icc: Uint8Array | null; iccName?: string }, indices: Uint8Array): Promise<Blob> {
+  const ihdr = new Uint8Array(13)
+  const dv = new DataView(ihdr.buffer)
+  dv.setUint32(0, h.width)
+  dv.setUint32(4, h.height)
+  ihdr[8] = 8
+  ihdr[9] = 3
+  const parts: BlobPart[] = [new Uint8Array(SIGNATURE), chunk('IHDR', ihdr) as BlobPart]
+  if (h.icc) {
+    const name = new TextEncoder().encode((h.iccName ?? 'ICC profile').replace(/[^\x20-\x7e]/g, '').slice(0, 79) || 'ICC profile')
+    const z = await deflateZlib(h.icc)
+    const body = new Uint8Array(name.length + 2 + z.length)
+    body.set(name)
+    body.set(z, name.length + 2)
+    parts.push(chunk('iCCP', body) as BlobPart)
+  }
+  parts.push(chunk('PLTE', h.palette) as BlobPart)
+  // Only up to the last entry that isn't opaque: the rest are opaque by default.
+  let last = -1
+  for (let i = 0; i < h.alpha.length; i++) if (h.alpha[i] < 255) last = i
+  if (last >= 0) parts.push(chunk('tRNS', h.alpha.subarray(0, last + 1)) as BlobPart)
+  const raw = new Uint8Array(h.height * (h.width + 1))
+  for (let y = 0; y < h.height; y++) raw.set(indices.subarray(y * h.width, (y + 1) * h.width), y * (h.width + 1) + 1)
+  const z = await deflateZlib(raw)
+  for (let i = 0; i < z.length; i += 1 << 20) parts.push(chunk('IDAT', z.subarray(i, Math.min(z.length, i + (1 << 20)))) as BlobPart)
+  parts.push(chunk('IEND', new Uint8Array(0)) as BlobPart)
+  return new Blob(parts, { type: 'image/png' })
 }
 
 /**

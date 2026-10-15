@@ -30,7 +30,7 @@ import type { PathData, Subpath } from '../../geom/path'
 import { makeNode } from '../../doc/nodes'
 import type { CurvePoints, GradientStop, LevelsValue, ParamColour } from '../../doc/params'
 import type { CharProps, Paragraph, ParaProps, Run, TextContent } from '../../doc/text'
-import type { Affine, BlendModeId, ColourMode, ColourTag, Depth, Doc, DocNode, LayerFx, NodeId, ProfileRef } from '../../doc/types'
+import type { Affine, BlendModeId, ColourMode, ColourTag, Depth, Doc, DocChannel, DocNode, LayerFx, NodeId, ProfileRef } from '../../doc/types'
 import type { AppearanceItem, Paint, PaintStop } from '../../doc/vector'
 import { Reader } from './bin'
 import type { Guide } from '../../doc/types'
@@ -39,6 +39,7 @@ import { bool, en, list, num, obj, objs, str, unit, type Descriptor } from './de
 import { warpFromPsd } from './warp'
 import { at, eArr, eNum, type EValue } from './engineData'
 import { BLEND_KEYS, PSD_MODE, type PsdFile, type PsdLayer, type PsdSamples } from './format'
+import { clamp01 } from '../../lib/num'
 
 export interface PsdHost {
   /**
@@ -60,6 +61,8 @@ export interface PsdHost {
   /** The working RGB, CMYK and Gray profiles, for colours a file gives without one. */
   working: Record<ColourMode, ProfileRef>
   newId(prefix: string): string
+  /** How far through the layers it is, 0..1; may throw to stop (a cancelled open). */
+  progress?(fraction: number): Promise<void>
 }
 
 export interface PsdImport {
@@ -102,7 +105,6 @@ export const BLEND_ENUM_OF: Record<string, string> = Object.fromEntries(Object.e
 
 const TAGS: (ColourTag | null)[] = [null, 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'gray']
 
-const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 
 export async function psdToDoc(f: PsdFile, host: PsdHost): Promise<PsdImport> {
   const warnings = new Set<string>()
@@ -855,7 +857,9 @@ export async function psdToDoc(f: PsdFile, host: PsdHost): Promise<PsdImport> {
     return out
   }
   if (f.layers.length) {
+    let done = 0
     for (const L of f.layers) {
+      await host.progress?.(done++ / f.layers.length)
       const lsct = block(L.blocks, 'lsct', 'lsdk')
       const sec = lsct ? sectionDivider(lsct) : null
       if (sec?.type === 3) {
@@ -898,12 +902,139 @@ export async function psdToDoc(f: PsdFile, host: PsdHost): Promise<PsdImport> {
     const bg = makeNode('pixel', id('p'), 'Background', { tiles, resample: 'bicubic' })
     nodes[bg.id] = bg
     place(stack[0], bg.id, false)
-    const extra = f.channels - (f.mode === PSD_MODE.cmyk ? 4 : f.mode === PSD_MODE.rgb || f.mode === PSD_MODE.lab ? 3 : 1)
-    if (extra > 0) warn(`${extra} alpha or spot channel${extra === 1 ? ' was' : 's were'} left out; Plexel has no channels yet`)
   }
   root.children = resolveClipping(stack[0])
   const doc: Doc = { name: 'Untitled', width: f.width, height: f.height, resolution, mode, depth, profile, root: rootId, nodes, guides: readGuides(f.resources.find((r) => r.id === 1032)?.data), selection: null }
+  const channels = readChannels(f, host, warn)
+  if (channels.length) doc.channels = channels
   return { doc, warnings: [...warnings], fonts: [...fonts] }
+}
+
+/** How a file shows an alpha or spot channel (image resource 1077, or 1007 before it). */
+interface DisplayInfo {
+  /** Photoshop's colour space id and its four 16-bit values. */
+  space: number
+  values: number[]
+  /** 0..100: an alpha's tint opacity, a spot's solidity. */
+  opacity: number
+  /** 0 an alpha whose tint marks what's selected, 1 what's masked, 2 a spot. */
+  kind: number
+}
+
+/** The channels' names: Unicode (1045) when there, else Pascal (1006). */
+export function readChannelNames(f: Pick<PsdFile, 'resources'>): string[] {
+  const uni = f.resources.find((r) => r.id === 1045)?.data
+  if (uni) {
+    const r = new Reader(uni)
+    const out: string[] = []
+    while (r.left >= 4) out.push(r.unicode().replace(/\0+$/, ''))
+    return out
+  }
+  const pas = f.resources.find((r) => r.id === 1006)?.data
+  if (!pas) return []
+  const out: string[] = []
+  let i = 0
+  while (i < pas.length) {
+    const n = pas[i]
+    out.push(new TextDecoder('latin1').decode(pas.subarray(i + 1, i + 1 + n)))
+    i += 1 + n
+  }
+  return out
+}
+
+export function readDisplayInfo(f: Pick<PsdFile, 'resources'>): DisplayInfo[] {
+  const read = (r: Reader, padded: boolean): DisplayInfo[] => {
+    const out: DisplayInfo[] = []
+    while (r.left >= (padded ? 14 : 13)) {
+      const space = r.u16()
+      const values = [r.u16(), r.u16(), r.u16(), r.u16()]
+      const opacity = r.u16()
+      const kind = r.u8()
+      if (padded) r.u8()
+      out.push({ space, values, opacity, kind })
+    }
+    return out
+  }
+  const now = f.resources.find((r) => r.id === 1077)?.data
+  if (now && now.length >= 4) {
+    const r = new Reader(now)
+    r.u32()
+    return read(r, false)
+  }
+  const old = f.resources.find((r) => r.id === 1007)?.data
+  return old ? read(new Reader(old), true) : []
+}
+
+/** A display colour (Photoshop's colour structure) as a colour value in its own space; RGB's and CMYK's under the working profiles. */
+function displayColour(d: DisplayInfo, host: PsdHost): ColourValue {
+  const v = d.values
+  const s16 = (x: number) => (x >= 32768 ? x - 65536 : x)
+  switch (d.space) {
+    case 2:
+      return { space: 'cmyk', profile: host.working.cmyk, c: v.map((x) => 1 - x / 65535) }
+    case 7:
+      return { space: 'lab', profile: null, c: [v[0] / 100, s16(v[1]) / 100, s16(v[2]) / 100] }
+    case 8:
+      return { space: 'gray', profile: host.working.gray, c: [1 - v[0] / 10000] }
+    case 1: {
+      const h = (v[0] / 65535) * 6
+      const s = v[1] / 65535
+      const b = v[2] / 65535
+      const i = Math.floor(h) % 6
+      const fr = h - Math.floor(h)
+      const p = b * (1 - s)
+      const q = b * (1 - s * fr)
+      const t = b * (1 - s * (1 - fr))
+      const rgb = [[b, t, p], [q, b, p], [p, b, t], [p, q, b], [t, p, b], [b, p, q]][i]
+      return { space: 'rgb', profile: host.working.rgb, c: rgb }
+    }
+    default:
+      return { space: 'rgb', profile: host.working.rgb, c: v.slice(0, 3).map((x) => x / 65535) }
+  }
+}
+
+/**
+ * The composite's alpha and spot channels: the planes after its colour
+ * (and after the merged transparency, when the layer count said there is
+ * one), named and shown as the image resources say. An alpha's plane is
+ * how much is selected; a spot's is stored as Photoshop shows it, black
+ * full ink, so it's turned round into how much ink.
+ */
+function readChannels(f: PsdFile, host: PsdHost, warn: (w: string) => void): DocChannel[] {
+  if (!f.composite) return []
+  const colourCount = f.mode === PSD_MODE.cmyk ? 4 : f.mode === PSD_MODE.rgb || f.mode === PSD_MODE.lab ? 3 : 1
+  let first = colourCount + (f.mergedAlpha && f.layers.length ? 1 : 0)
+  const names = readChannelNames(f)
+  const shows = readDisplayInfo(f)
+  // A file whose names count the merged transparency too: it's named first, and isn't a channel.
+  const extras = f.channels - first
+  const skip = names.length === extras + 1 && f.mergedAlpha ? 1 : 0
+  if (extras <= 0) return []
+  const max = f.depth === 16 ? 65535 : f.depth === 32 ? 1 : 255
+  const out: DocChannel[] = []
+  for (let i = 0; i < extras; i++, first++) {
+    const plane = f.composite[first]
+    if (!plane) continue
+    const show = shows[i + skip]
+    const spot = show?.kind === 2
+    const name = names[i + skip]?.trim() || (spot ? `Spot Colour ${i + 1}` : `Alpha ${i + 1}`)
+    const data = spot ? plane.map((v) => max - v) : plane
+    const tiles = host.mask(f.width, f.height, data as PsdSamples, max)
+    const c: DocChannel = { id: host.newId('ch'), name, tiles, transform: [1, 0, 0, 1, 0, 0] }
+    if (spot) {
+      c.kind = 'spot'
+      c.ink = displayColour(show, host)
+      c.opacity = clamp01(show.opacity / 100)
+    } else if (show) {
+      const ink = displayColour(show, host)
+      if (ink.space === 'rgb') c.tint = ink.c.map(clamp01) as [number, number, number]
+      if (show.kind === 0) c.marks = 'selected'
+      if (show.opacity !== 50) c.opacity = clamp01(show.opacity / 100)
+    }
+    out.push(c)
+  }
+  if (out.length && f.mode === PSD_MODE.multichannel) warn('A multichannel document’s other channels came in as alpha channels')
+  return out
 }
 
 

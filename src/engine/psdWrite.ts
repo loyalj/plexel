@@ -8,7 +8,7 @@
  */
 import { writePsd, type PsdFile, type PsdLayer, type PsdSamples } from '../io/psd/format'
 import type { PlanLayer, PsdPlan } from '../io/psd/plan'
-import { compositeBands, rasterizeNode } from '../render/readback'
+import { compositeBands, rasterizeNode, readCover8 } from '../render/readback'
 import type { Renderer } from '../render/renderer'
 import { alphaBounds } from '../tiles/coverage'
 import { COLOUR_CHANNELS, TILE, TILE_PIXELS } from '../tiles/format'
@@ -189,11 +189,21 @@ export async function writePsdPlan(r: Renderer, plan: PsdPlan): Promise<Uint8Arr
         planes[n][o] = Math.round(a * max)
       }
   }
+  // Alpha and spot channels after the colour (and the transparency): each one's coverage over the canvas.
+  const composite = transparent ? planes : planes.slice(0, n)
+  const scene = r.docState(plan.key)?.scene.doc
+  for (const want of plan.channels ?? []) {
+    const ch = scene?.channels?.find((c) => c.id === want.id)
+    if (!ch) continue
+    const cover = await readCover8(r, plan.key, ch, 0)
+    const data = want.spot ? cover.data.map((v) => 255 - v) : cover.data
+    composite.push(plan.depth === 16 ? Uint16Array.from(data, (v) => v * 257) : data)
+  }
   const file: PsdFile = {
     psb: plan.psb,
     width: plan.width,
     height: plan.height,
-    channels: transparent ? n + 1 : n,
+    channels: composite.length,
     depth: plan.depth,
     mode: plan.mode,
     colorModeData: new Uint8Array(0),
@@ -202,7 +212,7 @@ export async function writePsdPlan(r: Renderer, plan: PsdPlan): Promise<Uint8Arr
     mergedAlpha: transparent && layers.length > 0,
     globalMask: new Uint8Array(0),
     blocks: plan.blocks,
-    composite: transparent ? planes : planes.slice(0, n),
+    composite,
   }
   try {
     return await writePsd(file)

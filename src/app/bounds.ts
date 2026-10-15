@@ -18,6 +18,8 @@ import { pathBounds } from '../geom/path'
 import { boxOf, unionBox, type Box } from '../geom/snap'
 import { docPathOf } from '../vector/shape'
 import { layoutOf } from './text'
+import { expandDoc } from '../doc/expand'
+import { artboardRect, isArtboard } from '../doc/artboards'
 
 const kept = new WeakMap<DocNode, Promise<Box | null>>()
 
@@ -60,6 +62,9 @@ async function measure(doc: Doc, n: DocNode): Promise<Box | null> {
 export async function layerBox(doc: Doc, id: NodeId): Promise<Box | null> {
   const n = doc.nodes[id]
   if (!n) return null
+  // An artboard is its rectangle; an instance, the box round its symbol's layers where it puts them.
+  if (isArtboard(n)) return artboardRect(n)
+  if (n.kind === 'symbol') return layerBox(expandDoc(doc), id)
   if (n.kind === 'group') {
     const kids = await Promise.all((n.children ?? []).filter((c) => doc.nodes[c]?.visible).map((c) => layerBox(doc, c)))
     return unionBox(kids)

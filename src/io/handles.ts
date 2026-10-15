@@ -17,7 +17,7 @@ const HANDLES = 'handles'
 const RECENT_KEY = 'recent'
 const META = 'meta'
 /** How many files the start screen lists. */
-export const RECENT_LIMIT = 12
+const RECENT_LIMIT = 12
 
 export interface RecentFile {
   handleKey: string

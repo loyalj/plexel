@@ -9,7 +9,7 @@
  * A document swatch's name opens its options; a kept one goes with Delete
  * (or Backspace) when focused, or its context menu.
  */
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { colourEngine, colourEngineNow } from '../app/colour'
 import { colours } from '../app/colours'
 import { colourSettings } from '../app/colourSettings'
@@ -20,10 +20,12 @@ import { pressSwatch } from '../app/colourDrag'
 import { SWATCH_KINDS, swatchUses, type DocSwatch, type SwatchKind } from '../doc/swatches'
 import { downloadAs, pickExportFile, writeToHandle } from '../io/files'
 import { cssOf } from './colourView'
+import { ColourChip } from './ColourChip'
+import { Hint, Label } from './controls'
 
 const KIND_MARK: Record<SwatchKind, string> = { process: '', global: '◢', spot: '●' }
 
-export function SwatchesPanel() {
+export const SwatchesPanel = memo(function SwatchesPanel() {
   const list = useSyncExternalStore(swatches().subscribe, swatches().get)
   const display = useSyncExternalStore(colourSettings.subscribe, colourSettings.get).display
   const active = useSyncExternalStore(documents().subscribe, () => documents().active())
@@ -51,32 +53,34 @@ export function SwatchesPanel() {
                     type="button"
                     className="swatch-chip"
                     style={{ background: cssOf(s.colour, engine.converter, display) }}
-                    title="Click for the foreground, Alt-click for the background. Drag onto a shape to fill it, Shift to stroke it."
+                    data-tip="Click for the foreground, Alt-click for the background. Drag onto a shape to fill it, Shift to stroke it."
                     aria-label={`${s.name} as the foreground`}
                     onPointerDown={(e) => pressSwatch(e, { kind: 'swatch', id: s.id }, cssOf(s.colour, engine.converter, display))}
                     onClick={(e) => (e.altKey ? colours().setBg(s.colour) : colours().setFg(s.colour))}
                   />
-                  <button type="button" className="doc-swatch-name" onClick={() => setEditing(editing === s.id ? null : s.id)} title="Swatch options">
+                  <button type="button" className="doc-swatch-name" onClick={() => setEditing(editing === s.id ? null : s.id)} data-tip="Swatch options">
                     {s.name}
                   </button>
-                  <span className={`doc-swatch-kind ${s.kind}`} title={SWATCH_KINDS.find(([k]) => k === s.kind)![1] + (uses.get(s.id) ? `, used by ${uses.get(s.id)}` : '')}>
+                  <span className={`doc-swatch-kind ${s.kind}`} data-tip={SWATCH_KINDS.find(([k]) => k === s.kind)![1] + (uses.get(s.id) ? `, used by ${uses.get(s.id)}` : '')}>
                     {KIND_MARK[s.kind]}
                   </span>
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="field-note">None yet. Global and spot swatches stay linked to the fills and strokes they’re given to.</p>
+            <p className="field-empty">
+              No document swatches <Hint text="Global and spot swatches stay linked to the fills and strokes they’re given to." />
+            </p>
           )}
           {open && <SwatchOptions key={open.id} s={open} uses={uses.get(open.id) ?? 0} onClose={() => setEditing(null)} />}
           <div className="panel-tools">
-            <button type="button" className="button small" data-new-swatch="process" onClick={() => setEditing(newDocSwatch('process'))} title="A swatch of the foreground colour">
+            <button type="button" className="button small" data-new-swatch="process" onClick={() => setEditing(newDocSwatch('process'))} data-tip="A swatch of the foreground colour">
               New Swatch
             </button>
-            <button type="button" className="button small" data-new-swatch="spot" onClick={() => setEditing(newDocSwatch('spot'))} title="A named ink, defined by the foreground colour">
+            <button type="button" className="button small" data-new-swatch="spot" onClick={() => setEditing(newDocSwatch('spot'))} data-tip="A named ink, defined by the foreground colour">
               New Spot
             </button>
-            <button type="button" className="button small" onClick={() => libraryInput.current?.click()} title="Adds an Adobe Swatch Exchange file’s colours (.ase)">
+            <button type="button" className="button small" onClick={() => libraryInput.current?.click()} data-tip="Adds an Adobe Swatch Exchange file’s colours (.ase)">
               Load Library…
             </button>
             <button type="button" className="button small" disabled={!docSwatches.length} onClick={() => void saveLibrary(active?.history.present.name ?? 'Swatches')}>
@@ -107,7 +111,7 @@ export function SwatchesPanel() {
             className="swatch-chip"
             data-swatch-index={i}
             style={{ background: cssOf(c, engine.converter, display) }}
-            title="Click for the foreground, Alt-click for the background. Drag onto a shape to fill it, Shift to stroke it. Delete removes it."
+            data-tip="Click for the foreground, Alt-click for the background. Drag onto a shape to fill it, Shift to stroke it. Delete removes it."
             aria-label={`Swatch ${i + 1}`}
             onPointerDown={(e) => pressSwatch(e, { kind: 'colour', value: c }, cssOf(c, engine.converter, display))}
             onClick={(e) => (e.altKey ? colours().setBg(c) : colours().setFg(c))}
@@ -135,7 +139,7 @@ export function SwatchesPanel() {
       </div>
     </div>
   )
-}
+})
 
 /** A document swatch's name, kind and colour, changed in place; each change one step. */
 function SwatchOptions({ s, uses, onClose }: { s: DocSwatch; uses: number; onClose(): void }) {
@@ -154,7 +158,18 @@ function SwatchOptions({ s, uses, onClose }: { s: DocSwatch; uses: number; onClo
         />
       </div>
       <div className="field">
-        <label htmlFor="swatch-kind">Kind</label>
+        <Label
+          htmlFor="swatch-kind"
+          hint={
+            s.kind === 'spot'
+              ? 'A named ink, shown through this colour. Fills and strokes given it stay linked, at a tint.'
+              : s.kind === 'global'
+                ? 'Fills and strokes given it stay linked: change it and they all change.'
+                : 'Just a colour to pick; nothing stays linked to it.'
+          }
+        >
+          Kind
+        </Label>
         <select id="swatch-kind" value={s.kind} onChange={(e) => editDocSwatch(s.id, { kind: e.target.value as SwatchKind })}>
           {SWATCH_KINDS.map(([k, label]) => (
             <option key={k} value={k}>
@@ -162,19 +177,17 @@ function SwatchOptions({ s, uses, onClose }: { s: DocSwatch; uses: number; onClo
             </option>
           ))}
         </select>
-        <span className="field-note">
-          {s.kind === 'spot'
-            ? 'A named ink, shown through this colour. Fills and strokes given it stay linked, at a tint.'
-            : s.kind === 'global'
-              ? 'Fills and strokes given it stay linked: change it and they all change.'
-              : 'Just a colour to pick; nothing stays linked to it.'}
-          {uses ? ` Used by ${uses} fill${uses === 1 ? '' : 's'} or stroke${uses === 1 ? '' : 's'}.` : ''}
+        <span className="field-meta">
+          {uses ? `Used by ${uses} fill${uses === 1 ? '' : 's'} or stroke${uses === 1 ? '' : 's'}` : ''}
         </span>
       </div>
+      <div className="field" data-tip="The swatch’s colour; linked fills and strokes follow">
+        <label htmlFor="swatch-colour">Colour</label>
+        <div className="slider-row">
+          <ColourChip id="swatch-colour" value={s.colour} doc={documents().active()?.history.present ?? null} label={`${s.name} colour`} onChange={(c) => editDocSwatch(s.id, { colour: c }, 'Swatch Colour', `swatch-colour:${s.id}`)} data={{ 'swatch-colour': s.id }} />
+        </div>
+      </div>
       <div className="panel-tools">
-        <button type="button" className="button small" data-swatch-set-fg onClick={() => editDocSwatch(s.id, { colour: colours().get().fg }, 'Swatch Colour')} title="Makes the swatch the foreground colour; linked fills and strokes follow">
-          Use Foreground
-        </button>
         <button
           type="button"
           className="button small"
@@ -182,7 +195,7 @@ function SwatchOptions({ s, uses, onClose }: { s: DocSwatch; uses: number; onClo
             deleteDocSwatch(s.id)
             onClose()
           }}
-          title="Linked fills and strokes keep their colour"
+          data-tip="Linked fills and strokes keep their colour"
         >
           Delete
         </button>

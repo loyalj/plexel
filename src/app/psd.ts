@@ -15,8 +15,8 @@ import { colourSettings } from './colourSettings'
 import { documents } from './documents'
 import { fontLibrary } from './fonts'
 import { notify } from './notices'
+import { isCancelled, runJob } from './jobs'
 
-export const isPsd = (head: Uint8Array) => head[0] === 0x38 && head[1] === 0x42 && head[2] === 0x50 && head[3] === 0x53
 
 const STYLES: [RegExp, string][] = [
   [/^(BoldItalic|BoldIt|BdIt)$/i, 'Bold Italic'],
@@ -34,7 +34,7 @@ const STYLES: [RegExp, string][] = [
  * A PostScript name as a family and style, for a font that isn't here:
  * "Arial-BoldMT" is Arial Bold, "MyriadPro-Regular" Myriad Pro Regular.
  */
-export function guessFamily(ps: string): { family: string; style: string } {
+function guessFamily(ps: string): { family: string; style: string } {
   const [base, rest = 'Regular'] = ps.replace(/MT$/, '').split('-')
   const family = base.replace(/MT$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
   const tail = rest.replace(/MT$/, '')
@@ -43,7 +43,7 @@ export function guessFamily(ps: string): { family: string; style: string } {
 }
 
 /** Each run's font from its PostScript name (style left empty by the import) to a family and style. */
-export function resolveFonts(doc: Doc, lib: FontLibrary | null): Doc {
+function resolveFonts(doc: Doc, lib: FontLibrary | null): Doc {
   const fix = (d: Doc): Doc => {
     const nodes: Record<string, DocNode> = {}
     let changed = false
@@ -83,7 +83,8 @@ export async function openPsd(file: File): Promise<boolean> {
   try {
     const s = colourSettings.get()
     const bytes = new Uint8Array(await file.arrayBuffer())
-    const r = await engine().call('psd.open', { bytes, name: file.name, working: s.working, intent: s.intent, bpc: s.blackPointCompensation })
+    // The file's bytes are handed over, not copied: a big PSD is hundreds of megabytes.
+    const r = await runJob(`Opening “${file.name}”`, (job) => engine().call('psd.open', { bytes, name: file.name, working: s.working, intent: s.intent, bpc: s.blackPointCompensation, job }, [bytes.buffer]))
     for (const p of r.profiles) await assets().putAs(p.hash, p.bytes)
     const lib = r.fonts.length ? await fontLibrary().catch(() => null) : null
     const doc = resolveFonts(r.doc, lib)
@@ -91,6 +92,7 @@ export async function openPsd(file: File): Promise<boolean> {
     if (r.warnings.length) notify('warning', `“${file.name}” opened, with a few things that couldn’t come over as they were.`, r.warnings)
     return true
   } catch (e) {
+    if (isCancelled(e)) return false
     notify('error', `“${file.name}” couldn’t be opened.`, [e instanceof Error ? e.message : String(e)])
     return false
   }

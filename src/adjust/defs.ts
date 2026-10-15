@@ -18,7 +18,8 @@
  * (each light channel times black's).
  */
 import { adjustedCmyk, cmykToRgbT, type CmykTables } from '../color/cmykAdjust'
-import { CHANNELS, CURVE_IDENTITY, LEVELS_IDENTITY, readParamValues, type CurvePoints, type GradientStop, type LevelsValue, type ParamDef } from '../doc/params'
+import { CHANNELS, CURVE_IDENTITY, LEVELS_IDENTITY, readParamValues, type CurvePoints, type GradientStop, type LevelsValue, type ParamDef, type ParamValues } from '../doc/params'
+import { clamp01 as clamp } from '../lib/num'
 
 export type Mode = 'rgb' | 'gray' | 'cmyk'
 
@@ -36,14 +37,20 @@ export interface Program {
   table: Float32Array | null
 }
 
-export interface AdjustmentDef {
+/** An adjustment, compiled from its parameters' values as V (AdjustmentDef: any adjustment's, as plain records). */
+export interface AdjustmentDefOf<V> {
   id: string
   label: string
-  params: ParamDef[]
-  compile(values: Record<string, unknown>, mode: Mode): Program
+  params: readonly ParamDef[]
+  compile(values: V, mode: Mode): Program
+}
+export type AdjustmentDef = AdjustmentDefOf<Record<string, unknown>>
+
+/** An adjustment defined with its values typed from its parameters (as defineFilter); the registry holds AdjustmentDefs. */
+function defineAdjustment<const P extends readonly ParamDef[]>(def: Omit<AdjustmentDefOf<ParamValues<P>>, 'params'> & { params: P }): AdjustmentDef {
+  return def as unknown as AdjustmentDef
 }
 
-const clamp = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)
 const nc = (mode: Mode) => (mode === 'rgb' ? 3 : mode === 'gray' ? 1 : 4)
 
 // --- tone tables -----------------------------------------------------------------------
@@ -111,7 +118,7 @@ export function curveFn(points: CurvePoints): (x: number) => number {
  * points. Photoshop doesn't publish the curve; these constants are fitted
  * to its renders (scripts/fixtures/psd/adj_brightnesscontrast_rgb).
  */
-export function brightnessFn(brightness: number, contrast: number): (x: number) => number {
+function brightnessFn(brightness: number, contrast: number): (x: number) => number {
   const b = brightness / 100
   const c = contrast / 100
   const d = b > 0 ? 0.1636 * b : 0.1057 * b
@@ -122,7 +129,7 @@ export function brightnessFn(brightness: number, contrast: number): (x: number) 
 }
 
 /** The legacy version: a shift, then a stretch about the middle, clipping at both ends. */
-export function legacyBrightnessFn(brightness: number, contrast: number): (x: number) => number {
+function legacyBrightnessFn(brightness: number, contrast: number): (x: number) => number {
   const k = contrast >= 0 ? 100 / Math.max(1e-3, 100 - contrast) : (100 + contrast) / 100
   return (x) => clamp((x + brightness / 255 - 0.5) * k + 0.5)
 }
@@ -152,7 +159,7 @@ function toneProgram(mode: Mode, master: (x: number) => number, own?: ((x: numbe
 
 export const luma = (r: number, g: number, b: number) => 0.299 * r + 0.587 * g + 0.114 * b
 
-export function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
   const max = Math.max(r, g, b)
   const min = Math.min(r, g, b)
   const l = (max + min) / 2
@@ -164,7 +171,7 @@ export function rgbToHsl(r: number, g: number, b: number): [number, number, numb
   return [h, s, l]
 }
 
-export function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   if (s <= 0) return [l, l, l]
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s
   const p = 2 * l - q
@@ -183,7 +190,7 @@ export function hslToRgb(h: number, s: number, l: number): [number, number, numb
  * from (or pulled to) the colour's HSL lightness; at +100 anything with
  * colour goes fully saturated.
  */
-export function saturate(rgb: number[], a: number): number[] {
+function saturate(rgb: number[], a: number): number[] {
   const mx = Math.max(rgb[0], rgb[1], rgb[2])
   const mn = Math.min(rgb[0], rgb[1], rgb[2])
   const delta = mx - mn
@@ -199,7 +206,7 @@ export function saturate(rgb: number[], a: number): number[] {
 // --- colour cubes: adjustments that are any function of the colour --------------------------
 
 /** A colour cube's side for adjustments worked out here: fine enough for smooth changes. */
-export const CUBE = 17
+const CUBE = 17
 
 /**
  * A program that's a colour cube: `fn` (straight RGB, 0..1, in and out)
@@ -219,7 +226,7 @@ export function cubeProgram(fn: (rgb: number[]) => number[], S = CUBE): Program 
 }
 
 /** A colour cube read at a colour, trilinearly: the reference the GPU is held to. */
-export function cubeAt(t: Float32Array, S: number, rgb: number[]): number[] {
+function cubeAt(t: Float32Array, S: number, rgb: number[]): number[] {
   const p = rgb.map((v) => clamp(v) * (S - 1))
   const i = p.map((v) => Math.min(S - 2, Math.floor(v)))
   const f = p.map((v, k) => v - i[k])
@@ -236,7 +243,7 @@ export function cubeAt(t: Float32Array, S: number, rgb: number[]): number[] {
 
 // --- Selective Colour --------------------------------------------------------------------------
 
-export const SELECTIVE_RANGES: [string, string][] = [
+const SELECTIVE_RANGES: [string, string][] = [
   ['reds', 'Reds'],
   ['yellows', 'Yellows'],
   ['greens', 'Greens'],
@@ -273,7 +280,7 @@ export function selectiveWeights(rgb: number[]): Record<string, number> {
  * much they belong to it; Relative scales the change by the ink already
  * there, Absolute doesn't.
  */
-export function selectiveFn(adj: Record<string, number[]>, relative: boolean) {
+function selectiveFn(adj: Record<string, number[]>, relative: boolean) {
   return (rgb: number[]): number[] => {
     const w = selectiveWeights(rgb)
     const ink = rgb.map((v) => 1 - v)
@@ -294,7 +301,7 @@ export function selectiveFn(adj: Record<string, number[]>, relative: boolean) {
 // --- Photo Filter ------------------------------------------------------------------------------
 
 /** Photoshop's filters, by id: their colours, straight RGB 0..255. */
-export const PHOTO_FILTERS: [string, string, [number, number, number]][] = [
+const PHOTO_FILTERS: [string, string, [number, number, number]][] = [
   ['warming-85', 'Warming Filter (85)', [236, 138, 0]],
   ['warming-lba', 'Warming Filter (LBA)', [250, 150, 0]],
   ['warming-81', 'Warming Filter (81)', [235, 177, 19]],
@@ -318,7 +325,7 @@ export const PHOTO_FILTERS: [string, string, [number, number, number]][] = [
 ]
 
 /** Photo Filter: the colour multiplied in at `density` (0..1), the lightness kept when asked. */
-export function photoFilterFn(f: number[], density: number, keep: boolean) {
+function photoFilterFn(f: number[], density: number, keep: boolean) {
   return (rgb: number[]): number[] => {
     const out = rgb.map((v, c) => v + (v * f[c] - v) * density)
     if (!keep) return out
@@ -330,7 +337,7 @@ export function photoFilterFn(f: number[], density: number, keep: boolean) {
 // --- Colour Lookup ------------------------------------------------------------------------------
 
 /** Colour Lookup's built-in looks, worked out here rather than read from files. */
-export const LOOKS: [string, string, (rgb: number[]) => number[]][] = [
+const LOOKS: [string, string, (rgb: number[]) => number[]][] = [
   ['warm', 'Warm', ([r, g, b]) => [r * 1.06 + 0.02, g * 1.01, b * 0.88]],
   ['cool', 'Cool', ([r, g, b]) => [r * 0.9, g * 1.0, b * 1.08 + 0.02]],
   [
@@ -460,7 +467,7 @@ export function cubeColours(c: StoredCube): Float32Array | null {
   return t
 }
 
-export function readStoredCube(v: unknown): StoredCube | null {
+function readStoredCube(v: unknown): StoredCube | null {
   if (!v || typeof v !== 'object') return null
   const r = v as Record<string, unknown>
   if (typeof r.name !== 'string' || typeof r.size !== 'number' || typeof r.data !== 'string' || r.size < 2 || r.size > 65) return null
@@ -478,7 +485,7 @@ const push = (hue: number, amount: number): number[] => hslToRgb(hue / 360, 1, 0
  * moving where shadows end and highlights begin, Blending how much they
  * overlap), then the whole image towards Global's.
  */
-export function gradingFn(w: Record<string, [number, number]>, lum: Record<string, number>, balance: number, blending: number) {
+function gradingFn(w: Record<string, [number, number]>, lum: Record<string, number>, balance: number, blending: number) {
   const pushes = Object.fromEntries(Object.entries(w).map(([k, [h, a]]) => [k, push(h, a / 100)]))
   return (rgb: number[]): number[] => {
     // Shadows, midtones and highlights as Colour Balance weighs them, Balance moving the middle, Blending widening them.
@@ -493,7 +500,7 @@ export function gradingFn(w: Record<string, [number, number]>, lum: Record<strin
 
 // --- Hue/Saturation's ranges --------------------------------------------------------------------
 
-export const HUE_RANGES: [string, string, number][] = [
+const HUE_RANGES: [string, string, number][] = [
   ['reds', 'Reds', 0],
   ['yellows', 'Yellows', 60],
   ['greens', 'Greens', 120],
@@ -507,7 +514,7 @@ export const HUE_RANGES: [string, string, number][] = [
  * come in, where it's whole, where it starts to go and where it's gone,
  * in degrees round from red. These are Photoshop's own to start with.
  */
-export const HUE_LIMITS: Record<string, [number, number, number, number]> = {
+const HUE_LIMITS: Record<string, [number, number, number, number]> = {
   reds: [315, 345, 15, 45],
   yellows: [15, 45, 75, 105],
   greens: [75, 105, 135, 165],
@@ -542,7 +549,7 @@ export function rangeWeight(hue: number, limits: [number, number, number, number
  * is in it, then made at once. Photoshop doesn't publish how ranges that
  * overlap combine; this is how GIMP's emulation of it does.
  */
-export function hueRangesFn(master: [number, number, number], ranges: Record<string, [number, number, number]>, limits: Record<string, [number, number, number, number]>) {
+function hueRangesFn(master: [number, number, number], ranges: Record<string, [number, number, number]>, limits: Record<string, [number, number, number, number]>) {
   return (rgb: number[]): number[] => {
     const [h0, s0] = rgbToHsl(rgb[0], rgb[1], rgb[2])
     let [h, s, l] = master
@@ -564,10 +571,10 @@ const readLimits = (v: unknown): [number, number, number, number] | null => (Arr
 
 // --- the registry ------------------------------------------------------------------------
 
-const n = (key: string, label: string, min: number, max: number, def: number, unit = '', step = 1, hint?: string): ParamDef => ({ key, kind: 'number', label, min, max, step, unit, default: def, hint })
+const n = <K extends string>(key: K, label: string, min: number, max: number, def: number, unit = '', step = 1, hint?: string) => ({ key, kind: 'number' as const, label, min, max, step, unit, default: def, hint })
 
 export const ADJUSTMENT_DEFS: AdjustmentDef[] = [
-  {
+  defineAdjustment({
     id: 'levels',
     label: 'Levels',
     params: [{ key: 'levels', kind: 'levels', label: 'Levels', hint: 'Input black and white points, gamma, and the output range, for all channels together and each on its own.' }],
@@ -576,8 +583,8 @@ export const ADJUSTMENT_DEFS: AdjustmentDef[] = [
       const ch = CHANNELS[mode].slice(1)
       return toneProgram(mode, levelsFn(l.master ?? LEVELS_IDENTITY), ch.length ? ch.map((c) => levelsFn(l[c] ?? LEVELS_IDENTITY)) : undefined)
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'curves',
     label: 'Curves',
     params: [{ key: 'curves', kind: 'curves', label: 'Curves', hint: 'A tone curve for all channels together and each on its own.' }],
@@ -586,8 +593,8 @@ export const ADJUSTMENT_DEFS: AdjustmentDef[] = [
       const ch = CHANNELS[mode].slice(1)
       return toneProgram(mode, curveFn(c.master ?? CURVE_IDENTITY), ch.length ? ch.map((k) => curveFn(c[k] ?? CURVE_IDENTITY)) : undefined)
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'brightness-contrast',
     label: 'Brightness/Contrast',
     params: [
@@ -596,46 +603,46 @@ export const ADJUSTMENT_DEFS: AdjustmentDef[] = [
       { key: 'legacy', kind: 'bool', label: 'Use legacy', default: false, hint: 'The old straight-line version: brightness shifts every value, contrast stretches them about the middle, and both clip.' },
     ],
     compile(v, mode) {
-      const b = v.brightness as number
-      const c = v.contrast as number
+      const b = v.brightness
+      const c = v.contrast
       return toneProgram(mode, v.legacy ? legacyBrightnessFn(b, c) : brightnessFn(b, c))
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'exposure',
     label: 'Exposure',
     params: [n('exposure', 'Exposure', -20, 20, 0, 'stops', 0.01), n('offset', 'Offset', -0.5, 0.5, 0, '', 0.001), n('gamma', 'Gamma', 0.01, 9.99, 1, '', 0.01)],
     compile(v, mode) {
-      const e = Math.pow(2, v.exposure as number)
-      const o = v.offset as number
-      const g = v.gamma as number
+      const e = Math.pow(2, v.exposure)
+      const o = v.offset
+      const g = v.gamma
       // Photoshop works exposure in linear light: the values are taken out of a 2.2 gamma and put back.
       return toneProgram(mode, (x) => Math.pow(Math.pow(clamp(Math.pow(x, 2.2) * e + o), 1 / g), 1 / 2.2))
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'invert',
     label: 'Invert',
     params: [],
     compile: (_v, mode) => toneProgram(mode, (x) => 1 - x),
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'posterize',
     label: 'Posterize',
     params: [n('levels', 'Levels', 2, 255, 4)],
     compile(v, mode) {
-      const k = (v.levels as number) - 1
+      const k = v.levels - 1
       // Equal bins across the range, each to its own level (Photoshop's way): floor(v·n/256) on 8-bit values.
       return toneProgram(mode, (x) => Math.min(k, Math.floor(clamp(x) * (k + 1) * (255 / 256))) / k)
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'threshold',
     label: 'Threshold',
     params: [n('level', 'Threshold level', 1, 255, 128)],
-    compile: (v, mode) => ({ op: OP.threshold, f: [(v.level as number) / 255, mode === 'cmyk' ? 1 : 0], table: null }),
-  },
-  {
+    compile: (v, mode) => ({ op: OP.threshold, f: [v.level / 255, mode === 'cmyk' ? 1 : 0], table: null }),
+  }),
+  defineAdjustment({
     id: 'hue-saturation',
     label: 'Hue/Saturation',
     params: [
@@ -652,21 +659,21 @@ export const ADJUSTMENT_DEFS: AdjustmentDef[] = [
       { key: 'colorize', kind: 'bool', label: 'Colourise', default: false, hint: 'Give the whole image one hue, with the saturation set here.' },
     ],
     compile(v) {
-      const master: [number, number, number] = [v.hue as number, v.saturation as number, v.lightness as number]
+      const master: [number, number, number] = [v.hue, v.saturation, v.lightness]
       const ranges = Object.fromEntries(HUE_RANGES.map(([r]) => [r, [v[`${r}Hue`], v[`${r}Saturation`], v[`${r}Lightness`]] as [number, number, number]]))
       // Only the master: Photoshop's sums exactly, as before; with a range, a colour cube of them.
       if (v.colorize || Object.values(ranges).every((r) => r.every((x) => !x))) return { op: OP.hsl, f: [master[0] / 360, master[1] / 100, master[2] / 100, v.colorize ? 1 : 0], table: null }
       const limits = Object.fromEntries(HUE_RANGES.map(([r]) => [r, v[`${r}Limits`] as [number, number, number, number]]))
       return cubeProgram(hueRangesFn(master, ranges, limits), 33)
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'vibrance',
     label: 'Vibrance',
     params: [n('vibrance', 'Vibrance', -100, 100, 0, '', 1, 'Raises the saturation of dull colours more than of those already strong.'), n('saturation', 'Saturation', -100, 100, 0)],
-    compile: (v) => ({ op: OP.vibrance, f: [(v.vibrance as number) / 100, (v.saturation as number) / 100], table: null }),
-  },
-  {
+    compile: (v) => ({ op: OP.vibrance, f: [v.vibrance / 100, v.saturation / 100], table: null }),
+  }),
+  defineAdjustment({
     id: 'colour-balance',
     label: 'Colour Balance',
     params: [
@@ -685,8 +692,8 @@ export const ADJUSTMENT_DEFS: AdjustmentDef[] = [
       ],
       table: null,
     }),
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'black-white',
     label: 'Black & White',
     params: [
@@ -702,11 +709,11 @@ export const ADJUSTMENT_DEFS: AdjustmentDef[] = [
     ],
     compile: (v) => ({
       op: OP.bw,
-      f: [...['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas'].map((k) => (v[k] as number) / 100), v.tint ? 1 : 0, (v.tintHue as number) / 360, (v.tintSaturation as number) / 100],
+      f: [...(['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas'] as const).map((k) => v[k] / 100), v.tint ? 1 : 0, v.tintHue / 360, v.tintSaturation / 100],
       table: null,
     }),
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'channel-mixer',
     label: 'Channel Mixer',
     params: [
@@ -719,12 +726,12 @@ export const ADJUSTMENT_DEFS: AdjustmentDef[] = [
       ]),
     ],
     compile(v) {
-      const row = (o: string) => [v[`${o}FromRed`], v[`${o}FromGreen`], v[`${o}FromBlue`], v[`${o}Constant`]].map((x) => (x as number) / 100)
+      const row = (o: 'gray' | 'red' | 'green' | 'blue') => [v[`${o}FromRed`], v[`${o}FromGreen`], v[`${o}FromBlue`], v[`${o}Constant`]].map((x) => x / 100)
       const rows = v.monochrome ? [row('gray'), row('gray'), row('gray')] : [row('red'), row('green'), row('blue')]
       return { op: OP.mixer, f: [...rows.flat(), ...row('gray')], table: null }
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'gradient-map',
     label: 'Gradient Map',
     params: [{ key: 'gradient', kind: 'gradient', label: 'Gradient', hint: 'Each tone of the image becomes the gradient’s colour at that point: shadows from the left, highlights from the right.' }, { key: 'reverse', kind: 'bool', label: 'Reverse', default: false }],
@@ -741,7 +748,7 @@ export const ADJUSTMENT_DEFS: AdjustmentDef[] = [
       }
       return { op: OP.gradient, f: [mode === 'cmyk' ? 1 : 0], table: t }
     },
-  },
+  }),
 ]
 
 const cap = (x: string) => x[0].toUpperCase() + x.slice(1)
@@ -749,7 +756,7 @@ const INKS = ['cyan', 'magenta', 'yellow', 'black'] as const
 const WHEELS = ['shadows', 'midtones', 'highlights', 'global'] as const
 
 ADJUSTMENT_DEFS.push(
-  {
+  defineAdjustment({
     id: 'selective-colour',
     label: 'Selective Colour',
     params: [
@@ -761,8 +768,8 @@ ADJUSTMENT_DEFS.push(
       const adj = Object.fromEntries(SELECTIVE_RANGES.map(([r]) => [r, INKS.map((k) => (v[`${r}_${k}`] as number) / 100)]))
       return cubeProgram(selectiveFn(adj, v.method === 'relative'))
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'photo-filter',
     label: 'Photo Filter',
     params: [
@@ -773,14 +780,14 @@ ADJUSTMENT_DEFS.push(
     ],
     compile(v, mode) {
       const preset = PHOTO_FILTERS.find((p) => p[0] === v.filter)
-      const c = v.colour as number[]
+      const c = v.colour
       // A colour of the document's own as RGB: Gray's one channel three times, CMYK's inks as light.
       const own = mode === 'rgb' ? c : mode === 'gray' ? [c[0], c[0], c[0]] : [(1 - c[0]) * (1 - c[3]), (1 - c[1]) * (1 - c[3]), (1 - c[2]) * (1 - c[3])]
       const f = preset ? preset[2].map((x) => x / 255) : own
-      return cubeProgram(photoFilterFn(f, (v.density as number) / 100, !!v.preserve))
+      return cubeProgram(photoFilterFn(f, v.density / 100, !!v.preserve))
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'colour-lookup',
     label: 'Colour Lookup',
     params: [
@@ -805,8 +812,8 @@ ADJUSTMENT_DEFS.push(
       }
       return cubeProgram(LOOKS.find((l) => l[0] === v.look)?.[2] ?? ((x) => x))
     },
-  },
-  {
+  }),
+  defineAdjustment({
     id: 'colour-grading',
     label: 'Colour Grading',
     params: [
@@ -820,9 +827,9 @@ ADJUSTMENT_DEFS.push(
     compile(v) {
       const w = Object.fromEntries(WHEELS.map((k) => [k, v[`${k}Wheel`] as [number, number]]))
       const lum = Object.fromEntries(WHEELS.map((k) => [k, (v[`${k}Lum`] as number) / 400]))
-      return cubeProgram(gradingFn(w, lum, (v.balance as number) / 100, (v.blending as number) / 100))
+      return cubeProgram(gradingFn(w, lum, v.balance / 100, v.blending / 100))
     },
-  },
+  }),
 )
 
 export const ADJUSTMENT_BY_ID = new Map(ADJUSTMENT_DEFS.map((d) => [d.id, d]))

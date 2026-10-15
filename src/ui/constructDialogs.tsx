@@ -41,9 +41,8 @@ export function OffsetPathDialog({ doc: d, onClose }: { doc: OpenDoc; onClose():
     if (ok) offsetShape(distance, join, miter, true)
   }
   return (
-    <Dialog id="offsetPath" title="Offset Path" onClose={() => close(false)} footer={<Foot onCancel={() => close(false)} onOk={() => close(true)} />}>
+    <Dialog id="offsetPath" floating="preview" title="Offset Path" hint="A new shape just below the selected one, its outline moved out by the offset (in, when negative)." onClose={() => close(false)} footer={<Foot onCancel={() => close(false)} onOk={() => close(true)} />}>
       <div className="form" data-offset-path>
-        <p className="field-note">A new shape just below the selected one, its outline moved out by the offset (in, when negative).</p>
         <NumberParam id="offset-distance" def={{ ...num('distance', 'Offset', -500, 500, 0.5, 'px'), default: 10 }} value={distance} onChange={setDistance} />
         <div className="field">
           <label htmlFor="offset-join">Joins</label>
@@ -78,12 +77,12 @@ export function SimplifyDialog({ doc: d, onClose }: { doc: OpenDoc; onClose(): v
     if (ok) simplified(tolerance, corner)?.apply()
   }
   return (
-    <Dialog id="simplify" title="Simplify" onClose={() => close(false)} footer={<Foot onCancel={() => close(false)} onOk={() => close(true)} />}>
+    <Dialog id="simplify" floating="preview" title="Simplify" onClose={() => close(false)} footer={<Foot onCancel={() => close(false)} onOk={() => close(true)} />}>
       <div className="form" data-simplify>
         <NumberParam id="simplify-tolerance" def={{ ...num('tolerance', 'Precision', 0.1, 50, 0.1, 'px', 'How far the path may move: further for fewer anchors.'), default: 2 }} value={tolerance} onChange={setTolerance} />
         <NumberParam id="simplify-corner" def={{ ...num('corner', 'Corners sharper than', 10, 170, 1, '°', 'Kept as corners: turns sharper than this.'), default: 60 }} value={corner} onChange={setCorner} />
         {counts && (
-          <p className="field-note" data-simplify-counts>
+          <p className="field-meta" data-simplify-counts>
             {counts[0]} anchors, then {counts[1]}.
           </p>
         )}

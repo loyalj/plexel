@@ -20,11 +20,13 @@ import type { ColourMode, Depth, DocNode, NodeId, ProfileRef } from '../doc/type
 import type { SceneUpdate } from '../render/scene'
 import type { View } from '../render/view'
 import type { ImportInto } from './imageHost'
+import type { WebOptions } from '../io/webOptions'
 import type { StrokeStart } from '../render/strokes'
 import type { PenSample } from '../brush/stroke'
 import type { SelectCalls } from './selectHost'
 import type { ClipCalls } from './clipHost'
 import type { FillCalls } from './fillHost'
+import type { ChannelCalls } from './channelHost'
 import type { SelectImageCalls } from './selectImageHost'
 import type { Overlay } from '../render/overlay'
 
@@ -82,7 +84,9 @@ export type ToEngine =
   /** The brush cursor, in document pixels, or null to hide it; with `loops`, the tip's own outline instead of a circle. */
   | { type: 'cursor'; cursor: BrushCursor | null }
   /** A request that wants an answer: see EngineCalls. `id` pairs it with its reply. */
-  | { type: 'call'; id: number; method: keyof EngineCalls; args: unknown }
+  | ({ type: 'call'; id: number } & CallMessage)
+  /** A long job called off by the page (engine/jobs.ts). */
+  | { type: 'job.cancel'; job: string }
 
 /** Where the brush is: its centre and diameter in document pixels, and its shape when it isn't a circle. */
 export interface BrushCursor {
@@ -114,7 +118,7 @@ export type SetDescription =
  * The tile store lives in the worker (ARCHITECTURE.md, "The threads"), so
  * everything the page does with pixels is one of these.
  */
-export interface EngineCalls extends SelectCalls, ClipCalls, FillCalls, SelectImageCalls {
+export interface EngineCalls extends SelectCalls, ClipCalls, FillCalls, SelectImageCalls, ChannelCalls {
   /** A new set covering a canvas with one value: samples per plane, alpha last. */
   'tiles.fill': { args: { format: TileFormat; width: number; height: number; value: number[] }; result: string }
   'tiles.describe': { args: { ids: string[] }; result: Record<string, SetDescription> }
@@ -144,13 +148,14 @@ export interface EngineCalls extends SelectCalls, ClipCalls, FillCalls, SelectIm
   /** A PSD or PSB written from the page's plan (io/psd/plan.ts), pixels read and rendered here. */
   'psd.write': { args: { plan: PsdPlan }; result: Uint8Array }
   /** A Photoshop file (PSD or PSB) opened as a document (engine/psdHost.ts); its tile sets held a minute for the page. */
-  'psd.open': { args: { bytes: Uint8Array; name: string; working: Record<ColourMode, ProfileRef>; intent: Intent; bpc: boolean }; result: PsdOpened }
+  'psd.open': { args: { bytes: Uint8Array; name: string; working: Record<ColourMode, ProfileRef>; intent: Intent; bpc: boolean; job?: string }; result: PsdOpened }
   'image.import': {
     args: { bytes: Uint8Array; name: string; into: ImportInto | null }
     result: { set: string; width: number; height: number; mode: ColourMode; depth: Depth; icc: Uint8Array | null; warnings: string[] }
   }
   /** A document's composite as a PNG or JPEG file. */
-  'image.export': { args: { key: string; format: 'png' | 'jpeg'; quality: number }; result: { bytes: Uint8Array; mime: string; warnings: string[] } }
+  'image.optimize': { args: { key: string; o: WebOptions }; result: { bytes: Uint8Array; mime: string; warnings: string[] } }
+  'image.export': { args: { key: string; format: 'png' | 'jpeg' | 'webp'; quality: number; lossless?: boolean }; result: { bytes: Uint8Array; mime: string; warnings: string[] } }
   /** Thumbnails of nodes, each fitting `size` pixels, as straight 8-bit RGBA in the display's space; empty data when there's nothing to show. */
   'render.thumbnails': { args: { key: string; nodes: NodeId[]; size: number }; result: Record<NodeId, Thumbnail | null> }
   /** The whole document, small, as an sRGB PNG, for thumbnail.png and preview.png in a .pxll. */
@@ -193,12 +198,15 @@ export interface EngineCalls extends SelectCalls, ClipCalls, FillCalls, SelectIm
    * document) run on it for good, through the selection if there is one:
    * the Filter menu applied, or a layer's live filters baked in.
    */
-  'render.bake': { args: { key: string; node: NodeId; effects: DocNode[]; selection: string | null }; result: string | null }
+  'render.bake': { args: { key: string; node: NodeId; effects: DocNode[]; selection: string | null; job?: string }; result: string | null }
   /** The document's histogram, 256 levels a channel in its own terms (CMYK as ink), from the composite at no more than about 4 megapixels. */
   'render.histogram': { args: { key: string }; result: number[][] }
-  /** The checks' probes into the GPU, against the CPU references (render/probe.ts). */
+  /** The checks' probes into the GPU, against the CPU references (checks/probe.ts). */
   'test.probe': { args: { kind: string; [k: string]: unknown }; result: unknown }
 }
+
+/** A call on the wire: each method with its own arguments, so a message can't pair one with another's. */
+export type CallMessage = { [M in keyof EngineCalls]: { method: M; args: EngineCalls[M]['args'] } }[keyof EngineCalls]
 
 export interface Thumbnail {
   width: number
@@ -260,8 +268,11 @@ export type FromEngine =
   | { type: 'frame'; count: number; width: number; height: number; zoom: number | null; rendered: number; pending: number; ms: number; level: number | null }
   /** A stroke couldn't start, and why. */
   | { type: 'stroke.refused'; id: number; reason: string }
+  /** How far a long job has got, 0..1, or null when that isn't known (engine/jobs.ts). */
+  | { type: 'progress'; job: string; fraction: number | null }
   /** Something went wrong that the page should show, and the engine carried on. */
   | { type: 'error'; message: string }
   /** The answer to a call. */
   | { type: 'reply'; id: number; ok: true; value: unknown }
-  | { type: 'reply'; id: number; ok: false; error: string }
+  /** A call that failed: its error's message, and its name (QuotaExceededError, say), so the page can tell kinds apart. */
+  | { type: 'reply'; id: number; ok: false; error: string; name: string }

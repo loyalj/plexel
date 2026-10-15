@@ -14,11 +14,12 @@
  */
 import { setTiles } from '../doc/edit'
 import { engine } from '../engine/EngineHost'
-import { lassoGesture, type Gesture, type Pointer } from './canvasTools'
+import { lassoGesture, registerTool, type Gesture, type Pointer } from './canvasTools'
 import { documents, type OpenDoc } from './documents'
 import { notify } from './notices'
 import { clearToolOverlay, setToolOverlay } from './overlay'
 import { pixelTarget } from './selection'
+import { Listeners } from '../lib/listeners'
 
 export interface SourceSettings {
   /** The offset from the first stroke holds for the strokes after it. */
@@ -54,12 +55,11 @@ class RetouchStore {
   private source: { key: string; x: number; y: number } | null = null
   /** Aligned: the offset the first stroke after setting the source made. */
   private offset: [number, number] | null = null
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
 
   get = () => this.state
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => void this.listeners.delete(fn)
+    return this.changes.subscribe(fn)
   }
 
   update(tool: 'clone' | 'heal', patch: Partial<SourceSettings>) {
@@ -69,7 +69,7 @@ class RetouchStore {
     } catch {
       // Kept for this visit only.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   /** Alt-click: where to copy from. */
@@ -97,7 +97,7 @@ let store: RetouchStore | null = null
 export const retouch = () => (store ??= new RetouchStore())
 
 /** The source shown as a cross on the canvas, until something else draws there. */
-export function showSource(key: string, x: number, y: number) {
+function showSource(key: string, x: number, y: number) {
   const r = 7
   setToolOverlay(key, {
     shapes: [
@@ -113,7 +113,7 @@ export function showSource(key: string, x: number, y: number) {
  * A press with the Patch tool: inside the selection, a drag to where the
  * repair comes from; anywhere else, a Lasso round what to repair.
  */
-export async function patchPress(d: OpenDoc, p0: Pointer): Promise<Gesture | null> {
+async function patchPress(d: OpenDoc, p0: Pointer): Promise<Gesture | null> {
   const sel = d.history.present.selection?.tiles
   if (sel && (await engine().call('select.at', { set: sel, x: p0.x, y: p0.y })) >= 0.5) {
     const b = await engine().call('select.bounds', { set: sel })
@@ -167,3 +167,6 @@ async function patch(d: OpenDoc, selection: string, offset: [number, number]) {
     notify('error', 'Patch didn’t work.', [e instanceof Error ? e.message : String(e)])
   }
 }
+
+// The Patch tool's press, in the tools' registry (app/canvasTools.ts).
+registerTool('patch', (d, p) => patchPress(d, p))

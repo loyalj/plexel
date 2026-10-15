@@ -17,8 +17,14 @@
  * pixels, smart objects, shapes and text alike, shapes and text as
  * outlines. The session works in the unit square of the box it started
  * on, so a layer already warped is picked up where it was left.
+ *
+ * With several layers selected, the box is round all of them and the
+ * change is the same for each (scale, skew, move, turn; no warp). The
+ * transform controls (app/transformControls.ts) open a session for one
+ * drag of a handle and commit it when the pointer lifts.
  */
-import { compose, invertAffine, moveEffect, removeNode, setParams, transformNode, updateNode, addEffect } from '../doc/edit'
+import { compose, invertAffine, moveEffect, removeNode, setAppearance, setParams, transformNode, updateNode, addEffect } from '../doc/edit'
+import { moveTool } from './moveTool'
 import { makeNode } from '../doc/nodes'
 import type { Affine, Doc, DocNode, NodeId } from '../doc/types'
 import { engine } from '../engine/EngineHost'
@@ -49,7 +55,7 @@ import {
 } from '../geom/warp'
 import type { OverlayShape } from '../render/overlay'
 import { apply } from '../render/view'
-import { GRAB, cantMove, dist, sessions, snapped, toDevice, transformBox, type Gesture, type Pointer, type Session } from './canvasTools'
+import { GRAB, cantMove, dist, movable, sessions, snapped, toDevice, transformBox, type Gesture, type Pointer, type Session } from './canvasTools'
 import { documents, newId, type OpenDoc } from './documents'
 import { notify } from './notices'
 import { setToolOverlay } from './overlay'
@@ -123,18 +129,15 @@ const UNIT: Pt[] = [
   [1, 1],
   [0, 1],
 ]
-export const scaleAbout = (ax: number, ay: number, sx: number, sy: number): Affine => [sx, 0, 0, sy, ax - sx * ax, ay - sy * ay]
-export const rotateAbout = (cx: number, cy: number, a: number): Affine => {
-  const c = Math.cos(a)
-  const s = Math.sin(a)
-  return [c, s, -s, c, cx - c * cx + s * cy, cy - s * cx - c * cy]
-}
+const scaleAbout = (ax: number, ay: number, sx: number, sy: number): Affine => [sx, 0, 0, sy, ax - sx * ax, ay - sy * ay]
+import { rotateAbout } from '../geom/affine'
+
 
 /** A warp effect's settings: the frame it was made on, its corners in the node's own coordinates, the choice and mesh. */
 export type WarpParams = Record<string, unknown>
 
 /** The first Warp effect on a node, if it has one. */
-export function warpEffectOf(doc: Doc, id: NodeId): DocNode | null {
+function warpEffectOf(doc: Doc, id: NodeId): DocNode | null {
   for (const e of doc.nodes[id]?.effects ?? []) {
     const n = doc.nodes[e]
     if (n?.kind === 'filter' && n.props.filter === 'warp') return n
@@ -147,7 +150,7 @@ export function warpEffectOf(doc: Doc, id: NodeId): DocNode | null {
  * (as `effectId`) when it has none, its settings and name changed when it
  * has, taken off when `params` is null.
  */
-export function withWarp(doc: Doc, id: NodeId, params: WarpParams | null, name: string, effectId: NodeId): Doc {
+function withWarp(doc: Doc, id: NodeId, params: WarpParams | null, name: string, effectId: NodeId): Doc {
   const have = warpEffectOf(doc, id)
   if (!params) return have ? removeNode(doc, have.id) : doc
   if (have) return updateNode(setParams(doc, have.id, params), have.id, (n) => (n.name === name ? n : ({ ...n, name } as DocNode)))
@@ -167,23 +170,63 @@ interface TransformTarget {
 }
 
 /**
- * Starts Free Transform on the selected layer, in `mode`; with one already
- * open, changes its mode.
+ * With Scale Strokes off, the strokes of shapes under `ids` (themselves,
+ * or inside them) made narrower by as much as `m` scales them, so they
+ * look as wide as before: widths, dashes and the dash offset.
  */
-export async function beginFreeTransform(mode: TransformMode = 'free') {
+function keepStrokes(doc: Doc, ids: NodeId[], m: Affine): Doc {
+  if (moveTool().get().scaleStrokes) return doc
+  const s = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]))
+  if (!(s > 1e-9) || Math.abs(s - 1) < 1e-9) return doc
+  let out = doc
+  const visit = (id: NodeId) => {
+    const n = out.nodes[id]
+    if (!n) return
+    if ((n.kind === 'vector' || n.kind === 'boolean' || n.kind === 'text') && n.props.appearance.some((a) => a.kind === 'stroke')) {
+      out = setAppearance(out, id, n.props.appearance.map((a) => (a.kind === 'stroke' ? { ...a, width: a.width / s, dash: a.dash.map((d) => d / s), dashOffset: a.dashOffset / s } : a)))
+    }
+    for (const c of n.children ?? []) visit(c)
+  }
+  for (const id of ids) visit(id)
+  return out
+}
+
+/** Says why a transform can't start; no gesture. */
+function refuse(why: string): null {
+  notify('info', why)
+  return null
+}
+
+/** A Free Transform for one drag (the transform controls): the press it starts with, the gesture it makes. */
+export interface OneDrag {
+  press: Pointer
+}
+
+/**
+ * Starts Free Transform on the selected layers, in `mode`; with one
+ * already open, changes its mode. With `once`, it's for the one drag
+ * that press starts, committed when the pointer lifts: the gesture is
+ * returned.
+ */
+export async function beginFreeTransform(mode: TransformMode = 'free', once?: OneDrag): Promise<Gesture | null> {
   const d = documents().active()
-  if (!d) return
+  if (!d) return null
   const open = sessions().get()
-  if (open?.kind === 'transform' && open.key === d.key) return transformUi().set({ mode })
+  if (!once && open?.kind === 'transform' && open.key === d.key) {
+    transformUi().set({ mode })
+    return null
+  }
   const doc = d.history.present
+  const ids = movable(d, true)
+  if (ids.length > 1) return beginMany(d, ids, mode, once)
   // With a layer's effect selected (its Warp, say), the layer.
   const node = filterTarget(d)
-  if (!node) return notify('info', 'Select a layer to transform.')
+  if (!node) return refuse('Select a layer to transform.')
   const why = cantMove(node)
-  if (why) return notify('info', why)
+  if (why) return refuse(why)
   // A layer, its own coordinates the frame, can warp; a group can't (convert it to a smart object first).
   const warps = node.kind !== 'group' && node.kind !== 'adjustment' && node.kind !== 'fill'
-  if (mode !== 'free' && !warps) return notify('info', `${node.kind === 'fill' ? 'A fill layer has no edge to' : 'Distort, Perspective and Warp work on a layer, not a group:'} ${node.kind === 'fill' ? 'warp' : 'convert it to a smart object first'}.`)
+  if (mode !== 'free' && !warps) return refuse(`${node.kind === 'fill' ? 'A fill layer has no edge to' : 'Distort, Perspective and Warp work on a layer, not a group:'} ${node.kind === 'fill' ? 'warp' : 'convert it to a smart object first'}.`)
   // Picked up where it was left: a warp already on the layer gives the session its frame, corners and mesh.
   const have = warps ? warpEffectOf(doc, node.id) : null
   let frame: Affine
@@ -204,7 +247,7 @@ export async function beginFreeTransform(mode: TransformMode = 'free') {
     }
   } else {
     const fb = await transformBox(doc, node)
-    if (!fb) return notify('info', `“${node.name}” has nothing in it to transform.`)
+    if (!fb) return refuse(`“${node.name}” has nothing in it to transform.`)
     // A compound's box is in the document; a warp is in its own coordinates, as everything else's is.
     const own = warps && node.kind === 'boolean' ? compose(invertAffine(node.transform), compose(fb.frame, boxFrame(fb.box) as Affine)) : (boxFrame(fb.box) as Affine)
     frame = warps && node.kind === 'boolean' ? compose(node.transform, own) : compose(fb.frame, own)
@@ -219,21 +262,99 @@ export async function beginFreeTransform(mode: TransformMode = 'free') {
     if (flat && !bent) return null
     return { style: bent ? w.style : 'none', bend: w.bend, horizontal: w.horizontal, vertical: w.vertical, orient: w.orient, frame: own, corners: local(corners), mesh: bent && w.style === 'custom' ? mesh : null }
   }
-  sessions().start(
+  return startSession(
     transformSession(
       d,
       frame,
       {
-        preview: (m, warp, name) => previewDoc(d.key, withWarp(transformNode(doc, node.id, m), node.id, warp, name, effectId)),
+        preview: (m, warp, name) => previewDoc(d.key, keepStrokes(withWarp(transformNode(doc, node.id, m), node.id, warp, name, effectId), [node.id], m)),
         commit: (m, warp, name, label) => {
           unpreview(d.key)
-          documents().commit((x) => withWarp(transformNode(x, node.id, m), node.id, warp, name, effectId), { key: d.key, label })
+          documents().commit((x) => keepStrokes(withWarp(transformNode(x, node.id, m), node.id, warp, name, effectId), [node.id], m), { key: d.key, label })
         },
         cancel: () => unpreview(d.key),
         moving: [node.id],
       },
       { warps, mode, start, params },
     ),
+    once,
+  )
+}
+
+/** Opens a session, or for one drag, opens it, hands it the press and commits it when the drag ends. */
+function startSession(s: Session, once?: OneDrag): Gesture | null {
+  sessions().start(s)
+  if (!once) return null
+  const g = s.down(once.press)
+  if (!g) {
+    sessions().end(true)
+    return null
+  }
+  return {
+    move: (p) => g.move(p),
+    up(p) {
+      g.up(p)
+      if (sessions().get() !== s) return
+      s.commit()
+      sessions().end(false)
+    },
+    cancel() {
+      g.cancel()
+      if (sessions().get() === s) sessions().end(true)
+    },
+  }
+}
+
+/**
+ * The box round several layers, in the document: each one's box through
+ * its transform, all their corners together. Null when none has anything
+ * in it.
+ */
+export async function boxOfLayers(doc: Doc, ids: NodeId[]): Promise<[number, number, number, number] | null> {
+  const pts: Pt[] = []
+  for (const id of ids) {
+    const n = doc.nodes[id]
+    const fb = n ? await transformBox(doc, n) : null
+    if (!fb) continue
+    const [x0, y0, x1, y1] = fb.box
+    for (const [x, y] of [
+      [x0, y0],
+      [x1, y0],
+      [x1, y1],
+      [x0, y1],
+    ])
+      pts.push(apply(fb.frame, x, y) as Pt)
+  }
+  return pts.length ? boxOf(pts) : null
+}
+
+/** Free Transform on several layers: one box round them all, the same change for each; no warps. */
+async function beginMany(d: OpenDoc, ids: NodeId[], mode: TransformMode, once?: OneDrag): Promise<Gesture | null> {
+  if (mode !== 'free') return refuse('Distort, Perspective and Warp work on one layer at a time. Select one layer.')
+  const doc = d.history.present
+  for (const id of ids) {
+    const why = cantMove(doc.nodes[id])
+    if (why) return refuse(why)
+  }
+  const box = await boxOfLayers(doc, ids)
+  if (!box) return refuse('The selected layers have nothing in them to transform.')
+  const all = (x: Doc, m: Affine) => keepStrokes(ids.reduce((y, id) => (y.nodes[id] ? transformNode(y, id, m) : y), x), ids, m)
+  return startSession(
+    transformSession(
+      d,
+      boxFrame(box) as Affine,
+      {
+        preview: (m) => previewDoc(d.key, all(doc, m)),
+        commit: (m, _w, _n, label) => {
+          unpreview(d.key)
+          documents().commit((x) => all(x, m), { key: d.key, label })
+        },
+        cancel: () => unpreview(d.key),
+        moving: ids,
+      },
+      { warps: false, mode: 'free' },
+    ),
+    once,
   )
 }
 

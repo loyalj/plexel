@@ -21,6 +21,7 @@ import { removeJournalDoc, restoreSession, writeJournalDoc, writeSession, type J
 import { dropLostSets, tileSetsOf } from '../doc/edit'
 import type { Doc } from '../doc/types'
 import type { AssetStore } from '../io/assets'
+import { Listeners } from '../lib/listeners'
 
 /**
  * The tile sets' side of the journal, which lives in the engine worker
@@ -33,7 +34,7 @@ export interface PixelJournal {
   collect(live: string[]): Promise<unknown>
 }
 
-export const AUTOSAVE_MS = 400
+const AUTOSAVE_MS = 400
 
 export type AutosaveStatus = { state: 'idle' | 'pending' | 'writing' } | { state: 'failed'; reason: string } | { state: 'unavailable'; reason: string }
 
@@ -43,7 +44,7 @@ export class Autosave {
   private running: Promise<void> | null = null
   private again = false
   private statusValue: AutosaveStatus = { state: 'idle' }
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   private unsubscribe: (() => void) | null = null
 
   private profilesWritten = new Set<string>()
@@ -60,15 +61,12 @@ export class Autosave {
 
   status = () => this.statusValue
   onStatus = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
   private setStatus(s: AutosaveStatus) {
     if (this.statusValue.state === 'unavailable') return
     this.statusValue = s
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   /** Reads what the last visit left, then starts watching. Restored documents count as already written. */
@@ -207,7 +205,8 @@ export class Autosave {
       this.setStatus({ state: 'idle' })
     } catch (e) {
       const reason =
-        e instanceof DOMException && e.name === 'QuotaExceededError'
+        // By name: storage full in the engine (journalling pixels) arrives as an Error so named, not a DOMException.
+        e instanceof Error && e.name === 'QuotaExceededError'
           ? 'The browser’s storage for this page is full, so unsaved changes aren’t being kept. Save your documents to files.'
           : `Unsaved changes couldn’t be kept: ${e instanceof Error ? e.message : String(e)}`
       this.setStatus({ state: 'failed', reason })

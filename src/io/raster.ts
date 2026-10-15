@@ -1,7 +1,7 @@
 /**
  * A decoded image, whatever file it came from, and turning one into tiles.
  *
- * Every decoder (png.ts, tiff.ts, and the browser for JPEG's pixels) hands
+ * Every decoder (png.ts, tiff.ts, and the browser for JPEG's and WebP's pixels) hands
  * back a Raster: interleaved samples in the image's own mode and depth,
  * alpha last, with its ICC profile if it had one. `rasterToSet` then puts
  * it into the tile store in a document's format, converting depth and,
@@ -13,6 +13,7 @@ import type { SetId, TileId, TileStore } from '../tiles/store'
 import { decodePng, isPng } from './png'
 import { decodeTiff, isTiff } from './tiff'
 import { isJpeg } from './jpeg'
+import { isWebp } from './webp'
 
 export interface Raster {
   width: number
@@ -27,13 +28,14 @@ export interface Raster {
   warnings: string[]
 }
 
-export type ImageKind = 'png' | 'jpeg' | 'tiff'
+export type ImageKind = 'png' | 'jpeg' | 'tiff' | 'webp'
 
 /** The image file types Plexel opens, for pickers and drops. */
 export const IMAGE_TYPES: Record<ImageKind, { mime: string; extensions: string[] }> = {
   png: { mime: 'image/png', extensions: ['.png'] },
   jpeg: { mime: 'image/jpeg', extensions: ['.jpg', '.jpeg', '.jpe'] },
   tiff: { mime: 'image/tiff', extensions: ['.tif', '.tiff'] },
+  webp: { mime: 'image/webp', extensions: ['.webp'] },
 }
 
 /** What a file is, from its first bytes; the name is only a fallback. */
@@ -41,6 +43,7 @@ export function sniff(bytes: Uint8Array, name = ''): ImageKind | null {
   if (isPng(bytes)) return 'png'
   if (isJpeg(bytes)) return 'jpeg'
   if (isTiff(bytes)) return 'tiff'
+  if (isWebp(bytes)) return 'webp'
   const lower = name.toLowerCase()
   for (const [k, t] of Object.entries(IMAGE_TYPES)) if (t.extensions.some((e) => lower.endsWith(e))) return k as ImageKind
   return null
@@ -48,12 +51,19 @@ export function sniff(bytes: Uint8Array, name = ''): ImageKind | null {
 
 export const isImageName = (name: string) => Object.values(IMAGE_TYPES).some((t) => t.extensions.some((e) => name.toLowerCase().endsWith(e)))
 
-export async function decodeImage(bytes: Uint8Array, name: string, jpeg: (bytes: Uint8Array) => Promise<Raster>): Promise<Raster> {
+/** The decoders that need the browser: JPEG's (except CMYK) and WebP's. */
+export interface BrowserDecoders {
+  jpeg(bytes: Uint8Array): Promise<Raster>
+  webp(bytes: Uint8Array): Promise<Raster>
+}
+
+export async function decodeImage(bytes: Uint8Array, name: string, browser: BrowserDecoders): Promise<Raster> {
   const kind = sniff(bytes, name)
   if (kind === 'png') return decodePng(bytes)
   if (kind === 'tiff') return decodeTiff(bytes)
-  if (kind === 'jpeg') return jpeg(bytes)
-  throw new Error('This isn’t an image Plexel can open: PNG, JPEG and TIFF are.')
+  if (kind === 'jpeg') return browser.jpeg(bytes)
+  if (kind === 'webp') return browser.webp(bytes)
+  throw new Error('This isn’t an image Plexel can open: PNG, JPEG, WebP and TIFF are.')
 }
 
 /** Turns a batch of colours from one space into another: `count` colours in, channel after channel. */

@@ -7,38 +7,39 @@
  * pixel by pixel with ref/composite.ts, ref/blend.ts, ref/resample.ts and
  * color/lut.ts given the same samples. Loaded only when a check asks.
  */
+import { builtinBrushes } from '../vector/brushLibrary'
 import { BLEND_MODES, type BlendModeId, type ColourMode, type Depth, type DocNode, type LayerFx } from '../doc/types'
 import { makeNode } from '../doc/nodes'
 import { TILE, TILE_PIXELS, newSamples, planesOf, type Samples, type TileFormat } from '../tiles/format'
 import type { TileStore } from '../tiles/store'
 import { PLAIN_LOOK, displayRef, lutGamut, sampleLut, type Look } from '../color/lut'
 import { DEFAULT_LOOK } from '../color/proof'
-import { writeLutParams } from './shaders/display'
+import { writeLutParams } from '../render/shaders/display'
 import { cmykTablesFor } from '../engine/colourHost'
 import { lutFor, colour } from '../engine/colourHost'
-import type { Renderer } from './renderer'
-import { apply, clear, dissolve, tint, type Op, type Px } from './ref/composite'
+import type { Renderer } from '../render/renderer'
+import { apply, clear, dissolve, tint, type Op, type Px } from '../render/ref/composite'
 import { programFor, runProgram } from '../adjust/defs'
 import { FILTER_BY_ID, filterValues, type Region } from '../filters/defs'
 import { activeFx, fxValues } from '../fx/defs'
 import { fxLayers } from '../fx/ref'
-import { bakeEffects } from './readback'
-import { sample, type Filter } from './ref/resample'
-import { reduce, toWorking } from './ref/working'
-import { seedOf } from './graph'
-import type { SceneUpdate } from './scene'
-import { strideOf, tileBufferBytes, type Store } from './shaders/common'
-import { invert, multiply, type Matrix } from './view'
+import { bakeEffects } from '../render/readback'
+import { sample, type Filter } from '../render/ref/resample'
+import { reduce, toWorking } from '../render/ref/working'
+import { seedOf } from '../render/graph'
+import type { SceneUpdate } from '../render/scene'
+import { strideOf, tileBufferBytes, type Store } from '../render/shaders/common'
+import { invert, multiply, type Matrix } from '../render/view'
 import { DEFAULT_BRUSH, DEFAULT_DUAL, DEFAULT_TEXTURE, colourVaries, type BrushSettings } from '../brush/defs'
 import { toLayer } from '../brush/dab'
 import { dabColour } from '../brush/colour'
 import { strokeDabs, type PenSample } from '../brush/stroke'
 import { registerTip, tipFromBytes } from '../brush/tips'
 import { rng } from '../brush/rng'
-import { applyStroke, colourAt, coverageAt, layoutOf, newStrokeTile, stamp, styleOf } from './ref/paint'
-import { deposit, drain, newLoad, newSampleTile, pickUp, withSample, type SampleTile, type SampleTool } from './ref/sample'
-import type { StrokeSampling } from './strokes'
-import { fromWorking } from './ref/working'
+import { applyStroke, colourAt, coverageAt, layoutOf, newStrokeTile, stamp, styleOf } from '../render/ref/paint'
+import { deposit, drain, newLoad, newSampleTile, pickUp, withSample, type SampleTile, type SampleTool } from '../render/ref/sample'
+import type { StrokeSampling } from '../render/strokes'
+import { fromWorking } from '../render/ref/working'
 import { CoverReader, coverForTile, ellipsePoints, feather, rasterizePolygon } from '../tiles/coverage'
 import { fillItem, gradientPaint, paintIn, solid, strokeItem, type AppearanceItem, type Geometry, type GradientType, type Paint } from '../doc/vector'
 import { fillSegments, rasterRegion, regionSegments } from '../geom/raster'
@@ -49,8 +50,8 @@ import { contentFrom } from '../doc/text'
 import { levelMatrix, vectorOutline, FLATTEN_TOL } from '../vector/outline'
 import { paintAt, paintParams, patternLevels, type PatternImage } from '../vector/paint'
 import { patternPixels } from '../tiles/patterns'
-import type { SceneDoc } from './scene'
-import { NotReady } from './residency'
+import type { SceneDoc } from '../render/scene'
+import { NotReady } from '../render/residency'
 import { shapeOf } from '../vector/shape'
 
 let seed = 99
@@ -422,7 +423,7 @@ async function paintProbe(r: Renderer, tiles: TileStore, mode: ColourMode, depth
   // A selection with a soft edge that the stroke crosses: an ellipse, feathered.
   const selection = await feather(tiles, rasterizePolygon(tiles, ellipsePoints(240, 130, 150, 70), 480, 300), 16, 480, 300)
   const selReader = new CoverReader(tiles, selection)
-  const cases: { name: string; settings: BrushSettings; eraser: boolean; t: number[]; selection?: boolean }[] = [
+  const cases: { name: string; settings: BrushSettings; eraser: boolean; t: number[]; selection?: boolean; planes?: boolean[] }[] = [
     { name: 'a hard round brush', settings: brush({ hardness: 1 }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
     { name: 'a soft one at 40% flow, 70% opacity', settings: brush({ hardness: 0, flow: 0.4, opacity: 0.7 }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
     { name: 'Multiply', settings: brush({ mode: 'multiply' }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
@@ -440,6 +441,8 @@ async function paintProbe(r: Renderer, tiles: TileStore, mode: ColourMode, depth
     { name: 'Noise and Wet Edges, soft', settings: brush({ hardness: 0.2, noise: true, wetEdges: true, flow: 0.6 }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
     { name: 'hue, saturation and brightness jitter, per tip', settings: brush({ hueJitter: 0.4, saturationJitter: 0.5, brightnessJitter: 0.3, spacing: 0.3 }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
     { name: 'a dual brush and a stroke-wide texture, with colour', settings: brush({ colourJitter: 0.6, dual: { ...DEFAULT_DUAL, mode: 'overlay' }, texture: { ...DEFAULT_TEXTURE, id: 'burlap', depth: 0.5, mode: 'linear-burn' } }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
+    // The Channels panel's target: the first colour channel alone (the last, in Gray), the rest kept.
+    { name: 'on some colour channels only, soft, in Multiply', settings: brush({ hardness: 0.3, mode: 'multiply', colourJitter: 0.5 }), eraser: false, t: [1, 0, 0, 1, 0, 0], planes: Array.from({ length: COLOURS[mode] }, (_, i) => i === 0 || i === 2) },
   ]
   const out = []
   for (const [i, c] of cases.entries()) {
@@ -451,7 +454,7 @@ async function paintProbe(r: Renderer, tiles: TileStore, mode: ColourMode, depth
     r.updateScene(key, { doc: { ...docOf(f, 'root'), width: 480, height: 300 }, nodes: [root, node].map((x) => ({ node: x, version: version++ })), removed: [], reset: true })
     const seed = 1234 + i
     const id = 900000 + i
-    const why = r.beginStroke({ id, key, node: 'p', settings: c.settings, eraser: c.eraser, seed, fg, bg, selection: c.selection ? selection : null })
+    const why = r.beginStroke({ id, key, node: 'p', settings: c.settings, eraser: c.eraser, seed, fg, bg, selection: c.selection ? selection : null, ...(c.planes ? { planes: c.planes } : {}) })
     if (why) throw new Error(why)
     r.addSamples(id, samples)
     const { set: result } = await r.endStroke(id)
@@ -486,7 +489,7 @@ async function paintProbe(r: Renderer, tiles: TileStore, mode: ColourMode, depth
         // The selection under this layer pixel's centre, through the layer's transform.
         const k = selCover ? selCover[p] : 1
         const colour = layout.channels ? colourAt(st, p) : fgw
-        const want = fromWorking(mode, applyStroke(L, coverageAt(st, p) * k, colour, c.settings.mode, c.eraser)).map((v) => Math.round(v * max))
+        const want = fromWorking(mode, applyStroke(L, coverageAt(st, p) * k, colour, c.settings.mode, c.eraser, c.planes)).map((v) => Math.round(v * max))
         for (let q = 0; q < planes; q++) {
           // A pixel left fully transparent stores its colour as nothing.
           if (want[planes - 1] === 0 && q < planes - 1) continue
@@ -648,7 +651,7 @@ const PROBE_TIP = (() => {
 // --- adjustments and live filters ---------------------------------------------------------
 
 /** Settings to try each adjustment with: away from their defaults, so every part of each is used. */
-export const ADJUST_CASES: [string, string, Record<string, unknown>][] = [
+const ADJUST_CASES: [string, string, Record<string, unknown>][] = [
   ['levels', 'Levels', { levels: { master: { inBlack: 0.1, inWhite: 0.9, gamma: 1.4, outBlack: 0.05, outWhite: 0.95 }, red: { inBlack: 0, inWhite: 1, gamma: 0.7, outBlack: 0, outWhite: 1 }, cyan: { inBlack: 0.2, inWhite: 1, gamma: 1, outBlack: 0, outWhite: 1 } } }],
   ['curves', 'Curves', { curves: { master: [[0, 0], [0.25, 0.15], [0.75, 0.9], [1, 1]], green: [[0, 0.1], [1, 0.8]], magenta: [[0, 0], [0.5, 0.7], [1, 1]] } }],
   ['brightness-contrast', 'Brightness/Contrast', { brightness: 40, contrast: 30 }],
@@ -736,7 +739,7 @@ const probeField = (() => {
 })()
 
 /** Each filter's id, a name for it, its settings, and (for warps, read through a grid) how near it must come. */
-export const FILTER_CASES: [string, string, Record<string, unknown>, number?, number?][] = [
+const FILTER_CASES: [string, string, Record<string, unknown>, number?, number?][] = [
   ['gaussian-blur', 'Gaussian Blur, 6 px', { radius: 6 }],
   ['box-blur', 'Box Blur, 5 px', { radius: 5 }],
   ['unsharp-mask', 'Unsharp Mask', { amount: 150, radius: 3, threshold: 4 }],
@@ -863,7 +866,7 @@ async function renderMiddle(r: Renderer, f: TileFormat, key: string, nodes: DocN
 }
 
 /** Settings to try the layer effects with, alone and together. */
-export const FX_CASES: { name: string; fx: LayerFx[]; opacity?: number; fill?: number; blend?: BlendModeId }[] = [
+const FX_CASES: { name: string; fx: LayerFx[]; opacity?: number; fill?: number; blend?: BlendModeId }[] = [
   { name: 'Drop Shadow', fx: [{ kind: 'drop-shadow', enabled: true, params: { distance: 12, size: 10, spread: 20 } }] },
   { name: 'Outer Glow', fx: [{ kind: 'outer-glow', enabled: true, params: { size: 12, spread: 10 } }] },
   { name: 'Inner Shadow', fx: [{ kind: 'inner-shadow', enabled: true, params: { distance: 6, size: 8 } }] },
@@ -988,6 +991,10 @@ function vectorCases(mode: ColourMode): { name: string; nodes: (root: DocNode) =
       nodes: () => [shape(star, [fillItem(solid(pale)), stroke(solid(blue), 14, { blend: 'multiply', opacity: 0.7 })])],
     },
     { name: 'a stroke inside, round joins', nodes: () => [shape(star, [stroke(solid(red), 16, { align: 'inside', join: 'round' })])] },
+    // Vector brushes: parts in their own paints, laid on together at the stroke's opacity.
+    { name: 'an art brush of three colours round an ellipse, at 70%', nodes: () => [shape(ellipse, [stroke(solid(blue), 30, { opacity: 0.7, brush: builtinBrushes(mode).find((b) => b.id === 'builtin:ribbon') })])] },
+    { name: 'a pattern brush with corner tiles round a turned rectangle', nodes: () => [shape(rect, [stroke(solid(red), 24, { brush: builtinBrushes(mode).find((b) => b.id === 'builtin:railroad') })], turn(0.2))] },
+    { name: 'a scatter brush along a line', nodes: () => [shape({ kind: 'shape', shape: { type: 'line', x1: 240, y1: 300, x2: 540, y2: 470 } }, [stroke(solid(blue), 48, { brush: builtinBrushes(mode).find((b) => b.id === 'builtin:stars') })])] },
     { name: 'a stroke outside, bevelled, with a gradient', nodes: () => [shape(rect, [stroke(grad('linear', { angle: 0 }), 18, { align: 'outside', join: 'bevel' })], turn(0.25))] },
     {
       name: 'a dashed line with round caps',
@@ -1115,11 +1122,16 @@ async function vectorProbe(r: Renderer, tiles: TileStore, mode: ColourMode, dept
     const x0 = TILE
     const y0 = TILE
     const toNode = multiply(invert(levelMatrix(shape.transform, 0) as Matrix), [1, 0, 0, 1, x0, y0])
-    const layers = outline.items.map((it) => {
+    const coverOf = (segs: number[], rule: 'nonzero' | 'evenodd') => {
       const local: number[] = []
       const rows = new Float64Array(TILE)
-      regionSegments(it.segs, x0, y0, TILE, TILE, local, rows)
-      const cov = rasterRegion(local, TILE, TILE, it.rule, rows)
+      regionSegments(segs, x0, y0, TILE, TILE, local, rows)
+      return rasterRegion(local, TILE, TILE, rule, rows)
+    }
+    const layers = outline.items.map((it) => {
+      // A brush stroke's parts, each its coverage and paint, laid over one another before the item is.
+      const parts = it.parts?.map((p) => ({ cov: coverOf(p.segs, p.rule), p: paintParams(p.paint, mode, toNode, outline.pathBox, patterns) }))
+      const cov = coverOf(it.segs, it.rule)
       if (it.clip) {
         const cl: number[] = []
         const clRows = new Float64Array(TILE)
@@ -1127,16 +1139,27 @@ async function vectorProbe(r: Renderer, tiles: TileStore, mode: ColourMode, dept
         const cc = rasterRegion(cl, TILE, TILE, it.clip.rule, clRows)
         for (let i = 0; i < cov.length; i++) cov[i] *= it.clip.mode === 'inside' ? cc[i] : 1 - cc[i]
       }
-      return { it, cov, p: paintParams(it.item.paint, mode, toNode, outline.pathBox, patterns) }
+      return { it, cov, parts, p: paintParams(it.item.paint, mode, toNode, outline.pathBox, patterns) }
     })
     const expect = (i: number): Px => {
       const o = ((TILE + Math.floor(i / TILE)) * SIZE + TILE + (i % TILE)) * S
       const d: Px = { c: Array.from(back.whole.data.subarray(o, o + n)), a: back.whole.data[o + n] }
       let acc = clear(n)
       for (const L of layers) {
-        const pt = paintAt(L.p, i % TILE, Math.floor(i / TILE))
-        const cv = L.cov[i]
-        acc = apply('over', acc, { c: pt.c.slice(0, n).map((x) => x * cv), a: pt.a * cv }, L.it.item.blend, L.it.item.opacity)
+        let px: Px
+        if (L.parts) {
+          px = clear(n)
+          for (const P of L.parts) {
+            const pt = paintAt(P.p, i % TILE, Math.floor(i / TILE))
+            const cv = P.cov[i]
+            px = apply('over', px, { c: pt.c.slice(0, n).map((x) => x * cv), a: pt.a * cv }, 'normal', 1)
+          }
+        } else {
+          const pt = paintAt(L.p, i % TILE, Math.floor(i / TILE))
+          const cv = L.cov[i]
+          px = { c: pt.c.slice(0, n).map((x) => x * cv), a: pt.a * cv }
+        }
+        acc = apply('over', acc, px, L.it.item.blend, L.it.item.opacity)
       }
       return apply('over', d, acc, v.blend, v.opacity)
     }

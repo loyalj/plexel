@@ -17,7 +17,9 @@ import { addGuides, clearGuides, layoutGuides, type GuideLayout } from '../doc/g
 import type { Doc } from '../doc/types'
 import { fromPixels, type Unit } from '../doc/units'
 import { Dialog } from './Dialog'
+import { HexColourChip } from './ColourChip'
 import { Field, Footer, UnitSelect, parseNumber } from './docDialogs'
+import { Hint } from './controls'
 
 /** A length typed in `unit` as document pixels, unrounded. */
 const toPx = (v: number, unit: Unit, ppi: number) => (unit === 'px' ? v : v / fromPixels(1, unit, ppi))
@@ -67,7 +69,6 @@ export function NewGuideDialog({ doc, onClose }: { doc: Doc; onClose(): void }) 
             <input id="guide-at" inputMode="decimal" value={at} onChange={(e) => setAt(e.target.value)} autoFocus onFocus={(e) => e.target.select()} />
             <UnitSelect id="guide-unit" value={unit} onChange={setUnit} />
           </div>
-          <span className="field-note">From the rulers’ zero point: {axis === 'x' ? 'across from the left' : 'down from the top'}.</span>
         </Field>
         <button type="submit" hidden />
       </form>
@@ -181,8 +182,8 @@ export function GuideLayoutDialog({ doc, onClose }: { doc: Doc; onClose(): void 
             {error}
           </span>
         ) : (
-          <p className="field-note">
-            {guides.length} guide{guides.length === 1 ? '' : 's'}. A width or height left empty shares the space out; one given is used as it is, and the columns are centred.
+          <p className="field-meta">
+            {guides.length} guide{guides.length === 1 ? '' : 's'} <Hint text="A width or height left empty shares the space out; one given is used as it is, and the columns are centred." />
           </p>
         )}
         <button type="submit" hidden />
@@ -198,7 +199,7 @@ export function GuideSettingsDialog({ onClose }: { onClose(): void }) {
   const everyError = numberError(every, 0.001, 100000)
   const colour = (id: string, label: string, k: 'guideColour' | 'gridColour' | 'smartColour') => (
     <Field id={id} label={label}>
-      <input id={id} type="color" value={p[k]} onChange={(e) => set({ [k]: e.target.value })} />
+      <HexColourChip id={id} value={p[k]} label={label} onChange={(v) => set({ [k]: v })} />
     </Field>
   )
   return (
@@ -257,6 +258,7 @@ export function GuideSettingsDialog({ onClose }: { onClose(): void }) {
               <input type="checkbox" checked={p.snap} data-pref="snap" onChange={(e) => set({ snap: e.target.checked })} />
               Snap to
             </label>
+            <Hint text="Guides and the grid snap only while they’re shown. Hold Ctrl while dragging to let go of snapping." />
           </legend>
           {SNAP_TARGETS.map((t) => (
             <label key={t.id} className="check pref-check">
@@ -264,7 +266,6 @@ export function GuideSettingsDialog({ onClose }: { onClose(): void }) {
               {t.label}
             </label>
           ))}
-          <span className="field-note">Guides and the grid snap only while they’re shown. Hold Ctrl while dragging to let go of snapping.</span>
         </fieldset>
       </div>
     </Dialog>

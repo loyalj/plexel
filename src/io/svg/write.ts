@@ -15,10 +15,15 @@
  *   the rest      embedded PNGs, each layer's opacity and blend mode kept
  */
 import type { NodeImage } from '../../engine/nodeImage'
+import { brushAsPaths, strokeAsPath } from '../../vector/outline'
+import { strokeNeedsOutline } from '../../doc/vector'
 import { flattenCount, asVector, groupAsGroup } from '../flat'
 import { geometryPath, type AppearanceItem, type Paint } from '../../doc/vector'
 import { glyphsToPath } from '../../geom/glyphs'
 import type { PathData } from '../../geom/path'
+import { n4, pathD } from './pathData'
+
+export { pathD }
 import { docPathOf } from '../../vector/shape'
 import type { ParamColour } from '../../doc/params'
 import { resolveChar, textLength } from '../../doc/text'
@@ -37,32 +42,8 @@ export interface SvgHost {
 }
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-const n4 = (v: number) => (Math.abs(v) < 1e-9 ? '0' : String(Math.round(v * 1000) / 1000))
 const matrix = (t: number[]) => (t[0] === 1 && t[1] === 0 && t[2] === 0 && t[3] === 1 && t[4] === 0 && t[5] === 0 ? '' : ` transform="matrix(${t.map(n4).join(' ')})"`)
 
-export function pathD(p: PathData): string {
-  let d = ''
-  for (const s of p.subpaths) {
-    const a = s.anchors
-    if (!a.length) continue
-    d += `M${n4(a[0].p[0])} ${n4(a[0].p[1])}`
-    const seg = (i: number, j: number) => {
-      const p0 = a[i]
-      const p1 = a[j]
-      if (p0.out || p1.in) {
-        const c1 = p0.out ?? p0.p
-        const c2 = p1.in ?? p1.p
-        d += `C${n4(c1[0])} ${n4(c1[1])} ${n4(c2[0])} ${n4(c2[1])} ${n4(p1.p[0])} ${n4(p1.p[1])}`
-      } else d += `L${n4(p1.p[0])} ${n4(p1.p[1])}`
-    }
-    for (let i = 0; i + 1 < a.length; i++) seg(i, i + 1)
-    if (s.closed) {
-      if (a.length > 1) seg(a.length - 1, 0)
-      d += 'Z'
-    }
-  }
-  return d
-}
 
 function base64(b: Uint8Array): string {
   let s = ''
@@ -127,6 +108,12 @@ export async function docToSvg(doc: Doc, host: SvgHost): Promise<{ svg: string; 
         out.push(`<use href="#${pid}" fill="${paint}"${it.opacity < 1 ? ` fill-opacity="${n4(it.opacity)}"` : ''}${path.fillRule === 'evenodd' ? ' fill-rule="evenodd"' : ''}/>`)
         continue
       }
+      if (it.brush) {
+        // A brush stroke: its artwork's parts, each filled in its paint, the stroke's opacity on them together.
+        const parts = brushAsPaths(path, it, doc.mode).map((p) => `<path d="${pathD(p.path)}" fill="${paintRef(p.paint, n, box)}"${p.path.fillRule === 'evenodd' ? ' fill-rule="evenodd"' : ''}/>`)
+        out.push(`<g${it.opacity < 1 ? ` opacity="${n4(it.opacity)}"` : ''}>${parts.join('')}</g>`)
+        continue
+      }
       // An inside stroke is one twice as wide clipped to the shape; an outside one, masked to all but the shape.
       const rule = path.fillRule === 'evenodd' ? 'evenodd' : 'nonzero'
       let cut = ''
@@ -144,6 +131,11 @@ export async function docToSvg(doc: Doc, host: SvgHost): Promise<{ svg: string; 
         cut = ` mask="url(#${mid})"`
       }
       const width = it.align === 'centre' ? it.width : it.width * 2
+      if (strokeNeedsOutline(it)) {
+        // A profile, arrowheads or dashes fitted to corners: the outline the stroke paints, filled.
+        out.push(`<path d="${pathD(strokeAsPath(path, it))}" fill="${paint}"${it.opacity < 1 ? ` fill-opacity="${n4(it.opacity)}"` : ''}${cut}/>`)
+        continue
+      }
       out.push(
         `<use href="#${pid}" fill="none" stroke="${paint}" stroke-width="${n4(width)}" stroke-linecap="${it.cap}" stroke-linejoin="${it.join}" stroke-miterlimit="${n4(it.miter)}"${it.dash.length ? ` stroke-dasharray="${it.dash.map(n4).join(' ')}" stroke-dashoffset="${n4(it.dashOffset)}"` : ''}${it.opacity < 1 ? ` stroke-opacity="${n4(it.opacity)}"` : ''}${cut}/>`,
       )

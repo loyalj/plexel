@@ -8,7 +8,7 @@
  * A drag on the opacity slider is one history step however many values it
  * passes through: each change is committed under the same coalescing key.
  */
-import { useState } from 'react'
+import { memo } from 'react'
 import type { OpenDoc } from '../app/documents'
 import { blendAllowed, nodeDef } from '../doc/nodes'
 import { profileLabel } from '../color/profiles'
@@ -28,6 +28,9 @@ import { PaintEditor, VectorProps } from './VectorProps'
 import { setFillLayerPaint } from '../app/fills'
 import { paintIn } from '../doc/vector'
 import type { Doc } from '../doc/types'
+import { Hint, Label, Segmented, SliderField } from './controls'
+import { isArtboard } from '../doc/artboards'
+import { ArtboardProps, InstanceProps } from './ArtboardProps'
 
 const MODE_NAMES = { rgb: 'RGB', gray: 'Gray', cmyk: 'CMYK' }
 
@@ -45,12 +48,16 @@ interface Props {
   onStyle(): void
 }
 
-export function PropertiesPanel({ doc, ...on }: Props) {
+/** What the panel asks for, the same functions every render (lib/stable.ts). */
+export type PropertyActions = Omit<Props, 'doc'>
+
+export const PropertiesPanel = memo(function PropertiesPanel({ doc, ...on }: Props) {
   const d = doc.history.present
   const node = doc.selected ? d.nodes[doc.selected] : null
   const mask = node && doc.maskTarget ? maskOf(doc) : null
   if (node && mask) return <MaskProps layer={node} mask={mask} />
   if (node?.kind === 'filter') return <FilterProps node={node} doc={d} docKey={doc.key} onOpacity={on.onOpacity} onBlend={on.onBlend} />
+  if (isArtboard(node)) return <ArtboardProps node={node} doc={d} docKey={doc.key} />
   if (node) return <LayerProps node={node} doc={d} docKey={doc.key} {...on} />
   const ppi = d.resolution
   const profile = profileLabel(d.profile)
@@ -76,13 +83,18 @@ export function PropertiesPanel({ doc, ...on }: Props) {
       <dd>{profile}</dd>
     </dl>
   )
-}
+})
 
 /** An adjustment's or a live filter's own settings, from its registry entry. */
 function NodeParams({ node, doc, docKey }: { node: DocNode; doc: Doc; docKey: string }) {
   if (node.kind !== 'adjustment' && node.kind !== 'filter') return null
   const def = node.kind === 'adjustment' ? ADJUSTMENT_BY_ID.get(node.props.adjustment) : FILTER_BY_ID.get(node.props.filter)
-  if (!def) return <p className="field-note">This kind of {node.kind === 'adjustment' ? 'adjustment' : 'filter'} isn’t known to this version of Plexel, so it does nothing here; its settings are kept.</p>
+  if (!def)
+    return (
+      <p className="field-empty">
+        Unknown {node.kind === 'adjustment' ? 'adjustment' : 'filter'} <Hint text="Not known to this version of Plexel, so it does nothing here; its settings are kept." />
+      </p>
+    )
   const values = readParamValues(def.params, node.props.params, doc.mode)
   if (!def.params.length) return null
   return <ParamControls defs={def.params} values={values} doc={doc} docKey={docKey} idPrefix={`props-${node.id}`} onChange={(v, key) => setNodeParams(node.id, v, `params:${node.id}:${key}`)} />
@@ -98,10 +110,12 @@ function FilterProps({ node, doc, docKey, onOpacity, onBlend }: { node: DocNode;
         <strong>{node.name}</strong>
         <span className="layer-kind">{layer ? 'Filter Layer' : 'Live Filter'}</span>
       </div>
-      <PercentField id="props-opacity" label="Opacity" title="How much of the filter is mixed in" value={node.opacity} onChange={(v) => onOpacity(node.id, v)} />
+      <PercentField id="props-opacity" label="Opacity" hint="How much of the filter is mixed in" value={node.opacity} onChange={(v) => onOpacity(node.id, v)} />
       {!layer && (
-        <div className="field" title="How the filtered result is laid over what the filter was given, as Photoshop's smart filters' blending options">
-          <label htmlFor="props-filter-blend">Blend mode</label>
+        <div className="field">
+          <Label htmlFor="props-filter-blend" hint="How the filtered result is laid over what the filter was given, as Photoshop's smart filters' blending options">
+            Blend mode
+          </Label>
           <select id="props-filter-blend" value={node.blend === 'pass-through' ? 'normal' : node.blend} onChange={(e) => onBlend(node.id, e.target.value as BlendModeId)}>
             {BLEND_DEFS.filter((b) => b.id !== 'pass-through').map((b) => (
               <option key={b.id} value={b.id}>
@@ -131,23 +145,18 @@ function MaskProps({ layer, mask }: { layer: DocNode; mask: DocNode & { kind: 'm
         <strong>{layer.name}</strong>
         <span className="layer-kind">{mask.props.source === 'vector' ? 'Vector Mask' : 'Layer Mask'}</span>
       </div>
-      <PercentField id="props-density" label="Density" title="How much the mask hides: at 50% its black hides half" value={mask.props.density} onChange={(v) => setMask({ density: v }, `density:${mask.id}`)} />
-      <div className="field" title="Softens the mask’s edges, live: the mask itself is unchanged">
-        <label htmlFor="props-feather">Feather</label>
-        <div className="slider-row">
-          <input id="props-feather" type="range" min={0} max={250} step={0.5} value={mask.props.feather} onChange={(e) => setMask({ feather: Number(e.target.value) }, `feather:${mask.id}`)} />
-          <span className="slider-number">{mask.props.feather}</span>
-          <span className="unit">px</span>
-        </div>
+      <PercentField id="props-density" label="Density" hint="How much the mask hides: at 50% its black hides half" value={mask.props.density} onChange={(v) => setMask({ density: v }, `density:${mask.id}`)} />
+      <SliderField id="props-feather" label="Feather" hint="Softens the mask’s edges, live: the mask itself is unchanged" min={0} max={250} step={0.5} unit="px" defaultValue={0} value={mask.props.feather} onChange={(v) => setMask({ feather: v }, `feather:${mask.id}`)} />
+      <div className="check-row">
+        <label className="check">
+          <input type="checkbox" checked={mask.props.invert} onChange={(e) => setMask({ invert: e.target.checked })} />
+          Invert
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={mask.visible} onChange={() => toggleMaskEnabled()} />
+          Enabled
+        </label>
       </div>
-      <label className="check">
-        <input type="checkbox" checked={mask.props.invert} onChange={(e) => setMask({ invert: e.target.checked })} />
-        Invert
-      </label>
-      <label className="check">
-        <input type="checkbox" checked={mask.visible} onChange={() => toggleMaskEnabled()} />
-        Enabled
-      </label>
       <div className="panel-tools">
         <button type="button" className="button small" disabled={layer.kind !== 'pixel' || mask.props.source !== 'pixel'} onClick={() => void applyLayerMask()}>
           Apply
@@ -174,7 +183,7 @@ function LayerProps({ node, doc, docKey, onOpacity, onFill, onBlend, onVisible, 
         <span className="layer-kind">{nodeDef(node.kind).label}</span>
       </div>
       <PercentField id="props-opacity" label="Opacity" value={node.opacity} onChange={(v) => onOpacity(node.id, v)} />
-      <PercentField id="props-fill" label="Fill" title="Opacity of the layer’s own content, leaving layer effects at full strength" value={node.fillOpacity} onChange={(v) => onFill(node.id, v)} />
+      <PercentField id="props-fill" label="Fill" hint="Opacity of the layer’s own content, leaving layer effects at full strength" value={node.fillOpacity} onChange={(v) => onFill(node.id, v)} />
       <div className="field">
         <label htmlFor="props-blend">Blend mode</label>
         <select id="props-blend" value={node.blend} onChange={(e) => onBlend(node.id, e.target.value as BlendModeId)}>
@@ -203,39 +212,33 @@ function LayerProps({ node, doc, docKey, onOpacity, onFill, onBlend, onVisible, 
         </div>
       )}
       {node.kind === 'group' && (
-        <div className="field">
-          <label htmlFor="props-knockout">Knockout</label>
-          <select id="props-knockout" value={node.props.knockout} onChange={(e) => onKnockout(node.id, e.target.value as KindProps['group']['knockout'])}>
-            {KNOCKOUT.map(([v, label]) => (
-              <option key={v} value={v}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </div>
+        <Segmented id="props-knockout" label="Knockout" hint="Layers in the group knock out what's under them: through to the layers below the group (Shallow) or to the bottom layer (Deep)" value={node.props.knockout} defaultValue="none" options={KNOCKOUT} onChange={(v) => onKnockout(node.id, v)} />
       )}
-      <label className="check">
-        <input type="checkbox" checked={node.visible} onChange={(e) => onVisible(node.id, e.target.checked)} />
-        Visible
-      </label>
-      <label className="check">
-        <input type="checkbox" checked={node.locked.all} onChange={(e) => onLockAll(node.id, e.target.checked)} />
-        Locked
-      </label>
-      <label className="check" title="Can’t be moved or transformed, but can still be painted">
-        <input type="checkbox" checked={node.locked.position} disabled={node.locked.all} onChange={(e) => onLockPosition(node.id, e.target.checked)} />
-        Lock position
-      </label>
+      <div className="check-row">
+        <label className="check">
+          <input type="checkbox" checked={node.visible} onChange={(e) => onVisible(node.id, e.target.checked)} />
+          Visible
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={node.locked.all} onChange={(e) => onLockAll(node.id, e.target.checked)} />
+          Locked
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={node.locked.position} disabled={node.locked.all} onChange={(e) => onLockPosition(node.id, e.target.checked)} />
+          Lock position
+          <Hint text="Can’t be moved or transformed, but can still be painted" />
+        </label>
+      </div>
       {node.kind === 'adjustment' && <NodeParams node={node} doc={doc} docKey={docKey} />}
       {(node.kind === 'vector' || node.kind === 'boolean' || node.kind === 'text') && <VectorProps node={node} doc={doc} />}
+      {node.kind === 'symbol' && <InstanceProps node={node} doc={doc} />}
       {node.kind === 'fill' && (
         <div className="props-fill" data-props="fill">
-          <PaintEditor id="props-fill" doc={doc} paint={paintIn(node.props.paint, doc.mode)} onChange={(paint, key) => setFillLayerPaint(node.id, paint, `fill-paint:${node.id}:${key}`)} />
-          <p className="field-note">A fill layer covers the whole canvas; paint its mask, or add one from a selection, to shape it.</p>
+          <PaintEditor id="props-fill" hint="A fill layer covers the whole canvas; paint its mask, or add one from a selection, to shape it." doc={doc} paint={paintIn(node.props.paint, doc.mode)} onChange={(paint, key) => setFillLayerPaint(node.id, paint, `fill-paint:${node.id}:${key}`)} />
         </div>
       )}
       {node.kind === 'embedded' && (
-        <button type="button" className="button small" onClick={editContents} title="Open the smart object’s contents in a tab of their own; Save there puts them back">
+        <button type="button" className="button small" onClick={editContents} data-tip="Opens the smart object’s contents in a tab of their own; Save there puts them back">
           Edit Contents
         </button>
       )}
@@ -249,7 +252,7 @@ function LayerProps({ node, doc, docKey, onOpacity, onFill, onBlend, onVisible, 
               ))}
             </ul>
           ) : (
-            <span className="field-note">None</span>
+            <span className="field-empty">None</span>
           )}
           <button type="button" className="button small" onClick={onStyle}>
             Layer Style…
@@ -277,36 +280,13 @@ const RESAMPLE: [KindProps['pixel']['resample'], string][] = [
   ['lanczos', 'Lanczos (sharpest)'],
 ]
 
-const KNOCKOUT: [KindProps['group']['knockout'], string][] = [
-  ['none', 'None'],
-  ['shallow', 'Shallow: to the layers below the group'],
-  ['deep', 'Deep: to the bottom layer'],
+const KNOCKOUT: [KindProps['group']['knockout'], string, string][] = [
+  ['none', 'None', 'No knockout'],
+  ['shallow', 'Shallow', 'Through to the layers below the group'],
+  ['deep', 'Deep', 'Through to the bottom layer'],
 ]
 
-/** A 0..1 value as a percentage: a slider and a typed number side by side. */
-function PercentField({ id, label, title, value, onChange }: { id: string; label: string; title?: string; value: number; onChange(v: number): void }) {
-  const pct = Math.round(value * 100)
-  const [typed, setTyped] = useState<string | null>(null)
-  return (
-    <div className="field" title={title}>
-      <label htmlFor={id}>{label}</label>
-      <div className="slider-row">
-        <input id={id} type="range" min={0} max={100} value={pct} onChange={(e) => onChange(Number(e.target.value) / 100)} />
-        <input
-          className="slider-number"
-          aria-label={`${label}, percent`}
-          inputMode="numeric"
-          value={typed ?? String(pct)}
-          onChange={(e) => setTyped(e.target.value)}
-          onBlur={() => {
-            const n = Number(typed)
-            if (typed !== null && Number.isFinite(n)) onChange(Math.min(100, Math.max(0, n)) / 100)
-            setTyped(null)
-          }}
-          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-        />
-        <span className="unit">%</span>
-      </div>
-    </div>
-  )
+/** A 0..1 value as a percentage on a slider bar. */
+function PercentField({ id, label, hint, value, onChange }: { id: string; label: string; hint?: string; value: number; onChange(v: number): void }) {
+  return <SliderField id={id} label={label} hint={hint} min={0} max={100} unit="%" value={Math.round(value * 100)} onChange={(v) => onChange(v / 100)} defaultValue={100} />
 }

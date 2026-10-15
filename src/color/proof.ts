@@ -35,14 +35,16 @@ export interface DocLook {
   inkLimit: number
   /** Mark pixels over the ink limit on the canvas. */
   inkWarning: boolean
+  /** The colour channels shown (the Channels panel's eyes), in the mode's order; absent is all. */
+  channels?: boolean[]
 }
 
-export const DEFAULT_PROOF: ProofSetup = { profile: { builtin: 'generic-cmyk' }, mode: 'cmyk', intent: 'relative', bpc: true, paper: false, black: false }
+const DEFAULT_PROOF: ProofSetup = { profile: { builtin: 'generic-cmyk' }, mode: 'cmyk', intent: 'relative', bpc: true, paper: false, black: false }
 
 export const DEFAULT_LOOK: DocLook = { setup: DEFAULT_PROOF, proof: false, gamut: false, inks: [true, true, true, true], inkLimit: 300, inkWarning: false }
 
 /** Whether a look changes nothing on screen. */
-export const plainLook = (l: DocLook) => !l.proof && !l.gamut && !l.inkWarning && l.inks.every(Boolean)
+export const plainLook = (l: DocLook) => !l.proof && !l.gamut && !l.inkWarning && l.inks.every(Boolean) && (!l.channels || l.channels.every(Boolean))
 
 /** The part of a look that's in the display table, as a key. */
 export function tableKey(l: DocLook): string {

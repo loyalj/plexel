@@ -126,6 +126,29 @@ export class ProfileRegistry {
   }
 
   /**
+   * The built-in profile these bytes are exactly (one Plexel embedded in a
+   * file it wrote), or null. A file saved from a document in Generic CMYK
+   * then opens in Generic CMYK, not in an embedded copy of it: it says so,
+   * and shares everything made for the built-in (display and adjustment
+   * tables). Only built-ins of the profile's space are made, and only one
+   * with the same description is compared byte by byte. The
+   * header's creation time differs between two makings of the same
+   * profile, and so does the profile ID (a digest that includes it), so
+   * neither is compared.
+   */
+  builtinOf(bytes: Uint8Array, p: Profile): string | null {
+    const ignored = (i: number) => (i >= 24 && i < 36) || (i >= 84 && i < 100)
+    for (const def of BUILTIN_PROFILES) {
+      if (def.mode !== p.space) continue
+      const made = this.builtin(def.id)
+      if (made.description !== p.description) continue
+      const own = made.bytes()
+      if (own.length === bytes.length && own.every((b, i) => b === bytes[i] || ignored(i))) return def.id
+    }
+    return null
+  }
+
+  /**
    * The profile a reference means, for a document in `mode`. A profile
    * that can't be had (an unknown built-in, missing bytes, or one for
    * another colour space) is replaced by the mode's default, and the result

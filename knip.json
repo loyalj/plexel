@@ -1,0 +1,7 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": ["src/main.tsx", "src/engine/worker.ts", "src/retouch/inpaint.worker.ts", "src/io/opfs.worker.ts", "scripts/*.{ts,mjs}", "vite.config.ts", "eslint.config.js"],
+  "project": ["src/**/*.{ts,tsx}", "scripts/**/*.{ts,mjs}"],
+  "ignore": ["src/**/wasm/**", "scripts/fixtures/**"],
+  "ignoreDependencies": ["@iconify-json/ph"]
+}

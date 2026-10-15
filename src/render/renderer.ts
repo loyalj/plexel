@@ -21,8 +21,8 @@ import { cmykTableData } from './shaders/adjust'
 import { Atlas } from './gpu/atlas'
 import { BufferPool, Kernels, Ring } from './gpu/kernels'
 import { Graph, type TileJob } from './graph'
-import { AtlasFull, NotReady, Residency } from './residency'
-import { Scene, intersects, scenePatterns, type Rect, type SceneUpdate } from './scene'
+import { AtlasFull, NotReady, Residency, UploadsFull } from './residency'
+import { Scene, intersects, scenePatterns, type Rect, type SceneChannel, type SceneUpdate } from './scene'
 import { patternLevels, type PatternImage } from '../vector/paint'
 import { patternBuffer } from './shaders/vector'
 import { patternPixels } from '../tiles/patterns'
@@ -32,12 +32,13 @@ import { DEFAULT_LOOK, type DocLook } from '../color/proof'
 import { PLAIN_LOOK, type Look } from '../color/lut'
 import { invert, mipLevel, multiply, paneCanvas, paneMatrix, paneRects, tileRect, visibleTiles, apply as applyM, type Canvas, type Matrix, type Pane, type View } from './view'
 import type { Lut } from '../color/lut'
-import { LiveStroke, SELECTION_NODE, TipBank, bake, type Reservoir, type StrokeStart, type StrokeTarget } from './strokes'
+import { LiveStroke, SELECTION_NODE, TipBank, bake, channelNode, channelOfNode, type Reservoir, type StrokeStart, type StrokeTarget } from './strokes'
 import { CoverReader, coverForTile } from '../tiles/coverage'
 import { NO_OVERLAY, VERTEX_FLOATS, tessellate, type Overlay, type OverlayShape, type OverlayView } from './overlay'
 import type { BrushCursor } from '../engine/protocol'
 import { OVERLAY_PARAMS_BYTES } from './shaders/overlay'
 import type { MaskLike } from './graph'
+import type { ShownChannel } from './overlay'
 import { RingReader, type Ring as PenRing } from '../input/penRing'
 import type { PenSample } from '../brush/stroke'
 
@@ -50,7 +51,9 @@ const GROUP_CACHE_BUDGET = 192 * 1024 * 1024
 /** How long a frame may spend encoding new tiles, in milliseconds. */
 const FRAME_BUDGET_MS = 10
 // Ten vec4s, then three levels of five.
-const SCREEN_BYTES = 160 + 3 * 80
+/** The alpha and spot channels the screen pass can show at once. */
+const MAX_SCREEN_CHANNELS = 4
+const SCREEN_BYTES = 160 + 3 * 80 + 16 + MAX_SCREEN_CHANNELS * 32
 /** GPU memory for the selection's coverage tiles. */
 const SELECTION_BUDGET = 64 * 1024 * 1024
 /** How often the marching ants crawl a step, in milliseconds. */
@@ -72,11 +75,28 @@ interface DocState {
   /** A split view's second pane (app/views.ts), and where the canvas is cut: a share of its width. */
   second: View | null
   split: number
-  /** The selection's coverage tiles, by `level:tx,ty`: an atlas slot, -2 for none, -3 for all. */
+  /**
+   * Coverage tiles for the screen: the selection's by `level:tx,ty`, an
+   * alpha or spot channel's by `id@level:tx,ty`. An atlas slot, -2 for
+   * none, -3 for all.
+   */
   sel: Map<string, { slot: number; stale: boolean }>
   /** The selection set those tiles are of. */
   selSet: string | null
+  /** Each channel's tiles and transform its coverage tiles are of, by id. */
+  chanSets: Map<string, string>
 }
+
+/** A coverage tile's key in DocState.sel: the selection's (`id` null) or a channel's. */
+const coverKey = (id: string | null, tile: string) => (id ? `${id}@${tile}` : tile)
+/** Which coverage a key is of (null for the selection), and its tile. */
+function parseCoverKey(k: string): { id: string | null; tile: string } {
+  const at = k.indexOf('@')
+  return at < 0 ? { id: null, tile: k } : { id: k.slice(0, at), tile: k.slice(at + 1) }
+}
+
+/** A channel as the mask kernel reads it: its coverage, nothing where it has no tiles. */
+const channelMask = (c: SceneChannel): MaskLike => ({ id: channelNode(c.id), transform: c.transform, props: { tiles: c.tiles, outside: 0, invert: false, density: 1, feather: 0 } })
 
 export interface FrameInfo {
   rendered: number
@@ -93,6 +113,9 @@ export class Renderer {
   private pool: BufferPool
   private params: Ring
   private storage: Ring
+  private uploads: Ring
+  /** The encoder of the frame being built, null between frames. */
+  private frameEncoder: GPUCommandEncoder | null = null
   private graph: Graph
   private residencies = new Map<string, Residency>()
   private displayAtlas: Atlas<string>
@@ -142,9 +165,11 @@ export class Renderer {
     const full = () => {
       throw new RingFull()
     }
-    this.params = new Ring(device, 'params', 2 * 1024 * 1024, GPUBufferUsage.UNIFORM, full)
+    this.params = new Ring(device, 'params', 2 * 1024 * 1024, GPUBufferUsage.UNIFORM, full, true)
     // Copied from as well: a constant selection tile goes into its atlas from here.
-    this.storage = new Ring(device, 'windows', 8 * 1024 * 1024, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, full)
+    this.storage = new Ring(device, 'windows', 8 * 1024 * 1024, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, full, true)
+    // Tiles' samples on their way into the atlases: 48 MB a frame is 150 CMYK tiles, more than the upload rate gets through in one.
+    this.uploads = new Ring(device, 'uploads', 48 * 1024 * 1024, GPUBufferUsage.STORAGE, full)
     this.graph = new Graph(device, this.kernels, this.pool, this.params, this.storage, GROUP_CACHE_BUDGET)
     this.displayAtlas = new Atlas<string>(device, {
       label: 'display tiles',
@@ -285,7 +310,7 @@ export class Renderer {
   private state(key: string): DocState {
     let s = this.docs.get(key)
     if (!s) {
-      s = { scene: new Scene(key, (id) => (this.tiles.hasSet(id) ? this.tiles.extent(id) : null)), view: null, second: null, split: 0.5, look: DEFAULT_LOOK, display: new Map(), lut: null, overlay: NO_OVERLAY, sel: new Map(), selSet: null }
+      s = { scene: new Scene(key, (id) => (this.tiles.hasSet(id) ? this.tiles.extent(id) : null)), view: null, second: null, split: 0.5, look: DEFAULT_LOOK, display: new Map(), lut: null, overlay: NO_OVERLAY, sel: new Map(), selSet: null, chanSets: new Map() }
       this.docs.set(key, s)
     }
     return s
@@ -295,8 +320,12 @@ export class Renderer {
     const s = this.state(key)
     const formatBefore = s.scene.doc ? `${s.scene.doc.mode}/${s.scene.doc.depth}` : null
     const { dirty, colour } = s.scene.apply(u)
-    if (u.doc.selection !== s.selSet || dirty === 'all') this.dropSelection(key, s)
+    if (u.doc.selection !== s.selSet || dirty === 'all') this.dropSelection(key, s, null)
     s.selSet = u.doc.selection
+    // A channel changed, or gone: its coverage tiles go.
+    const sets = new Map<string, string>((u.doc.channels ?? []).map((c) => [c.id, `${c.tiles}|${c.transform.join()}`]))
+    for (const [id, was] of s.chanSets) if (dirty === 'all' || sets.get(id) !== was) this.dropSelection(key, s, id)
+    s.chanSets = sets
     const formatAfter = `${u.doc.mode}/${u.doc.depth}`
     if (dirty === 'all' || formatBefore !== formatAfter) {
       this.dropDisplay(key, s)
@@ -364,6 +393,11 @@ export class Renderer {
     const doc = s.scene.doc
     if (!doc) return 'That document isn’t open any more.'
     if (start.node === SELECTION_NODE) return { set: doc.selection, transform: [1, 0, 0, 1, 0, 0], mode: 'gray', depth: 8 }
+    const ch = channelOfNode(start.node)
+    if (ch) {
+      const c = doc.channels?.find((x) => x.id === ch)
+      return c ? { set: c.tiles, transform: c.transform, mode: 'gray', depth: 8 } : 'That channel isn’t there any more.'
+    }
     const node = s.scene.node(start.node)
     if (!node) return 'That layer isn’t there any more.'
     if (node.kind === 'pixel') return { set: node.props.tiles, transform: node.transform, mode: doc.mode, depth: doc.depth }
@@ -458,9 +492,11 @@ export class Renderer {
             : undefined
         dirty = st.stamp(enc, this.kernels, this.params, this.storage, this.tips, this.doomed, st.replaces ? this.residency(st.mode, st.depth) : undefined, composite)
       } catch (e) {
-        // A sampling stroke reads the layer: a tile still on disk holds its next dab back a frame.
-        if (!(e instanceof NotReady)) throw e
-        void Promise.allSettled(e.waits).then(() => this.requestFrame())
+        // A sampling stroke reads the layer: a tile still on disk, or no room
+        // left to upload one this frame, holds its next dab back a frame.
+        if (e instanceof NotReady) void Promise.allSettled(e.waits).then(() => this.requestFrame())
+        else if (e instanceof UploadsFull) this.requestFrame()
+        else throw e
         dirty = st.docBounds
       }
       const s = this.docs.get(st.start.key)
@@ -473,6 +509,8 @@ export class Renderer {
       const r = shown ?? dirty
       this.markDirty(s, [g ? [r[0] - g, r[1] - g, r[2] + g, r[3] + g] : r])
       if (st.start.node === SELECTION_NODE) this.markSelection(s, [dirty])
+      const ch = channelOfNode(st.start.node)
+      if (ch) this.markSelection(s, [dirty], ch)
     }
   }
 
@@ -543,6 +581,8 @@ export class Renderer {
     if (s) {
       if (st.docBounds) this.markDirty(s, [st.docBounds])
       if (st.docBounds && st.start.node === SELECTION_NODE) this.markSelection(s, [st.docBounds])
+      const ch = channelOfNode(st.start.node)
+      if (st.docBounds && ch) this.markSelection(s, [st.docBounds], ch)
       s.scene.setLive(st.start.node, null)
     }
     if (st.result) this.pins.unpin(st.result)
@@ -579,19 +619,25 @@ export class Renderer {
     this.state(key).overlay = o
   }
 
-  /** Marks the selection's coverage tiles a set of regions touches as stale. */
-  private markSelection(s: DocState, dirty: Rect[]) {
+  /** Marks the selection's coverage tiles (or with `id`, a channel's) a set of regions touches as stale. */
+  private markSelection(s: DocState, dirty: Rect[], id: string | null = null) {
     for (const [k, e] of s.sel) {
       if (e.stale) continue
-      const [lev, rest] = k.split(':')
+      const c = parseCoverKey(k)
+      if (c.id !== id) continue
+      const [lev, rest] = c.tile.split(':')
       const [tx, ty] = rest.split(',').map(Number)
       if (dirty.some((d) => intersects(d, tileRect(Number(lev), tx, ty) as Rect))) e.stale = true
     }
   }
 
-  private dropSelection(key: string, s: DocState) {
-    for (const k of s.sel.keys()) this.selAtlas.drop(`${key}|${k}`)
-    s.sel.clear()
+  /** Lets the selection's coverage tiles go (`id` null), a channel's, or (`id` undefined) all of them. */
+  private dropSelection(key: string, s: DocState, id?: string | null) {
+    for (const k of [...s.sel.keys()]) {
+      if (id !== undefined && parseCoverKey(k).id !== id) continue
+      this.selAtlas.drop(`${key}|${k}`)
+      s.sel.delete(k)
+    }
   }
 
   setFront(key: string | null) {
@@ -631,7 +677,8 @@ export class Renderer {
     const k = `${mode}/${depth}`
     let r = this.residencies.get(k)
     if (!r) {
-      r = new Residency(this.device, this.tiles, this.kernels, this.params, mode, depth, TILE_BUDGET, () => this.encoder)
+      r = new Residency(this.device, this.tiles, this.kernels, this.params, this.uploads, mode, depth, TILE_BUDGET, () => this.encoder)
+      r.isFrame = (enc) => enc === this.frameEncoder
       this.residencies.set(k, r)
     }
     return r
@@ -705,6 +752,15 @@ export class Renderer {
     return this.graph.renderTile(job)
   }
 
+  /** An alpha or spot channel's coverage over one tile: a constant, or a buffer of TILE² floats to give back with releaseCover. */
+  channelTile(job: TileJob, c: SceneChannel): number | GPUBuffer {
+    return this.graph.coverOf(job, channelMask(c), null)
+  }
+
+  releaseCover(b: GPUBuffer) {
+    this.graph.release(b)
+  }
+
   /** A node's own content alone, for Rasterize. */
   renderContentTile(job: TileJob, id: string): GPUBuffer | null {
     return this.graph.renderContent(job, id)
@@ -734,6 +790,8 @@ export class Renderer {
     )
     pass.dispatchWorkgroups(TILE / 16, TILE / 16)
     pass.end()
+    // Counted with the graph's, so the stats say every dispatch a frame makes.
+    this.graph.dispatches++
   }
 
   /** Encodes a composite tile's conversion into straight 8-bit RGBA, into `out` at `offset`. */
@@ -755,6 +813,7 @@ export class Renderer {
     )
     pass.dispatchWorkgroups(TILE / 16, TILE / 16)
     pass.end()
+    this.graph.dispatches++
   }
 
   get kernelSet() {
@@ -769,6 +828,7 @@ export class Renderer {
   beginWork(): GPUCommandEncoder {
     this.params.reset()
     this.storage.reset()
+    this.uploads.reset()
     for (const r of this.residencies.values()) r.atlas.beginFrame()
     this.encoder = this.device.createCommandEncoder({ label: 'work' })
     return this.encoder
@@ -776,8 +836,15 @@ export class Renderer {
 
   finishWork(enc: GPUCommandEncoder) {
     this.encoder = null
+    this.flushRings()
     this.device.queue.submit([enc.finish()])
     this.afterSubmit()
+  }
+
+  /** The rings' held-back small writes (Ring.flush), sent before the commands that read them are submitted. */
+  private flushRings() {
+    this.params.flush()
+    this.storage.flush()
   }
 
   private afterSubmit() {
@@ -796,11 +863,13 @@ export class Renderer {
     const s = this.front ? this.docs.get(this.front) : undefined
     this.params.reset()
     this.storage.reset()
+    this.uploads.reset()
     for (const r of this.residencies.values()) r.atlas.beginFrame()
     this.displayAtlas.beginFrame()
     this.selAtlas.beginFrame()
     const enc = this.device.createCommandEncoder({ label: 'frame' })
     this.encoder = enc
+    this.frameEncoder = enc
     this.drainRing()
     this.stampStrokes(enc)
 
@@ -875,16 +944,21 @@ export class Renderer {
         } catch (e) {
           pending++
           if (e instanceof NotReady) waits.push(...e.waits)
-          else if (e instanceof AtlasFull || e instanceof RingFull) break
+          else if (e instanceof AtlasFull || e instanceof RingFull || e instanceof UploadsFull) break
           else throw e
         }
       }
-      for (const p of shown) pending += this.renderSelection(s, p.levels[0], enc, t0, waits)
+      for (const p of shown) {
+        pending += this.renderSelection(s, p.levels[0], enc, t0, waits)
+        for (const c of this.screenChannels(s)) pending += this.renderCover(s, p.levels[0], enc, t0, waits, channelMask(c.channel), c.channel.id)
+      }
       if (waits.length) void Promise.allSettled(waits).then(() => this.requestFrame())
     }
 
     this.drawScreen(enc, s, shown)
     this.encoder = null
+    this.frameEncoder = null
+    this.flushRings()
     this.device.queue.submit([enc.finish()])
     this.afterSubmit()
     this.inFlight++
@@ -937,9 +1011,30 @@ export class Renderer {
     const painting = this.strokeOn.has(`${s.scene.key}|${SELECTION_NODE}`)
     if (!lv || (!doc.selection && !painting && !s.overlay.quickMask)) return 0
     const mask: MaskLike = { id: SELECTION_NODE, transform: [1, 0, 0, 1, 0, 0], props: { tiles: doc.selection, outside: 0, invert: false, density: 1, feather: 0 } }
+    return this.renderCover(s, lv, enc, t0, waits, mask, null)
+  }
+
+  /** The alpha and spot channels the overlay shows, found in the document, at most MAX_SCREEN_CHANNELS. */
+  private screenChannels(s: DocState): { shown: ShownChannel; channel: SceneChannel }[] {
+    const doc = s.scene.doc
+    const out: { shown: ShownChannel; channel: SceneChannel }[] = []
+    for (const shown of s.overlay.channels ?? []) {
+      const channel = doc?.channels?.find((c) => c.id === shown.id)
+      if (channel && out.length < MAX_SCREEN_CHANNELS) out.push({ shown, channel })
+    }
+    return out
+  }
+
+  /**
+   * A coverage's tiles on screen at the level shown, into the selection's
+   * atlas: the selection's (`id` null) or a channel's. Within the frame's
+   * budget; returns how many tiles are left for later.
+   */
+  private renderCover(s: DocState, lv: { level: number; tiles: [number, number][] } | undefined, enc: GPUCommandEncoder, t0: number, waits: Promise<void>[], mask: MaskLike, id: string | null): number {
+    if (!lv) return 0
     let pending = 0
     for (const [x, y] of lv.tiles) {
-      const key = `${lv.level}:${x},${y}`
+      const key = coverKey(id, `${lv.level}:${x},${y}`)
       const atlasKey = `${s.scene.key}|${key}`
       const e = s.sel.get(key)
       if (e && e.slot >= 0) this.selAtlas.get(atlasKey)
@@ -968,7 +1063,7 @@ export class Renderer {
       } catch (err) {
         pending++
         if (err instanceof NotReady) waits.push(...err.waits)
-        else if (err instanceof AtlasFull || err instanceof RingFull) break
+        else if (err instanceof AtlasFull || err instanceof RingFull || err instanceof UploadsFull) break
         else throw err
       }
     }
@@ -1008,6 +1103,7 @@ export class Renderer {
     f.set([...themeIn(CHECK_B, this.display), 1], 8)
     const map: number[] = []
     const selMap: number[] = []
+    let grid0: { level: number; gx: number; gy: number; cols: number; rows: number } | null = null
     let overlay: Float32Array | null = null
     let overlayColours: OverlayView['colours'] | null = null
     const time = Math.floor(performance.now() / ANTS_MS) % 8
@@ -1060,7 +1156,20 @@ export class Renderer {
             if (j === 0) selMap.push(s.sel.get(`${level}:${gx + x},${gy + y}`)?.slot ?? -1)
           }
         }
-        if (j === 0) f.set([-gx * TILE, -gy * TILE, doc.width / span - gx * TILE, doc.height / span - gy * TILE], 16)
+        if (j === 0) {
+          f.set([-gx * TILE, -gy * TILE, doc.width / span - gx * TILE, doc.height / span - gy * TILE], 16)
+          grid0 = { level, gx, gy, cols, rows }
+        }
+      })
+      // Alpha and spot channels shown: each one's coverage tiles after the selection's, on the same grid.
+      const chans = grid0 ? this.screenChannels(s) : []
+      f.set([chans.length, o.colourHidden ? 1 : 0, 0, 0], 100)
+      chans.forEach(({ shown, channel }, k) => {
+        const g = grid0!
+        const kind = shown.kind === 'spot' ? 2 : shown.marks === 'selected' ? 1 : 0
+        f.set([...themeIn(shown.colour, this.display), shown.opacity], 104 + k * 8)
+        f.set([kind, selMap.length, 0, 0], 108 + k * 8)
+        for (let y = 0; y < g.rows; y++) for (let x = 0; x < g.cols; x++) selMap.push(s.sel.get(coverKey(channel.id, `${g.level}:${g.gx + x},${g.gy + y}`))?.slot ?? -1)
       })
     }
     if (!map.length) map.push(-1)
@@ -1125,7 +1234,11 @@ interface ShownPane {
   levels: { level: number; tiles: [number, number][] }[]
 }
 
-export class RingFull extends Error {}
+class RingFull extends Error {
+  constructor() {
+    super('A ring buffer for the frame is full')
+  }
+}
 
 /** A theme colour (sRGB) as the display shows it. */
 function themeIn(rgb: Rgb, display: DisplayProfileId): Rgb {
@@ -1146,11 +1259,17 @@ function cacheTheme(rgb: Rgb, display: DisplayProfileId): Rgb {
 }
 
 /** The display pass's part of a document's look (color/lut.ts). */
-export function lookOf(l: DocLook, mode: ColourMode): Look {
+function lookOf(l: DocLook, mode: ColourMode): Look {
   const cmyk = mode === 'cmyk'
+  const n = cmyk ? 4 : mode === 'rgb' ? 3 : 1
+  // The Channels panel's eyes, with Separations' inks for CMYK; one colour channel alone shows in gray.
+  const shown = l.channels?.length === n ? l.channels : null
+  const inks = [0, 1, 2, 3].map((i) => (shown ? (shown[i] ?? true) : true) && (cmyk ? l.inks[i] : true)) as Look['inks']
+  const alone = shown && n > 1 && shown.filter(Boolean).length === 1 ? shown.indexOf(true) : -1
   return {
     ...PLAIN_LOOK,
-    inks: cmyk ? l.inks : [true, true, true, true],
+    inks,
+    gray: alone,
     gamut: l.gamut,
     inkLimit: cmyk && l.inkWarning ? l.inkLimit / 100 : 0,
   }

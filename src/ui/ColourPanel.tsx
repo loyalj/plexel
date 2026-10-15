@@ -7,7 +7,7 @@
  * in the front document's colour space, a warning says so, and clicking it
  * moves the colour to the nearest one that can.
  */
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { memo, useEffect, useState, useSyncExternalStore } from 'react'
 import { colourEngine, colourEngineNow } from '../app/colour'
 import { PICKER_MODELS, colours } from '../app/colours'
 import { colourSettings } from '../app/colourSettings'
@@ -17,7 +17,7 @@ import type { Doc } from '../doc/types'
 import { CHANNELS_OF, colourOf, cssOf, targetOf, trackOf, valuesOf } from './colourView'
 import { Icon } from './Icon'
 
-export function ColourPanel({ doc }: { doc: Doc | null }) {
+export const ColourPanel = memo(function ColourPanel({ doc }: { doc: Doc | null }) {
   const state = useSyncExternalStore(colours().subscribe, colours().get)
   const settings = useSyncExternalStore(colourSettings.subscribe, colourSettings.get)
   const [engine, setEngine] = useState(colourEngineNow)
@@ -74,10 +74,10 @@ export function ColourPanel({ doc }: { doc: Doc | null }) {
             data-swatch="fg"
             onClick={() => setEditing('fg')}
           />
-          <button type="button" className="swatch-swap" title="Swap foreground and background (X)" aria-label="Swap colours" onClick={() => colours().swap()}>
+          <button type="button" className="swatch-swap" data-tip="Swap foreground and background (X)" aria-label="Swap colours" onClick={() => colours().swap()}>
             <Icon name="ui.swap" />
           </button>
-          <button type="button" className="swatch-reset" title="Black on white (D)" aria-label="Reset colours" onClick={() => colours().reset()}>
+          <button type="button" className="swatch-reset" data-tip="Black on white (D)" aria-label="Reset colours" onClick={() => colours().reset()}>
             <span />
             <span />
           </button>
@@ -153,4 +153,4 @@ export function ColourPanel({ doc }: { doc: Doc | null }) {
       )}
     </div>
   )
-}
+})

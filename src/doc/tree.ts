@@ -18,7 +18,7 @@ export interface Place {
 /** Every node's place, computed in one pass. Cached per `nodes` object, which is replaced on every edit. */
 const placesCache = new WeakMap<Doc['nodes'], Map<NodeId, Place>>()
 
-export function places(doc: Doc): Map<NodeId, Place> {
+function places(doc: Doc): Map<NodeId, Place> {
   const cached = placesCache.get(doc.nodes)
   if (cached) return cached
   const map = new Map<NodeId, Place>()
@@ -33,6 +33,55 @@ export function places(doc: Doc): Map<NodeId, Place> {
 }
 
 export const placeOf = (doc: Doc, id: NodeId) => places(doc).get(id)
+
+/** The top-level artboard holding a node (or the artboard itself); null outside them. */
+function artboardHolding(doc: Doc, id: NodeId): NodeId | null {
+  let at: NodeId | undefined = id
+  while (at) {
+    const p = placeOf(doc, at)
+    if (!p) return null
+    if (p.parent === doc.root) {
+      const n = doc.nodes[at]
+      return n?.kind === 'group' && n.props.artboard ? at : null
+    }
+    at = p.parent
+  }
+  return null
+}
+
+/** The topmost artboard under a document point, by id. */
+function artboardUnder(doc: Doc, x: number, y: number): NodeId | null {
+  for (const id of [...(doc.nodes[doc.root]?.children ?? [])].reverse()) {
+    const n = doc.nodes[id]
+    if (n?.kind !== 'group' || !n.props.artboard) continue
+    const [ax, ay] = [n.transform[4], n.transform[5]]
+    if (x >= ax && y >= ay && x < ax + n.props.artboard.width && y < ay + n.props.artboard.height) return id
+  }
+  return null
+}
+
+/**
+ * Where a new layer goes: above the selected one, in its group (inside a
+ * compound shape it's above the compound); into the artboard itself when
+ * an artboard is selected; otherwise at the top. Drawn at a point (`at`)
+ * on an artboard the selected layer isn't in, it goes at the top of that
+ * artboard instead, so a shape drawn on Artboard 2 isn't clipped away in
+ * Artboard 1, as in Photoshop.
+ */
+export function whereNew(doc: Doc, selected: NodeId | null, at?: [number, number] | null): { parent: NodeId; index: number } {
+  const top = (parent: NodeId) => ({ parent, index: doc.nodes[parent]?.children?.length ?? 0 })
+  if (at) {
+    const under = artboardUnder(doc, at[0], at[1])
+    if (under && (!selected || artboardHolding(doc, selected) !== under)) return top(under)
+  }
+  const sel = selected ? doc.nodes[selected] : null
+  if (sel?.kind === 'group' && sel.props.artboard) return top(sel.id)
+  let place = selected ? placeOf(doc, selected) : null
+  // Inside a compound shape, the new layer goes above the compound.
+  while (place?.slot === 'children' && doc.nodes[place.parent]?.kind === 'boolean') place = placeOf(doc, place.parent)
+  if (place?.slot === 'children') return { parent: place.parent, index: place.index + 1 }
+  return top(doc.root)
+}
 
 /**
  * What to select in place of `id` once it's gone, as Photoshop does: the

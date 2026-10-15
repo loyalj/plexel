@@ -20,7 +20,10 @@
  */
 import { readTextStyles } from './text'
 import { readSwatches } from './swatches'
+import { readColourValue } from '../color/value'
 import { readGraphicStyles } from './graphicStyles'
+import { readBrush, type VectorBrush } from './vectorBrush'
+import { brushReaders } from './vector'
 import { MAX_PATTERN } from '../vector/paint'
 import { DOC_FORMAT, DEFAULT_PROFILES } from './edit'
 import { NODE_DEFS, isBlendMode, isEffectKind, isLayerKind, makeNode, nodeDef } from './nodes'
@@ -37,6 +40,7 @@ import {
   type DocChannel,
   type DocNode,
   type DocPattern,
+  type DocSymbol,
   type LayerFx,
   type Guide,
   type NodeId,
@@ -260,13 +264,49 @@ function readBody(b: Record<string, unknown>, warn: Warn): Doc {
   if (b.textStyles !== undefined) doc.textStyles = readTextStyles(b.textStyles, warn)
   if (b.swatches !== undefined) doc.swatches = readSwatches(b.swatches, warn)
   if (b.graphicStyles !== undefined) doc.graphicStyles = readGraphicStyles(b.graphicStyles, warn)
+  if (Array.isArray(b.vectorBrushes)) {
+    const brushes = b.vectorBrushes.slice(0, 500).map((x) => readBrush(x, brushReaders(warn))).filter((x): x is VectorBrush => !!x)
+    if (brushes.length < b.vectorBrushes.length) warn('some vector brushes were not readable; left them out')
+    // One of each id.
+    const seen = new Set<string>()
+    const list = brushes.filter((x) => !seen.has(x.id) && !!seen.add(x.id))
+    if (list.length) doc.vectorBrushes = list
+  }
   const patterns = readPatterns(b.patterns, warn)
   if (patterns.length) doc.patterns = patterns
   const channels = readChannels(b.channels, warn)
   if (channels.length) doc.channels = channels
   const tiled = readOneOf(b.tiled, TILINGS, 'off', 'Whether the document is tiled', warn)
   if (tiled !== 'off') doc.tiled = tiled
+  const symbols = readSymbols(b.symbols, warn)
+  if (symbols.length) doc.symbols = symbols
   return repairTree(doc, warn)
+}
+
+/** Symbols: each an id, a name and its contents, a document of their own. */
+function readSymbols(v: unknown, warn: Warn): DocSymbol[] {
+  if (v === undefined || v === null) return []
+  const out: DocSymbol[] = []
+  const ids = new Set<string>()
+  for (const s of Array.isArray(v) ? v : []) {
+    if (!isObject(s) || !validId(s.id) || ids.has(s.id) || !isObject(s.content)) {
+      warn('A symbol could not be read; left it out')
+      continue
+    }
+    if (nesting >= MAX_NESTING) {
+      warn('Symbols were nested too deep to read; the innermost were left out')
+      continue
+    }
+    ids.add(s.id)
+    const name = readString(s.name, 'Symbol', 'A symbol’s name', warn).trim() || 'Symbol'
+    nesting++
+    try {
+      out.push({ id: s.id, name, content: readBody(s.content, (m) => warn(`In symbol “${name}”: ${m}`)) })
+    } finally {
+      nesting--
+    }
+  }
+  return out
 }
 
 /** Patterns made from pixels: each an id, a name, a tile set and its size. */
@@ -291,7 +331,7 @@ function readPatterns(v: unknown, warn: Warn): DocPattern[] {
   return out
 }
 
-/** Alpha channels: each an id, a name, its coverage and where that lies. */
+/** Alpha and spot channels: each an id, a name, its coverage and where that lies, and how it shows. */
 function readChannels(v: unknown, warn: Warn): DocChannel[] {
   if (v === undefined || v === null) return []
   const out: DocChannel[] = []
@@ -302,12 +342,26 @@ function readChannels(v: unknown, warn: Warn): DocChannel[] {
       continue
     }
     ids.add(c.id)
-    out.push({
+    const ch: DocChannel = {
       id: c.id,
       name: readString(c.name, 'Alpha', 'An alpha channel’s name', warn).trim() || 'Alpha',
       tiles: typeof c.tiles === 'string' && c.tiles ? c.tiles : null,
       transform: readTransform(c.transform, warn),
-    })
+    }
+    if (c.kind === 'spot') {
+      const ink = readColourValue(c.ink)
+      if (!ink) warn(`The spot channel “${ch.name}” had no readable ink; it came in as an alpha channel`)
+      else {
+        ch.kind = 'spot'
+        ch.ink = ink
+      }
+    }
+    if (c.opacity !== undefined) ch.opacity = readNumber(c.opacity, 0.5, 0, 1, 'A channel’s opacity', warn)
+    if (ch.kind !== 'spot') {
+      if (Array.isArray(c.tint) && c.tint.length === 3 && c.tint.every((x) => typeof x === 'number' && x >= 0 && x <= 1)) ch.tint = c.tint as [number, number, number]
+      if (c.marks === 'selected') ch.marks = 'selected'
+    }
+    out.push(ch)
   }
   return out
 }

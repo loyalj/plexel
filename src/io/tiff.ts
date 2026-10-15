@@ -11,7 +11,7 @@
 import { inflateZlib } from './png'
 import type { Raster } from './raster'
 
-export class TiffError extends Error {}
+class TiffError extends Error {}
 
 export const isTiff = (b: Uint8Array) => (b[0] === 0x49 && b[1] === 0x49 && b[2] === 42 && b[3] === 0) || (b[0] === 0x4d && b[1] === 0x4d && b[2] === 0 && b[3] === 42)
 

@@ -19,25 +19,25 @@
  * source's, the other three keep the backdrop's.
  */
 import type { BlendModeId } from '../../doc/types'
+import { clamp01 as clamp } from '../../lib/num'
 
 export type Separable = (b: number, s: number) => number
 export type Colour = number[]
 
-const clamp = (v: number) => Math.min(1, Math.max(0, v))
 
-export const multiply: Separable = (b, s) => b * s
-export const screen: Separable = (b, s) => b + s - b * s
-export const hardLight: Separable = (b, s) => (s <= 0.5 ? multiply(b, 2 * s) : screen(b, 2 * s - 1))
-export const overlay: Separable = (b, s) => hardLight(s, b)
-export const colorDodge: Separable = (b, s) => (b <= 0 ? 0 : s >= 1 ? 1 : Math.min(1, b / (1 - s)))
-export const colorBurn: Separable = (b, s) => (b >= 1 ? 1 : s <= 0 ? 0 : 1 - Math.min(1, (1 - b) / s))
+const multiply: Separable = (b, s) => b * s
+const screen: Separable = (b, s) => b + s - b * s
+const hardLight: Separable = (b, s) => (s <= 0.5 ? multiply(b, 2 * s) : screen(b, 2 * s - 1))
+const overlay: Separable = (b, s) => hardLight(s, b)
+const colorDodge: Separable = (b, s) => (b <= 0 ? 0 : s >= 1 ? 1 : Math.min(1, b / (1 - s)))
+const colorBurn: Separable = (b, s) => (b >= 1 ? 1 : s <= 0 ? 0 : 1 - Math.min(1, (1 - b) / s))
 /** Photoshop's Soft Light: the square-root form, without the W3C's extra piece below a quarter. */
-export const softLight: Separable = (b, s) => (s <= 0.5 ? b - (1 - 2 * s) * b * (1 - b) : b + (2 * s - 1) * (Math.sqrt(b) - b))
-export const vividLight: Separable = (b, s) => (s <= 0.5 ? colorBurn(b, 2 * s) : colorDodge(b, 2 * s - 1))
-export const linearLight: Separable = (b, s) => clamp(b + 2 * s - 1)
-export const pinLight: Separable = (b, s) => (s <= 0.5 ? Math.min(b, 2 * s) : Math.max(b, 2 * s - 1))
-export const hardMix: Separable = (b, s) => (b + s >= 1 ? 1 : 0)
-export const divide: Separable = (b, s) => (s <= 0 ? (b > 0 ? 1 : 0) : Math.min(1, b / s))
+const softLight: Separable = (b, s) => (s <= 0.5 ? b - (1 - 2 * s) * b * (1 - b) : b + (2 * s - 1) * (Math.sqrt(b) - b))
+const vividLight: Separable = (b, s) => (s <= 0.5 ? colorBurn(b, 2 * s) : colorDodge(b, 2 * s - 1))
+const linearLight: Separable = (b, s) => clamp(b + 2 * s - 1)
+const pinLight: Separable = (b, s) => (s <= 0.5 ? Math.min(b, 2 * s) : Math.max(b, 2 * s - 1))
+const hardMix: Separable = (b, s) => (b + s >= 1 ? 1 : 0)
+const divide: Separable = (b, s) => (s <= 0 ? (b > 0 ? 1 : 0) : Math.min(1, b / s))
 
 /** The separable modes, by id. `normal` and `dissolve` are here as "take the source". */
 export const SEPARABLE: Partial<Record<BlendModeId, Separable>> = {

@@ -4,7 +4,7 @@
  * from the selected shape; Redefine makes a style the selected shape's look,
  * changing every shape linked to it; double-click a name to rename it.
  */
-import { useState, useSyncExternalStore } from 'react'
+import { memo, useState, useSyncExternalStore } from 'react'
 import { documents } from '../app/documents'
 import { applyStyle, deleteStyle, newGraphicStyle, redefineStyle, renameStyle, unlinkSelected } from '../app/graphicStyles'
 import { linkOf } from '../doc/graphicStyles'
@@ -12,6 +12,7 @@ import { appearanceIn, type AppearanceItem } from '../doc/vector'
 import type { Doc } from '../doc/types'
 import { paintCss } from './VectorProps'
 import { Icon } from './Icon'
+import { Hint } from './controls'
 
 /** A style drawn small: its top fill, inside its top stroke. */
 function Preview({ items, doc }: { items: AppearanceItem[]; doc: Doc }) {
@@ -34,7 +35,7 @@ function Name({ name, onRename }: { name: string; onRename(n: string): void }) {
   const [editing, setEditing] = useState<string | null>(null)
   if (editing === null)
     return (
-      <span className="channel-name" onDoubleClick={() => setEditing(name)} title="Double-click to rename">
+      <span className="channel-name" onDoubleClick={() => setEditing(name)} data-tip="Double-click to rename">
         {name}
       </span>
     )
@@ -57,25 +58,27 @@ function Name({ name, onRename }: { name: string; onRename(n: string): void }) {
   )
 }
 
-export function GraphicStylesPanel() {
+export const GraphicStylesPanel = memo(function GraphicStylesPanel() {
   const d = useSyncExternalStore(documents().subscribe, () => documents().active())
   const doc = d?.history.present
-  if (!d || !doc) return <p className="panel-empty">Named looks for shapes and text: fills, strokes and their effects, kept with the document.</p>
+  if (!d || !doc) return <p className="panel-empty">No document open</p>
   const list = doc.graphicStyles ?? []
   const linked = linkOf(d.selected ? doc.nodes[d.selected] : undefined)
   return (
     <div className="graphic-styles" data-panel="graphic-styles">
       {list.length === 0 ? (
-        <p className="panel-empty">No graphic styles yet. Select a shape and make one from its fills and strokes.</p>
+        <p className="panel-empty">
+          No graphic styles <Hint text="Select a shape and make one from its fills and strokes." />
+        </p>
       ) : (
         <ul className="channel-list">
           {list.map((g) => (
             <li key={g.id} className={`channel-row${linked === g.id ? ' current' : ''}`} data-graphic-style={g.id} aria-current={linked === g.id || undefined}>
-              <button type="button" className="style-apply" title={`Give ${g.name} to the selected shapes and text`} onClick={() => applyStyle(g.id)}>
+              <button type="button" className="style-apply" data-tip={`Give ${g.name} to the selected shapes and text`} onClick={() => applyStyle(g.id)}>
                 <Preview items={g.appearance} doc={doc} />
               </button>
               <Name name={g.name} onRename={(n) => renameStyle(g.id, n)} />
-              <button type="button" className="icon-button" aria-label={`Redefine ${g.name} from the selected shape`} title="Redefine from the selected shape: every shape linked to it changes" data-style-redefine onClick={() => redefineStyle(g.id)}>
+              <button type="button" className="icon-button" aria-label={`Redefine ${g.name} from the selected shape`} data-tip="Redefine from the selected shape: every shape linked to it changes" data-style-redefine onClick={() => redefineStyle(g.id)}>
                 <Icon name="ui.up" />
               </button>
               <button type="button" className="icon-button" aria-label={`Delete ${g.name}`} onClick={() => deleteStyle(g.id)}>
@@ -95,4 +98,4 @@ export function GraphicStylesPanel() {
       </div>
     </div>
   )
-}
+})

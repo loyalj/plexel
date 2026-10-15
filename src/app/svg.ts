@@ -9,7 +9,6 @@ import { svgToDoc } from '../io/svg/read'
 import { documents, newId } from './documents'
 import { notify } from './notices'
 
-export const isSvg = (head: Uint8Array, name: string) => /\.svgz?$/i.test(name) || /^\s*(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*(<!DOCTYPE svg|<svg)/i.test(new TextDecoder().decode(head))
 
 let ctx: CanvasRenderingContext2D | null = null
 

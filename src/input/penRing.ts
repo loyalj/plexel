@@ -16,7 +16,7 @@
  */
 import type { PenSample } from '../brush/stroke'
 
-export const SLOTS = 2048
+const SLOTS = 2048
 /** Per sample: stroke id, x, y, pressure, tiltX, tiltY, twist, time. */
 const WIDTH = 8
 

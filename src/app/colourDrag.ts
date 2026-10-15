@@ -28,6 +28,8 @@ let canvasPointAt: ((clientX: number, clientY: number) => [number, number] | nul
 export function registerCanvasPoint(fn: typeof canvasPointAt) {
   canvasPointAt = fn
 }
+/** The document point under a screen point, over the canvas; null elsewhere. */
+export const canvasPointOf = (clientX: number, clientY: number) => canvasPointAt?.(clientX, clientY) ?? null
 
 /** How far a press moves, in CSS pixels, before it's a drag. */
 const DRAG = 4
@@ -86,7 +88,7 @@ function paintOf(what: Dragged): Paint | null {
 }
 
 /** A shape's appearance with its first fill (or stroke) given `paint`; one is added when it has none. */
-export function withPaint(items: AppearanceItem[], paint: Paint, stroke: boolean): AppearanceItem[] {
+function withPaint(items: AppearanceItem[], paint: Paint, stroke: boolean): AppearanceItem[] {
   const i = items.findIndex((it) => it.kind === (stroke ? 'stroke' : 'fill'))
   if (i < 0) return stroke ? [...items, strokeItem(paint, 4)] : [fillItem(paint), ...items]
   return items.map((it, j) => (j === i ? ({ ...it, paint, enabled: true } as AppearanceItem) : it))

@@ -39,7 +39,8 @@ import { fillItem, geometryPath, solid, type Geometry } from '../doc/vector'
 import { applyMat, flattenPath, transformPath, type Pt } from '../geom/path'
 import { hitSegment } from '../geom/edit'
 import { caretAt, caretX, hitPosition, lineOf, selectionBoxes, stepChar, stepLine, stepWord, wordAt } from '../text/caret'
-import { distanceAlong, type TextLayout } from '../text/layout'
+import type { TextLayout } from '../text/layout'
+import { distanceAlong } from '../text/framePath'
 import { engine } from '../engine/EngineHost'
 import type { OverlayShape } from '../render/overlay'
 import { viewMatrix } from '../render/view'
@@ -470,7 +471,7 @@ class TypeSession implements Session {
     const [a, b] = this.range()
     this.drawOverlay(this.content(), a, b)
     this.placeInput()
-    for (const fn of listeners) fn()
+    changes.emit()
   }
 
   /** The caret, the selection's highlight, and the frame or path, over the canvas. */
@@ -544,7 +545,7 @@ class TypeSession implements Session {
     this.input = null
     clearToolOverlay(this.key)
     if (current === this) current = null
-    for (const fn of listeners) fn()
+    changes.emit()
   }
 
   readout(): string {
@@ -555,15 +556,12 @@ class TypeSession implements Session {
 
 const autoNamed = new Set<NodeId>()
 let current: TypeSession | null = null
-const listeners = new Set<() => void>()
+const changes = new Listeners()
 
 /** The text being edited, if any: the Character and Paragraph panels act on it. */
-export const typing = () => (current && sessions().get() === current ? current : null)
+const typing = () => (current && sessions().get() === current ? current : null)
 export const subscribeTyping = (fn: () => void) => {
-  listeners.add(fn)
-  return () => {
-    listeners.delete(fn)
-  }
+  return changes.subscribe(fn)
 }
 
 /** Where on a text node a document point is: a position, or null when it's not on the text. */
@@ -614,7 +612,7 @@ function hitText(n: TextNode, l: TextLayout, p: Pointer): number | null {
 }
 
 /** Starts editing a text node, the caret at `pos`. */
-export function editText(d: OpenDoc, id: NodeId, pos: number | null, pending: Pending | null = null) {
+function editText(d: OpenDoc, id: NodeId, pos: number | null, pending: Pending | null = null) {
   const s = new TypeSession(d.key, id, pending)
   current = s
   sessions().start(s)
@@ -625,12 +623,8 @@ export function editText(d: OpenDoc, id: NodeId, pos: number | null, pending: Pe
   return s
 }
 
-/** Where a new layer goes: above the selected one, in its group. */
-function newLayerPlace(doc: Doc, selected: NodeId | null): { parent: NodeId; index: number } {
-  const place = selected ? placeOf(doc, selected) : null
-  if (place?.slot === 'children' && doc.nodes[place.parent].kind !== 'boolean') return { parent: place.parent, index: place.index + 1 }
-  return { parent: doc.root, index: doc.nodes[doc.root].children?.length ?? 0 }
-}
+/** Where a new layer goes (doc/tree.ts): above the selected one, or into the artboard it's drawn on. */
+const newLayerPlace = (doc: Doc, selected: NodeId | null, at?: [number, number] | null) => whereNew(doc, selected, at)
 
 /** New text: point text at a point, area text in a frame, or path text along a path. */
 function newText(d: OpenDoc, mode: 'point' | 'area' | 'path', transform: Affine, frame: Geometry | null, pathOffset = 0) {
@@ -643,7 +637,7 @@ function newText(d: OpenDoc, mode: 'point' | 'area' | 'path', transform: Affine,
   const node = makeNode('text', id, freshName(doc, 'Text'), { mode, content, frame, pathOffset, appearance: [fillItem(solid(fg))] }) as TextNode
   node.transform = transform
   autoNamed.add(id)
-  const { parent, index } = newLayerPlace(doc, d.selected)
+  const { parent, index } = newLayerPlace(doc, d.selected, [transform[4], transform[5]])
   editText(d, id, 0, { node, parent, index })
 }
 
@@ -831,4 +825,6 @@ export function createOutlines() {
 }
 
 import { glyphsToPath } from '../geom/glyphs'
+import { Listeners } from '../lib/listeners'
+import { whereNew } from '../doc/tree'
 const glyphsPath = (l: TextLayout) => glyphsToPath(l.glyphs)

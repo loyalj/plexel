@@ -4,14 +4,15 @@
  * Pattern, and fill layers (Layer → New Fill Layer).
  *
  * The pixel work is the engine's (engine/fillHost.ts); this decides what's
- * filled (the selected layer's pixels, or its mask when that's the target),
- * puts the paint in the target's terms, and commits what comes back as one
- * named step.
+ * filled (an alpha or spot channel targeted in the Channels panel, the
+ * selected layer's pixels, only the colour channels targeted when only
+ * some are, or its mask when that's the target), puts the paint in the
+ * target's terms, and commits what comes back as one named step.
  */
-import { addPattern, insertNode, removePattern, renamePattern, setFillPaint, setTiles } from '../doc/edit'
+import { addPattern, insertNode, removePattern, renamePattern, setChannelTiles, setFillPaint, setTiles } from '../doc/edit'
 import { makeNode } from '../doc/nodes'
 import { freshName } from '../doc/tree'
-import type { BlendModeId, Doc, DocNode, NodeId } from '../doc/types'
+import { channelKind, type BlendModeId, type Doc, type DocNode, type NodeId } from '../doc/types'
 import { gradientPaint, solid, type Paint } from '../doc/vector'
 import { engine } from '../engine/EngineHost'
 import type { TileFormat } from '../tiles/format'
@@ -20,9 +21,11 @@ import { colourEngineNow, swatchIn } from './colour'
 import { colourSettings } from './colourSettings'
 import { documents, newId, type OpenDoc } from './documents'
 import { placeForNew } from './effects'
-import { dismiss, notify } from './notices'
+import { notify } from './notices'
 import { formatOf, hold } from './pixels'
 import { fillTarget, pixelTarget } from './selection'
+import { channelTarget, planesTarget } from './channels'
+import { isCancelled, runJob } from './jobs'
 
 const store = () => documents()
 const active = () => store().active()
@@ -79,6 +82,14 @@ function paintForMask(doc: Doc, p: Paint): Paint {
   return { ...p, colour: [grayOfColour(doc, p.colour)], background: [grayOfColour(doc, p.background)] }
 }
 
+/** A gray paint as a spot channel's: black (0) is full ink (1). */
+function paintAsInk(p: Paint): Paint {
+  const ink = (c: number[]) => c.map((v) => 1 - v)
+  if (p.kind === 'solid') return { ...p, colour: ink(p.colour) }
+  if (p.kind === 'gradient') return { ...p, stops: p.stops.map((s) => ({ ...s, colour: ink(s.colour) })) }
+  return { ...p, colour: ink(p.colour), background: ink(p.background) }
+}
+
 /** The target's tiles to fill into: a mask with none yet is its outside value everywhere, so that's made first. */
 async function startTiles(doc: Doc, node: DocNode, format: TileFormat): Promise<string | null> {
   if (node.kind === 'mask' && !node.props.tiles && node.props.outside > 0) {
@@ -104,6 +115,35 @@ function commitTiles(d: OpenDoc, node: DocNode, set: string | null, label: strin
 export async function paintTarget(paint: Paint, o: Blending, label: string, cover?: string | null): Promise<boolean> {
   const d = active()
   if (!d) return false
+  const ch = channelTarget(d)
+  if (ch) {
+    const doc = d.history.present
+    try {
+      const gray = paintForMask(doc, paint)
+      const set = await engine().call('fill.paint', {
+        key: d.key,
+        layer: ch.tiles,
+        format: { mode: 'gray', depth: 8 },
+        transform: ch.transform,
+        cover: cover === undefined ? (doc.selection?.tiles ?? null) : cover,
+        width: doc.width,
+        height: doc.height,
+        blend: o.blend,
+        opacity: o.opacity,
+        preserve: false,
+        paint: channelKind(ch) === 'spot' ? paintAsInk(gray) : gray,
+      })
+      if (set !== ch.tiles && store().get(d.key)) {
+        const release = set ? hold([set]) : () => {}
+        store().commit((x) => setChannelTiles(x, ch.id, set, true), { key: d.key, label })
+        release()
+      }
+      return true
+    } catch (e) {
+      notify('error', `${label} didn’t work.`, [e instanceof Error ? e.message : String(e)])
+      return false
+    }
+  }
   const t = pixelTarget(d)
   if (!t) {
     notify('info', `${label} works on a pixel layer or a layer mask. Select one, or add a layer.`)
@@ -117,9 +157,10 @@ export async function paintTarget(paint: Paint, o: Blending, label: string, cove
   }
   const doc = d.history.present
   const format: TileFormat = t.mask ? { mode: 'gray', depth: 8 } : formatOf(doc)
+  const planes = t.mask ? null : planesTarget(d)
   try {
     const layer = await startTiles(doc, target, format)
-    const set = await engine().call('fill.paint', {
+    let set = await engine().call('fill.paint', {
       key: d.key,
       layer,
       format,
@@ -132,6 +173,8 @@ export async function paintTarget(paint: Paint, o: Blending, label: string, cove
       preserve: o.preserve && !t.mask,
       paint: t.mask ? paintForMask(doc, paint) : paint,
     })
+    // Only the colour channels targeted: the rest put back.
+    if (planes) set = await engine().call('fill.keepPlanes', { before: layer, after: set, planes })
     if (store().get(d.key)) commitTiles(store().get(d.key)!, target, set, label)
     return true
   } catch (e) {
@@ -189,30 +232,33 @@ async function contentAware(o: Blending) {
   if (!d) return
   const doc = d.history.present
   if (!doc.selection) return notify('info', 'Content-aware fill fills a selection from what’s round it. Select what to replace first.')
+  if (channelTarget(d)) return notify('info', 'Content-aware fill works on a layer’s pixels, not on an alpha or spot channel. Pick a layer in the Layers panel.')
   const t = pixelTarget(d)
   if (!t || t.mask) return notify('info', 'Content-aware fill works on a pixel layer’s own pixels.')
   const why = refusal(t.node)
   if (why) return notify('info', why)
-  const done = notify('info', 'Content-aware fill is working…')
+  const cover = doc.selection.tiles
   try {
-    const set = await engine().call('fill.contentAware', {
+    const planes = planesTarget(d)
+    let set = await runJob('Content-Aware Fill', (job) => engine().call('fill.contentAware', {
+      job,
       key: d.key,
       layer: t.node.kind === 'pixel' ? t.node.props.tiles : null,
       format: formatOf(doc),
       transform: t.node.transform,
-      cover: doc.selection.tiles,
+      cover,
       width: doc.width,
       height: doc.height,
       blend: o.blend,
       opacity: o.opacity,
       preserve: o.preserve,
       seed: (Math.random() * 2 ** 31) | 0,
-    })
+    }))
+    if (planes) set = await engine().call('fill.keepPlanes', { before: t.node.kind === 'pixel' ? t.node.props.tiles : null, after: set, planes })
     if (store().get(d.key)) commitTiles(store().get(d.key)!, t.node, set, 'Content-Aware Fill')
   } catch (e) {
+    if (isCancelled(e)) return
     notify('error', 'Content-aware fill didn’t work.', [e instanceof Error ? e.message : String(e)])
-  } finally {
-    dismiss(done)
   }
 }
 

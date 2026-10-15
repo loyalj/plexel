@@ -50,8 +50,8 @@ await build({
   outfile,
   plugins: [raw],
   loader: { '.md': 'text', '.wgsl': 'text' },
-  // pdf.js is read as it's published (it finds its worker beside itself), not bundled.
-  external: ['pdfjs-dist'],
+  // pdf.js is read as it's published (it finds its worker beside itself), and so is Ghostscript (CommonJS, its .wasm beside it).
+  external: ['pdfjs-dist', '@jspawn/ghostscript-wasm'],
   logLevel: 'warning',
 })
 

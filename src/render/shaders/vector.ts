@@ -64,7 +64,7 @@ export function patternBuffer(levels: PatternLevel[]): Float32Array {
 }
 
 /** Pattern sampling in WGSL, the same sums as vector/paint.ts's patternSample, reading `pat`. */
-export const PATTERN_IMAGE_WGSL = `
+const PATTERN_IMAGE_WGSL = `
 fn pat_wrap(v: i32, n: i32) -> u32 { return u32(((v % n) + n) % n); }
 fn pat_px(o: u32, w: u32, x: u32, y: u32) -> array<f32, 5> {
   let b = o + (y * w + x) * ${PATTERN_STRIDE}u;

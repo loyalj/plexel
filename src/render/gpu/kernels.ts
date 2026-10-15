@@ -12,6 +12,7 @@
 import { compositeWgsl, variantKey, type CompositeVariant } from '../shaders/composite'
 import { displayWgsl } from '../shaders/display'
 import { mipWgsl } from '../shaders/mip'
+import { uploadWgsl } from '../shaders/upload'
 import { tileBufferBytes, type BufferFormat } from '../shaders/common'
 import type { ColourMode, Depth } from '../../doc/types'
 import { tileFormats } from './atlas'
@@ -28,6 +29,9 @@ import { warpWgsl } from '../shaders/warp'
 import { storeWgsl } from '../shaders/store'
 import { RASTER_WGSL, paintWgsl } from '../shaders/vector'
 
+/** Writes up to this size are held back and sent together by a batched ring (Ring.flush). */
+const SMALL_WRITE = 4096
+
 export class Ring {
   readonly buffer: GPUBuffer
   private at = 0
@@ -35,6 +39,15 @@ export class Ring {
   private usage: GPUBufferUsageFlags
   /** Buffers of their own for writes bigger than the whole ring, let go at the next reset. */
   private oversized: GPUBuffer[] = []
+  /**
+   * With `batched`, the ring's contents on the CPU: small writes (a
+   * dispatch's parameters, a tile's window) go here, and `flush` sends what
+   * was written in one queue write, where a frame of busy tiles made
+   * thousands. [lo, hi) is what hasn't been sent yet.
+   */
+  private cpu: Uint8Array<ArrayBuffer> | null
+  private lo = Infinity
+  private hi = 0
 
   constructor(
     private device: GPUDevice,
@@ -42,10 +55,12 @@ export class Ring {
     readonly size: number,
     usage: GPUBufferUsageFlags,
     private onFull: () => void,
+    batched = false,
   ) {
     this.usage = usage | GPUBufferUsage.COPY_DST
     this.buffer = device.createBuffer({ label, size, usage: this.usage })
     this.align = Math.max(device.limits.minUniformBufferOffsetAlignment, device.limits.minStorageBufferOffsetAlignment)
+    this.cpu = batched ? new Uint8Array(size) : null
   }
 
   /** Writes `data` into a fresh slice and returns where it is. */
@@ -65,9 +80,30 @@ export class Ring {
       this.at = 0
     }
     const offset = this.at
-    this.device.queue.writeBuffer(this.buffer, offset, src as Uint8Array<ArrayBuffer>)
+    if (this.cpu && bytes <= SMALL_WRITE) {
+      this.cpu.set(src, offset)
+      if (offset < this.lo) this.lo = offset
+      if (offset + bytes > this.hi) this.hi = offset + bytes
+    } else {
+      // What's held back goes first, so a flush can never write over this.
+      this.flush()
+      this.device.queue.writeBuffer(this.buffer, offset, src as Uint8Array<ArrayBuffer>)
+    }
     this.at = Math.ceil((offset + size) / this.align) * this.align
     return { buffer: this.buffer, offset, size }
+  }
+
+  /** Sends the small writes held back since the last flush. Called before every submit that reads the ring. */
+  flush() {
+    if (!this.cpu || this.hi <= this.lo) return
+    this.device.queue.writeBuffer(this.buffer, this.lo, this.cpu.subarray(this.lo, this.hi))
+    this.lo = Infinity
+    this.hi = 0
+  }
+
+  /** Whether `bytes` would go in without the ring filling: for callers with another way to do without it. */
+  fits(bytes: number): boolean {
+    return this.at + Math.max(32, Math.ceil(bytes / 4) * 4) <= this.size
   }
 
   /** How full the ring is, 0..1: the renderer stops starting tiles well before it fills. */
@@ -78,6 +114,9 @@ export class Ring {
   /** A new frame: after a submit, the whole ring is free again. */
   reset() {
     this.at = 0
+    // Nothing held back survives a reset: what wasn't submitted is abandoned with its commands.
+    this.lo = Infinity
+    this.hi = 0
     // Work already submitted that reads them still runs; they're freed once it has.
     for (const b of this.oversized.splice(0)) b.destroy()
   }
@@ -129,6 +168,7 @@ export class Kernels {
   private composite = new Map<string, GPUComputePipeline>()
   private display = new Map<string, { tile: GPUComputePipeline; bytes: GPUComputePipeline; probe: GPUComputePipeline; probeLook: GPUComputePipeline }>()
   private mip = new Map<string, GPURenderPipeline>()
+  private upload = new Map<string, GPURenderPipeline>()
   private screenPipeline: GPURenderPipeline | null = null
   private overlay: GPURenderPipeline | null = null
   private adjusts = new Map<string, GPUComputePipeline>()
@@ -282,6 +322,24 @@ export class Kernels {
         primitive: { topology: 'triangle-list' },
       })
       this.mip.set(key, p)
+    }
+    return p
+  }
+
+  /** Planar samples from a storage buffer into an atlas layer (shaders/upload.ts). */
+  uploadPipeline(mode: ColourMode, depth: Depth): GPURenderPipeline {
+    const key = `${mode}/${depth}`
+    let p = this.upload.get(key)
+    if (!p) {
+      const module = this.module(`upload ${key}`, uploadWgsl(mode, depth))
+      p = this.device.createRenderPipeline({
+        label: `upload ${key}`,
+        layout: 'auto',
+        vertex: { module, entryPoint: 'vs' },
+        fragment: { module, entryPoint: 'fs', targets: tileFormats(mode, depth).map((format) => ({ format })) },
+        primitive: { topology: 'triangle-list' },
+      })
+      this.upload.set(key, p)
     }
     return p
   }

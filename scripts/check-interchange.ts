@@ -19,17 +19,22 @@ import { DEFAULT_PROFILES, createDoc, insertNode } from '../src/doc/edit'
 import { makeNode } from '../src/doc/nodes'
 import type { Doc, DocNode } from '../src/doc/types'
 import type { DocSwatch } from '../src/doc/swatches'
-import { fillItem, solid, strokeItem } from '../src/doc/vector'
+import { fillItem, gradientPaint, readAppearance, solid, strokeItem, type Paint } from '../src/doc/vector'
 import { decodeJpegPixels } from '../src/io/jpegDecode'
 import { Reader, Writer } from '../src/io/psd/bin'
 import { docToPlan } from '../src/io/psd/fromDoc'
+import { ascii85, docToEps, epsFlattenCount, epsVector } from '../src/io/eps/write'
+import GhostscriptModule from '@jspawn/ghostscript-wasm'
+import { builtinBrushes } from '../src/vector/brushLibrary'
+import { docToJson, readDocJson } from '../src/doc/serialize'
+import { deepEqual } from '../src/lib/equal'
 import { block, readPath, readCurves, readHueSat, readLevels, readSmartObject, readTypeTool, versionedDescriptor } from '../src/io/psd/blocks'
 import { warpFromPsd } from '../src/io/psd/warp'
 import { obj as dObj, list as dList } from '../src/io/psd/descriptor'
 import { readDescriptor, writeDescriptor } from '../src/io/psd/descriptor'
 import { readEngineData, writeEngineData } from '../src/io/psd/engineData'
 import { packBits, readPsd, writePsd, type PsdFile } from '../src/io/psd/format'
-import { psdToDoc, readGuides, type PsdHost } from '../src/io/psd/toDoc'
+import { psdToDoc, readChannelNames, readDisplayInfo, readGuides, type PsdHost } from '../src/io/psd/toDoc'
 import { docToPdf, type PdfHost } from '../src/io/pdf/write'
 import { parsePathData, parseTransform, resampleStops, svgToDoc } from '../src/io/svg/read'
 import { docToSvg, pathD, type SvgHost } from '../src/io/svg/write'
@@ -111,7 +116,15 @@ check('adjustment layers come over as theirs', ['brightnesscontrast:brightness-c
   return adjOf(`adj_${f}_rgb.psd`).length > 0 && adjOf(`adj_${f}_rgb.psd`).every((x) => x === a)
 }))
 check('Hue/Saturation’s colour ranges come over, without a warning', !warned('adj_huesaturation_rgb.psd', /colour ranges/))
-check('spot channels are named as left out', warned('cmyk-spot.psd', /spot/))
+{
+  const ch = opened.get('cmyk-spot.psd')!.doc.channels ?? []
+  check(
+    'spot channels come in as spot channels, named and inked as the file says',
+    ch.length === 3 && ch.every((c) => c.kind === 'spot') && ch.map((c) => c.name).join() === 'blue,fluorescent pink,yellow' && ch[1].ink?.space === 'rgb' && near(ch[1].ink.c[0], 1) && near(ch[1].ink.c[1], 18504 / 65535) && ch[0].opacity === 0,
+    JSON.stringify(ch.map((c) => [c.name, c.kind, c.ink?.c.map((v) => v.toFixed(3)), c.opacity])),
+  )
+  check('and aren’t warned about', !warned('cmyk-spot.psd', /spot/))
+}
 check('a smart object whose contents can’t open comes in as its pixels, saying so', nodesOf('minimal_smartobject-layer.psd', 'pixel').length === 1 && warned('minimal_smartobject-layer.psd', /smart object/))
 
 const lv = opened.get('adj_levels_rgb.psd')!.file.layers.find((l) => l.name === 'Levels 4')!
@@ -199,6 +212,42 @@ check('PackBits round-trips, runs and literals', same(unpack(packBits(row)), row
   check('and it isn’t warned about as a live filter', !warnings.some((x) => /Live filters/.test(x)), warnings.join('; '))
   const back = warpFromPsd(dObj(desc ?? undefined, 'warp'), [100, 0, 0, 50, 0, 0], [10, 0, 100, 0, 100, 50, 0, 50])
   check('its style reads back as the Warp effect’s', back?.style === 'flag' && back?.bend === 40 && back?.horizontal === 10, JSON.stringify(back))
+}
+
+// Alpha and spot channels: their names (1045, 1006) and how each shows (1077), written and read back.
+{
+  let d = createDoc({ name: 'Channels', width: 200, height: 100, resolution: 72, mode: 'rgb', depth: 8, profile: DEFAULT_PROFILES.rgb }, 'root')
+  d = {
+    ...d,
+    channels: [
+      { id: 'a', name: 'Kép maszk', tiles: null, transform: [1, 0, 0, 1, 0, 0], tint: [0, 1, 0], marks: 'selected', opacity: 0.3 },
+      { id: 's', name: 'Varnish', tiles: null, transform: [1, 0, 0, 1, 0, 0], kind: 'spot', ink: { space: 'cmyk', profile: DEFAULT_PROFILES.cmyk, c: [0.1, 0.2, 0.3, 0.4] }, opacity: 0.6 },
+    ],
+  }
+  const { plan } = await docToPlan(d, 'k', { psName: (f) => f, smartObject: async () => null, icc: null })
+  const names = readChannelNames(plan)
+  const shows = readDisplayInfo(plan)
+  check('channel names write in Unicode and read back', names.join() === 'Kép maszk,Varnish', names.join())
+  check('Pascal names too, for older readers', (() => { const r = plan.resources.find((x) => x.id === 1006); return !!r && r.data[0] === 9 })())
+  check(
+    'how each shows writes as Photoshop’s display info and reads back',
+    shows.length === 2 && shows[0].kind === 0 && shows[0].opacity === 30 && shows[0].space === 0 && shows[0].values[1] === 65535 && shows[1].kind === 2 && shows[1].opacity === 60 && shows[1].space === 2 && shows[1].values[3] === 65535 - Math.round(0.4 * 65535),
+    JSON.stringify(shows),
+  )
+  check('the plan names the channels for the engine to write, a spot as a spot', JSON.stringify(plan.channels) === JSON.stringify([{ id: 'a', spot: false }, { id: 's', spot: true }]))
+
+  // A file with layers and an alpha channel: read flat, only the channel's plane is decoded.
+  const base = opened.get('group.psd')!.file
+  const n = base.width * base.height
+  const colour = base.mode === 4 ? 4 : base.mode === 3 ? 3 : 1
+  const plane = new Uint8Array(n).map((_, i) => (i % base.width < base.width / 2 ? 255 : 0))
+  const comp = [...Array.from({ length: colour }, () => new Uint8Array(n).fill(200)), plane]
+  const bytes = await writePsd({ ...base, channels: comp.length, composite: comp, mergedAlpha: false, resources: [...base.resources, { id: 1045, name: '', data: plan.resources.find((x) => x.id === 1045)!.data.subarray(0, 4 + 2 * 10) }] })
+  const flat = await readPsd(bytes, { composite: 'flat' })
+  check('a file with layers, read flat, decodes its alpha channel and not its colour', !!flat.composite && flat.composite.slice(0, colour).every((p) => p === null) && !!flat.composite[colour] && same(raw8(flat.composite[colour]), plane))
+  const masks: [number, number][] = []
+  const back = await psdToDoc(flat, { ...host, mask: (w, _h, p) => { masks.push([p[0], p[w - 1]]); return `mask${ids++}` } })
+  check('and it comes in as an alpha channel, named', back.doc.channels?.length === 1 && back.doc.channels[0].kind === undefined && back.doc.channels[0].name === 'Kép maszk' && masks.length >= 1 && masks[masks.length - 1].join() === '255,0', JSON.stringify(back.doc.channels))
 }
 
 // Guides: Photoshop's resource 1032, in 1/32 pixels, written and read back.
@@ -387,6 +436,44 @@ const xrefOk = (() => {
 })()
 check('every cross-reference points at its object', xrefOk)
 
+// A width profile and arrowheads: SVG's strokes can't hold them, so the stroke goes as its outline, filled.
+{
+  let d = createDoc({ name: 'Arrows', width: 200, height: 100, resolution: 72, mode: 'rgb', depth: 8, profile: DEFAULT_PROFILES.rgb }, 'root')
+  const path = { fillRule: 'nonzero' as const, subpaths: [{ closed: false, anchors: [{ p: [20, 50] as [number, number], in: null, out: null, smooth: false }, { p: [180, 50] as [number, number], in: null, out: null, smooth: false }] }] }
+  d = insertNode(d, makeNode('vector', 'a', 'Arrow', { geometry: { kind: 'path', path } as never, appearance: [{ ...strokeItem(solid([0, 0, 0]), 4), end: { shape: 'triangle', scale: 1 }, profile: [{ at: 0, left: 0, right: 0 }, { at: 1, left: 1, right: 1 }] }] }), 'root', 0)
+  d = insertNode(d, makeNode('vector', 'b', 'Plain', { geometry: { kind: 'path', path } as never, appearance: [strokeItem(solid([0, 0, 0]), 4)] }), 'root', 1)
+  const sv = (await docToSvg(d, sHost)).svg
+  check('in SVG, a stroke with a profile or arrowheads is its outline, filled; a plain one stays a stroke', (sv.match(/stroke-width=/g) ?? []).length === 1 && /<path d="M[^"]+" fill="#000000?"/i.test(sv), sv.slice(0, 400))
+  const p = await docToPdf(d, pdfHost(new Uint8Array(132)))
+  check('in PDF too: drawn, and pdf.js reads it', (await readPdf(p.bytes)).pages === 1)
+  // And in Plexel's own files, every setting kept.
+  const back = readAppearance(JSON.parse(JSON.stringify((d.nodes.a as DocNode & { props: { appearance: unknown } }).props.appearance)), () => {})
+  const st = back[0]
+  check('profiles and arrowheads read back as written', st.kind === 'stroke' && st.end?.shape === 'triangle' && st.profile?.length === 2 && st.profile[1].left === 1)
+  const odd = readAppearance([{ kind: 'stroke', width: 2, start: { shape: 'heart', scale: 1 }, end: { shape: 'circle', scale: 99 }, profile: [{ at: 2, left: 1 }, { at: 0.5, left: -1 }, 'x'], dashAlign: 'yes' }], () => {})[0]
+  check('damaged ones are left out or kept in range', odd.kind === 'stroke' && !odd.start && odd.end?.scale === 10 && odd.profile?.length === 2 && odd.profile[0].at === 0.5 && odd.profile[0].left === 0 && odd.profile[1].at === 1 && !odd.dashAlign, JSON.stringify(odd))
+}
+
+// Vector brushes: neither SVG nor PDF has them, so a brush stroke goes as its artwork's parts, each filled in its colour.
+{
+  let d = createDoc({ name: 'Brushes', width: 300, height: 100, resolution: 72, mode: 'rgb', depth: 8, profile: DEFAULT_PROFILES.rgb }, 'root')
+  const path = { fillRule: 'nonzero' as const, subpaths: [{ closed: false, anchors: [{ p: [20, 50] as [number, number], in: null, out: null, smooth: false }, { p: [280, 50] as [number, number], in: null, out: null, smooth: false }] }] }
+  const ribbon = builtinBrushes('rgb').find((b) => b.id === 'builtin:ribbon')!
+  d = insertNode(d, makeNode('vector', 'r', 'Ribbon', { geometry: { kind: 'path', path } as never, appearance: [{ ...strokeItem(solid([0, 0, 1]), 20), opacity: 0.5, brush: ribbon }] }), 'root', 0)
+  d = { ...d, vectorBrushes: [ribbon] }
+  const sv = (await docToSvg(d, sHost)).svg
+  const parts = sv.match(/<g opacity="0.5"><path d="M[^"]+" fill="[^"]+"\/><path d="M[^"]+" fill="[^"]+"\/><path d="M[^"]+" fill="[^"]+"\/><\/g>/)
+  check('in SVG, a brush stroke is its three parts, filled, the stroke’s opacity on them together', !!parts && !/stroke-width=/.test(sv), sv.slice(0, 600))
+  check('Hue Shift recolours them: the ribbon’s red turned blue', /fill="#(1[0-9a-f]|2[0-9a-f])(1[0-9a-f]|2[0-9a-f])d[0-9a-f]"/i.test(sv), (sv.match(/fill="#[0-9a-f]+"/gi) ?? []).join(' '))
+  const p = await docToPdf(d, pdfHost(new Uint8Array(132)))
+  check('in PDF: drawn, and pdf.js reads it', (await readPdf(p.bytes)).pages === 1 && p.warnings.length === 0, p.warnings.join('; '))
+  // In Plexel's own file: the stroke's brush and the library, whole.
+  const back = readDocJson(docToJson(d))
+  check('a brush stroke and the document’s brushes read back as written', back.ok && deepEqual(back.doc.vectorBrushes, [ribbon]) && deepEqual((back.doc.nodes.r as DocNode & { props: { appearance: { brush?: unknown }[] } }).props.appearance[0].brush, ribbon))
+  const { warnings } = await docToPlan(d, 'k', { psName: (f) => f, smartObject: async () => null, icc: null })
+  check('in PSD the look is in the pixels, and that’s said', warnings.some((w) => w.includes('Ribbon')), warnings.join('; '))
+}
+
 let cmyk = createDoc({ name: 'Press', width: 100, height: 100, resolution: 300, mode: 'cmyk', depth: 8, profile: DEFAULT_PROFILES.cmyk }, 'root')
 const spot: DocSwatch = { id: 'w1', name: 'House Red', kind: 'spot', colour: { space: 'cmyk', profile: DEFAULT_PROFILES.cmyk, c: [0, 0.9, 0.8, 0] } }
 cmyk = { ...cmyk, swatches: [spot] }
@@ -397,6 +484,17 @@ const rp2 = await readPdf(pdf2.bytes)
 check('CMYK: an output intent for PDF/X, with the profile', text2.includes('/OutputIntents') && text2.includes('/GTS_PDFX') && text2.includes('/DestOutputProfile'))
 check('a spot swatch is a Separation of its own name', /\/Separation\s*\/House#20Red/.test(text2))
 check('trim and bleed boxes are given', text2.includes('/TrimBox') && text2.includes('/BleedBox'))
+{
+  // Spot channels: an image each, in the ink's Separation (one with the swatch of the same name), overprinting.
+  const withChannels = { ...cmyk, channels: [{ id: 'c1', name: 'House Red', tiles: null, transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number], kind: 'spot' as const, ink: spot.colour }, { id: 'c2', name: 'Varnish', tiles: null, transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number], kind: 'spot' as const, ink: spot.colour }] }
+  const plane = (name: string) => ({ name, full: [0, 0.9, 0.8, 0], width: 100, height: 100, data: new Uint8Array(100 * 100).fill(255) })
+  const p3 = await docToPdf(withChannels, { ...pdfHost(fakeIcc), spotChannels: async () => [plane('House Red'), plane('Varnish')] })
+  const t3 = new TextDecoder('latin1').decode(p3.bytes)
+  const seps = [...t3.matchAll(/\/Separation\s*\/([^\s[<]+)/g)].map((m) => m[1])
+  check('spot channels are images in their inks’ Separations, one ink per name', seps.filter((s) => s === 'House#20Red').length >= 1 && seps.includes('Varnish') && new Set(seps).size === 2, seps.join())
+  check('drawn overprinting, so each is a plate of its own', /\/OP\s+true/.test(t3) && /\/op\s+true/.test(t3) && (t3.match(/\/Subtype\s*\/Image/g) ?? []).length >= 2)
+  check('and pdf.js draws it', (await readPdf(p3.bytes)).pages === 1)
+}
 check('and pdf.js draws it', rp2.pages === 1 && rp2.ops.includes('constructPath'))
 const streams = [...text2.matchAll(/stream\r?\n/g)].length
 check('streams are compressed', streams > 0 && text2.includes('/FlateDecode'))
@@ -418,6 +516,77 @@ const streamsOf = (bytes: Uint8Array) => {
 }
 const pdf3 = streamsOf((await docToPdf(aligned, pdfHost(fakeIcc))).bytes)
 check('and in the PDF: a clip, then the doubled stroke', /W n\s+8 w/.test(pdf3) && /re\s[^Q]*W\* n\s+8 w/.test(pdf3))
+
+// --- EPS: written, and drawn by Ghostscript ---------------------------------------------------------
+{
+  console.log('\nEPS')
+  check('ASCII85 as Adobe has it: "Man " is 9jqo^, four zeros a z', ascii85(new TextEncoder().encode('Man ')) === '9jqo^~>' && ascii85(new Uint8Array(4)) === 'z~>' && ascii85(new Uint8Array([1])) === '!<~>')
+  const gsWasm = readFileSync('node_modules/@jspawn/ghostscript-wasm/gs.wasm')
+  /** The EPS drawn by Ghostscript on `device` at 72 dpi, every file it wrote. */
+  const ghost = async (eps: Uint8Array, device: string): Promise<Map<string, Uint8Array>> => {
+    const gs = await GhostscriptModule({ print: () => {}, printErr: () => {}, instantiateWasm: (imports: WebAssembly.Imports, ok: (i: WebAssembly.Instance) => void) => { void WebAssembly.instantiate(gsWasm, imports).then((r) => ok(r.instance)); return {} } })
+    gs.FS.mkdir('/out')
+    gs.FS.writeFile('/in.eps', eps)
+    const code = gs.callMain(['-dQUIET', '-dSAFER', '-dBATCH', '-dNOPAUSE', '-dEPSCrop', `-sDEVICE=${device}`, '-r72', '-sOutputFile=/out/page.out', '/in.eps'])
+    const out = new Map<string, Uint8Array>()
+    if (code === 0) for (const name of gs.FS.readdir('/out')) if (name !== '.' && name !== '..') out.set(name, gs.FS.readFile(`/out/${name}`))
+    return out
+  }
+  /** A binary PPM or PAM: its size, channels and samples. */
+  const pnm = (b: Uint8Array) => {
+    const head = new TextDecoder('latin1').decode(b.subarray(0, 200))
+    if (head.startsWith('P6')) {
+      const m = /^P6\s+(?:#[^\n]*\n\s*)*(\d+)\s+(\d+)\s+(\d+)\s/.exec(head)!
+      return { w: +m[1], h: +m[2], ch: 3, data: b.subarray(m[0].length) }
+    }
+    const end = head.indexOf('ENDHDR\n') + 7
+    return { w: +/WIDTH (\d+)/.exec(head)![1], h: +/HEIGHT (\d+)/.exec(head)![1], ch: +/DEPTH (\d+)/.exec(head)![1], data: b.subarray(end) }
+  }
+  const px = (img: ReturnType<typeof pnm>, x: number, y: number) => [...img.data.subarray((y * img.w + x) * img.ch, (y * img.w + x + 1) * img.ch)]
+  const closeTo = (a: number[], b: number[], t = 6) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) <= t)
+  const epsHost = pdfHost(null)
+  const rectPath = (x0: number, y0: number, x1: number, y1: number) => ({ fillRule: 'nonzero' as const, subpaths: [{ closed: true, anchors: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([x, y]) => ({ p: [x, y] as [number, number], in: null, out: null, smooth: false })) }] })
+
+  // Shapes in RGB: a red square stroked black, a gradient from blue to green.
+  let d = createDoc({ name: 'Shapes', width: 100, height: 60, resolution: 72, mode: 'rgb', depth: 8, profile: DEFAULT_PROFILES.rgb }, 'root')
+  d = insertNode(d, makeNode('vector', 'r', 'Red', { geometry: { kind: 'path', path: rectPath(10, 10, 40, 50) } as never, appearance: [fillItem(solid([1, 0, 0])), { ...strokeItem(solid([0, 0, 0]), 4) }] }), 'root', 0)
+  d = insertNode(d, makeNode('vector', 'g', 'Gradient', { geometry: { kind: 'path', path: rectPath(50, 10, 90, 50) } as never, appearance: [fillItem({ ...(gradientPaint([0, 0, 1], [0, 1, 0]) as Extract<Paint, { kind: 'gradient' }>), angle: 0 })] }), 'root', 1)
+  const eps = await docToEps(d, epsHost)
+  const text = new TextDecoder('latin1').decode(eps.bytes)
+  check('an EPSF 3.0 file, its bounding box the document’s size in points', text.startsWith('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 60') && text.trimEnd().endsWith('%%EOF'))
+  check('7-bit clean', eps.bytes.every((b) => b < 128))
+  check('shapes are vectors: no image in it', !text.includes(' image\n'))
+  const shot = pnm((await ghost(eps.bytes, 'ppmraw')).get('page.out')!)
+  check('Ghostscript draws it the document’s size', shot.w === 100 && shot.h === 60, `${shot.w}×${shot.h}`)
+  check('the square red, its stroke black, the background unpainted', closeTo(px(shot, 25, 30), [255, 0, 0]) && closeTo(px(shot, 10, 30), [0, 0, 0], 30) && closeTo(px(shot, 3, 3), [255, 255, 255]), `${px(shot, 25, 30)} ${px(shot, 10, 30)} ${px(shot, 3, 3)}`)
+  check('the gradient a shading, blue at its left and green at its right', px(shot, 52, 30)[2] > 200 && px(shot, 88, 30)[1] > 200 && px(shot, 88, 30)[2] < 60, `${px(shot, 52, 30)} ${px(shot, 88, 30)}`)
+
+  // What EPS can't hold is one image, its clear parts unpainted; opaque shapes above it stay vectors.
+  let f2 = insertNode(d, makeNode('pixel', 'p', 'Photo', { tiles: null }), 'root', 0)
+  f2 = { ...f2, nodes: { ...f2.nodes, g: { ...f2.nodes.g, opacity: 0.5 } } }
+  check('flattened up to the last layer with pixels or transparency; what’s above it not', epsFlattenCount(f2) === 3 && epsFlattenCount(d) === 0 && epsVector(f2, f2.nodes.r) && !epsVector(f2, f2.nodes.g))
+  const img = new Uint8Array(100 * 60 * 4)
+  for (let y = 0; y < 60; y++) for (let x = 0; x < 50; x++) img.set([255, 220, 0, 255], (y * 100 + x) * 4)
+  const top = insertNode(f2, makeNode('vector', 't', 'Top', { geometry: { kind: 'path', path: rectPath(60, 20, 80, 40) } as never, appearance: [fillItem(solid([0, 0, 0]))] }), 'root', 3)
+  const flatEps = await docToEps(top, { ...epsHost, flattened: async () => ({ x: 0, y: 0, w: 100, h: 60, channels: 4, data: img, png: null }) })
+  const flatShot = pnm((await ghost(flatEps.bytes, 'ppmraw')).get('page.out')!)
+  check('the flattened part is an image: yellow where it has pixels, unpainted where it’s clear', closeTo(px(flatShot, 20, 5), [255, 220, 0]) && closeTo(px(flatShot, 70, 5), [255, 255, 255]), `${px(flatShot, 20, 5)} ${px(flatShot, 70, 5)}`)
+  check('the opaque shape above it a vector, over it', closeTo(px(flatShot, 70, 30), [0, 0, 0]) && flatEps.warnings.some((w) => /no transparency/.test(w)))
+
+  // CMYK, with a spot colour: the inks as they are, the spot its own plate.
+  const spotInk: DocSwatch = { id: 'sp', name: 'House Blue', kind: 'spot', colour: { space: 'cmyk', profile: DEFAULT_PROFILES.cmyk, c: [1, 0.6, 0, 0.1] } }
+  let c = createDoc({ name: 'Press', width: 100, height: 60, resolution: 72, mode: 'cmyk', depth: 8, profile: DEFAULT_PROFILES.cmyk }, 'root')
+  c = { ...c, swatches: [spotInk] }
+  c = insertNode(c, makeNode('vector', 'k', 'Process', { geometry: { kind: 'path', path: rectPath(5, 5, 45, 55) } as never, appearance: [fillItem(solid([0.1, 0.8, 0.6, 0.05]))] }), 'root', 0)
+  c = insertNode(c, makeNode('vector', 's', 'Spot', { geometry: { kind: 'path', path: rectPath(55, 5, 95, 55) } as never, appearance: [fillItem({ kind: 'solid', colour: [1, 0.6, 0, 0.1], swatch: 'sp', tint: 0.5 })] }), 'root', 1)
+  const cmykEps = await docToEps(c, epsHost)
+  const ctext = new TextDecoder('latin1').decode(cmykEps.bytes)
+  check('the header names the process inks and the spot one with its process colour', ctext.includes('%%DocumentProcessColors: Cyan Magenta Yellow Black') && ctext.includes('%%DocumentCustomColors: (House Blue)') && ctext.includes('%%CMYKCustomColor: 1 0.6 0 0.1 (House Blue)'))
+  const pam = pnm((await ghost(cmykEps.bytes, 'pamcmyk32')).get('page.out')!)
+  check('CMYK goes as the document’s inks', closeTo(px(pam, 25, 30), [26, 204, 153, 13], 3), String(px(pam, 25, 30)))
+  const plates = await ghost(cmykEps.bytes, 'tiffsep')
+  check('the spot colour prints on a plate of its own', [...plates.keys()].some((n) => n.includes('House Blue')), [...plates.keys()].join(', '))
+}
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall clear')
 process.exit(failures ? 1 : 0)

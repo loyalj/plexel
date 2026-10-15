@@ -9,6 +9,7 @@
  * collection waits for any of this work still running, whose sets in the
  * making aren't in anybody's list yet.
  */
+import { guarded } from './work'
 import { TILE, type TileFormat } from '../tiles/format'
 import {
   CoverReader,
@@ -35,9 +36,19 @@ import {
   type Torus,
 } from '../tiles/coverage'
 import { tileWraps, type Tiling } from '../doc/types'
-import { pinSet, store, unpinSet } from './tileHost'
+import { held, store } from './tileHost'
 import type { Renderer } from '../render/renderer'
-import { readPixels8 } from '../render/readback'
+import { readCover8, readPixels8 } from '../render/readback'
+
+/** A channel's bytes as an opaque gray image, as the Magic Wand reads one. */
+function grayImage(c: { width: number; height: number; data: Uint8Array }) {
+  const data = new Uint8Array(c.width * c.height * 2)
+  for (let i = 0; i < c.data.length; i++) {
+    data[i * 2] = c.data[i]
+    data[i * 2 + 1] = 255
+  }
+  return { width: c.width, height: c.height, channels: 2, data }
+}
 
 export type SelectShape =
   | { kind: 'rect'; x0: number; y0: number; x1: number; y1: number }
@@ -58,42 +69,10 @@ export type SelectModify =
 
 /** The most pixels the wand reads at once; past this it reads a mip level. */
 const WAND_PIXELS = 64 * 1024 * 1024
-/** How long a new set is kept from collection, waiting for the page to commit it. */
-const HOLD_MS = 60_000
-
-let running = 0
-let settled: (() => void)[] = []
-
-/** Resolves once no selection work is running. tiles.gc waits on it. */
-export function selectionIdle(): Promise<void> {
-  if (!running) return Promise.resolve()
-  return new Promise((resolve) => settled.push(resolve))
-}
-
-export async function guarded<T>(fn: () => Promise<T>): Promise<T> {
-  running++
-  try {
-    return await fn()
-  } finally {
-    running--
-    if (!running) for (const r of settled.splice(0)) r()
-  }
-}
-
-/** A new set held for the page to commit (a layer's: an empty one is null already). */
-export function held(set: string | null): string | null {
-  if (!set) return null
-  pinSet(set)
-  setTimeout(() => unpinSet(set), HOLD_MS)
-  return set
-}
-
 /** A new set, held for the page; null for an empty selection, which is no selection. */
 function result(set: string | null): string | null {
   if (!set || isEmpty(store, set)) return null
-  pinSet(set)
-  setTimeout(() => unpinSet(set), HOLD_MS)
-  return set
+  return held(set)
 }
 
 /** A tiled document's torus, from its tiling: null for an ordinary one. */
@@ -133,7 +112,8 @@ export interface SelectCalls {
   'select.modify': { args: { width: number; height: number; current: string; modify: SelectModify; tiled?: Tiling }; result: string | null }
   /** The magic wand at a document point: of the composite, or of one node on its own. */
   'select.wand': {
-    args: { key: string; x: number; y: number; tolerance: number; contiguous: boolean; node: string | null; antialias: boolean; op: CombineOp; current: string | null }
+    /** `channel`: an alpha or spot channel's own values read, not a layer's (the Channels panel's target). */
+    args: { key: string; x: number; y: number; tolerance: number; contiguous: boolean; node: string | null; antialias: boolean; op: CombineOp; current: string | null; channel?: string }
     result: string | null
   }
   /** How much the selection covers a document pixel: whether a drag starts inside it. */
@@ -211,7 +191,8 @@ export function selectHandlers(renderer: () => Promise<Renderer>): { [M in Selec
         if (x < 0 || y < 0 || x >= doc.width || y >= doc.height) return result(a.op === 'replace' ? null : a.current)
         let level = 0
         while ((doc.width / 2 ** level) * (doc.height / 2 ** level) > WAND_PIXELS) level++
-        const img = await readPixels8(r, a.key, a.node, level)
+        const ch = a.channel ? doc.channels?.find((c) => c.id === a.channel) : undefined
+        const img = ch ? grayImage(await readCover8(r, a.key, ch, level)) : await readPixels8(r, a.key, a.node, level)
         const sx = Math.min(img.width - 1, Math.floor(x / 2 ** level))
         const sy = Math.min(img.height - 1, Math.floor(y / 2 ** level))
         const set = wand(store, img.data, img.channels, img.width, img.height, sx, sy, a.tolerance, a.contiguous, a.antialias, level, doc.width, doc.height, t)

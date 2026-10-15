@@ -6,6 +6,7 @@
 import { formatLength, type Unit } from '../doc/units'
 import { documents } from './documents'
 import { guidePrefs } from './guidePrefs'
+import { Listeners } from '../lib/listeners'
 
 export interface Readout {
   text: string
@@ -16,18 +17,15 @@ export interface Readout {
 
 class ReadoutStore {
   private value: Readout | null = null
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   get = () => this.value
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
   set(r: Readout | null) {
     if (r === this.value || (r && this.value && r.text === this.value.text && r.x === this.value.x && r.y === this.value.y)) return
     this.value = r
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 }
 

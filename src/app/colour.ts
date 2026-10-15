@@ -25,8 +25,7 @@ let ready: ColourEngine | null = null
 
 export function colourEngine(): Promise<ColourEngine> {
   engine ??= (async () => {
-    const bytes = await (await fetch(wasmUrl)).arrayBuffer()
-    const cms = await startCms(bytes)
+    const cms = await startCms({ url: wasmUrl })
     const registry = new ProfileRegistry(cms, assets())
     ready = { cms, registry, converter: new Converter(registry) }
     return ready

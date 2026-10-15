@@ -13,6 +13,7 @@ export type Modifier = (typeof MODIFIERS)[number]
 
 export function chordParts(keys: string, mac = isMac()): string[] {
   if (mac && keys === 'Alt+Right-drag') return ['⌃', '⌥', 'Drag']
+  if (mac && keys === 'Shift+Alt+Right-drag') return ['⌃', '⌥', '⌘', 'Drag']
   return keys.split('+').map((k) => (mac ? (MAC[k] ?? k) : k))
 }
 

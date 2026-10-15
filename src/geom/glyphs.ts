@@ -10,6 +10,7 @@
  * one into a path with every contour placed.
  */
 import { cubicBounds, evalCubic, flattenPath, linesFor, pathBounds, subpathFromCubics, unionBox, type Box, type Cubic, type FillRule, type Mat, type PathData, type Polyline, type Subpath } from './path'
+import { compose } from './affine'
 
 export interface GlyphSet {
   kind: 'glyphs'
@@ -26,14 +27,6 @@ export const EMPTY_GLYPHS: GlyphSet = { kind: 'glyphs', outlines: [], placements
 
 export const isGlyphs = (p: unknown): p is GlyphSet => !!p && (p as GlyphSet).kind === 'glyphs'
 
-const compose = (a: Mat, b: Mat): number[] => [
-  a[0] * b[0] + a[2] * b[1],
-  a[1] * b[0] + a[3] * b[1],
-  a[0] * b[2] + a[2] * b[3],
-  a[1] * b[2] + a[3] * b[3],
-  a[0] * b[4] + a[2] * b[5] + a[4],
-  a[1] * b[4] + a[3] * b[5] + a[5],
-]
 
 /** A placement's transform, then `m` (when given). */
 function placementMatrix(g: GlyphSet, i: number, m?: Mat): number[] {
@@ -43,7 +36,7 @@ function placementMatrix(g: GlyphSet, i: number, m?: Mat): number[] {
 }
 
 /** Each contour of an outline through `t`, as cubics (lines raised to cubics), for whoever needs curves. */
-export function outlineCubics(outline: number[], t: Mat): Cubic[][] {
+function outlineCubics(outline: number[], t: Mat): Cubic[][] {
   const contours: Cubic[][] = []
   let cur: Cubic[] | null = null
   let sx = 0
@@ -88,29 +81,61 @@ export function outlineCubics(outline: number[], t: Mat): Cubic[][] {
   return contours
 }
 
-/** A glyph set flattened into closed polylines within `tol` (after `m`). */
+/** One outline's contours through `t`, flattened within `tol`: closed point lists. */
+function flattenContours(outline: number[], t: Mat, tol: number): number[][] {
+  const out: number[][] = []
+  for (const contour of outlineCubics(outline, t)) {
+    const pts = [contour[0][0], contour[0][1]]
+    for (const c of contour) {
+      const straight = c[2] === c[0] && c[3] === c[1] && c[4] === c[6] && c[5] === c[7]
+      if (straight) {
+        pts.push(c[6], c[7])
+        continue
+      }
+      const n = linesFor(c, tol)
+      for (let k = 1; k <= n; k++) {
+        const [px, py] = evalCubic(c, k / n)
+        pts.push(px, py)
+      }
+    }
+    if (pts.length >= 4 && Math.abs(pts[pts.length - 2] - pts[0]) < 1e-9 && Math.abs(pts[pts.length - 1] - pts[1]) < 1e-9) pts.length -= 2
+    if (pts.length >= 6) out.push(pts)
+  }
+  return out
+}
+
+/**
+ * A glyph set flattened into closed polylines within `tol` (after `m`).
+ * Placements of the same glyph at the same size and angle (most of a
+ * text's) flatten to the same points but for where they are, so each
+ * glyph is flattened once for each such transform, then moved: 49,000
+ * placements of 41 glyphs cost 41 flattenings, not 49,000.
+ */
 export function flattenGlyphs(g: GlyphSet, tol: number, m?: Mat): Polyline[] {
   const out: Polyline[] = []
+  /** By outline index: the linear parts it's been flattened through, and the contours, about the origin. */
+  const done = new Map<number, { lin: number[]; contours: number[][] }[]>()
   for (let i = 0; i < g.placements.length; i += 7) {
-    const outline = g.outlines[g.placements[i]]
+    const index = g.placements[i]
+    const outline = g.outlines[index]
     if (!outline) continue
     const t = placementMatrix(g, i, m)
-    for (const contour of outlineCubics(outline, t)) {
-      const pts = [contour[0][0], contour[0][1]]
-      for (const c of contour) {
-        const straight = c[2] === c[0] && c[3] === c[1] && c[4] === c[6] && c[5] === c[7]
-        if (straight) {
-          pts.push(c[6], c[7])
-          continue
-        }
-        const n = linesFor(c, tol)
-        for (let k = 1; k <= n; k++) {
-          const [px, py] = evalCubic(c, k / n)
-          pts.push(px, py)
-        }
+    let seen = done.get(index)
+    if (!seen) done.set(index, (seen = []))
+    let hit = seen.find((s) => s.lin[0] === t[0] && s.lin[1] === t[1] && s.lin[2] === t[2] && s.lin[3] === t[3])
+    if (!hit) {
+      hit = { lin: t.slice(0, 4), contours: flattenContours(outline, [t[0], t[1], t[2], t[3], 0, 0], tol) }
+      seen.push(hit)
+    }
+    const dx = t[4]
+    const dy = t[5]
+    for (const local of hit.contours) {
+      const pts = new Array<number>(local.length)
+      for (let k = 0; k < local.length; k += 2) {
+        pts[k] = local[k] + dx
+        pts[k + 1] = local[k + 1] + dy
       }
-      if (pts.length >= 4 && Math.abs(pts[pts.length - 2] - pts[0]) < 1e-9 && Math.abs(pts[pts.length - 1] - pts[1]) < 1e-9) pts.length -= 2
-      if (pts.length >= 6) out.push({ pts, closed: true })
+      out.push({ pts, closed: true })
     }
   }
   return out

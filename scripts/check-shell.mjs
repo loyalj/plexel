@@ -5,7 +5,7 @@
  *
  * Run with: npm run check:shell
  */
-import { check, finish, frames, open, waitForEngine, waitUntil } from './harness.mjs'
+import { check, dialogShown, finish, frames, open, pageHelpers, waitForEngine, waitUntil } from './harness.mjs'
 
 const { page, url } = await open({ viewport: { width: 1280, height: 800 } })
 await page.goto(url)
@@ -18,13 +18,7 @@ const focused = () =>
     const el = document.activeElement
     return el?.dataset?.command ?? el?.textContent?.trim() ?? null
   })
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
+const { press } = pageHelpers(page)
 const titleOf = (label) => page.evaluateHandle((l) => [...document.querySelectorAll('.menu-title')].find((b) => b.textContent === l), label)
 const clickTitle = async (label) => {
   const el = await titleOf(label)
@@ -126,7 +120,7 @@ check('Esc closes the dialog', !(await page.$('[data-dialog="about"]')))
 // --- dialogs ----------------------------------------------------------------
 console.log('\ndialogs')
 await press('Control+Slash')
-check('Ctrl+/ opens the shortcuts list', !!(await page.$('[data-dialog="shortcuts"]')))
+check('Ctrl+/ opens the shortcuts list', await dialogShown(page, 'shortcuts'))
 const listed = await page.$eval('[data-dialog="shortcuts"]', (e) => e.textContent)
 check('it lists Ctrl+K for the palette', /Command Palette\s*Ctrl\+K/.test(listed), listed.slice(0, 80))
 await press('Control+KeyK')

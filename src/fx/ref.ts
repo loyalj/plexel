@@ -15,6 +15,7 @@ import { boxesFor, type Region } from '../filters/defs'
 import type { GradientStop } from '../doc/params'
 import { FX_BY_KIND, type FxKind } from './defs'
 import { PATTERN_BY_ID, patternValue } from '../vector/patterns'
+import { clamp01 as clamp } from '../lib/num'
 
 export type Plane = Float64Array
 
@@ -38,12 +39,11 @@ export interface FxLayer {
   k: number
 }
 
-const clamp = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)
 
 // --- planes ------------------------------------------------------------------------------
 
 /** The body's alpha, hardened: a / (1 − spread), clamped. Spread (or choke) is 0..1. */
-export function shapePlane(body: Region, spread: number): Plane {
+function shapePlane(body: Region, spread: number): Plane {
   const { size, stride, data } = body
   const k = 1 / Math.max(1e-4, 1 - Math.min(0.99, spread))
   const out = new Float64Array(size * size)
@@ -52,7 +52,7 @@ export function shapePlane(body: Region, spread: number): Plane {
 }
 
 /** One box pass over a plane, as filters/defs.ts boxPass, transparent outside. */
-export function boxPlane(p: Plane, size: number, r: number, horizontal: boolean): Plane {
+function boxPlane(p: Plane, size: number, r: number, horizontal: boolean): Plane {
   if (r <= 0) return p
   const out = new Float64Array(p.length)
   const n = 2 * r + 1
@@ -69,14 +69,14 @@ export function boxPlane(p: Plane, size: number, r: number, horizontal: boolean)
   return out
 }
 
-export function gaussPlane(p: Plane, size: number, sigma: number): Plane {
+function gaussPlane(p: Plane, size: number, sigma: number): Plane {
   let r = p
   for (const b of boxesFor(sigma)) r = boxPlane(boxPlane(r, size, b, true), size, b, false)
   return r
 }
 
 /** A plane read between pixels, bilinear, transparent outside. */
-export function samplePlane(p: Plane, size: number, x: number, y: number): number {
+function samplePlane(p: Plane, size: number, x: number, y: number): number {
   const at = (ix: number, iy: number) => (ix < 0 || iy < 0 || ix >= size || iy >= size ? 0 : p[iy * size + ix])
   const x0 = Math.floor(x)
   const y0 = Math.floor(y)

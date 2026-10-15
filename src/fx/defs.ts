@@ -10,54 +10,61 @@
  * them. Distances and sizes are in document pixels.
  */
 import { BLEND_DEFS } from '../render/blendModes'
-import { readParamValues, type ParamDef } from '../doc/params'
+import { readParamValues, type ParamDef, type ParamValues } from '../doc/params'
 import type { LayerFx } from '../doc/types'
 import { PATTERNS } from '../vector/patterns'
 
 export type FxKind = 'drop-shadow' | 'inner-shadow' | 'outer-glow' | 'inner-glow' | 'bevel' | 'satin' | 'colour-overlay' | 'gradient-overlay' | 'pattern-overlay' | 'stroke'
 
-export interface FxDef {
+/** An effect, its reach given its parameters' values as V (FxDef: any effect's, as plain records). */
+export interface FxDefOf<V> {
   kind: FxKind
   label: string
   /** Drawn under the content, or on it. */
   place: 'below' | 'on' | 'over'
-  params: ParamDef[]
+  params: readonly ParamDef[]
   /** How far past the layer's shape it can reach, or what it reads, in document pixels: the margin it needs. */
-  reach(v: Record<string, unknown>): number
+  reach(v: V): number
+}
+export type FxDef = FxDefOf<Record<string, unknown>>
+
+/** An effect defined with its values typed from its parameters (as defineFilter); the registry holds FxDefs. */
+function defineFx<const P extends readonly ParamDef[]>(def: Omit<FxDefOf<ParamValues<P>>, 'params'> & { params: P }): FxDef {
+  return def as unknown as FxDef
 }
 
 const BLENDS: [string, string][] = BLEND_DEFS.filter((d) => d.id !== 'pass-through' && d.id !== 'dissolve').map((d) => [d.id, d.label])
-const blend = (d: string): ParamDef => ({ key: 'blend', kind: 'choice', label: 'Blend mode', options: BLENDS, default: d })
-const n = (key: string, label: string, min: number, max: number, def: number, unit: string, hint?: string): ParamDef => ({ key, kind: 'number', label, min, max, step: 1, unit, default: def, hint })
+const blend = (d: string) => ({ key: 'blend' as const, kind: 'choice' as const, label: 'Blend mode', options: BLENDS, default: d })
+const n = <K extends string>(key: K, label: string, min: number, max: number, def: number, unit: string, hint?: string) => ({ key, kind: 'number' as const, label, min, max, step: 1, unit, default: def, hint })
 const opacity = (d: number) => n('opacity', 'Opacity', 0, 100, d, '%')
 const angle = (d: number) => n('angle', 'Angle', -180, 180, d, '°', 'The light’s direction: where the light comes from.')
 const size = (d: number) => n('size', 'Size', 0, 250, d, 'px', 'How far the effect is blurred.')
-const colour = (d: 'black' | 'white' | number[]): ParamDef => ({ key: 'colour', kind: 'colour', label: 'Colour', default: d })
+const colour = (d: 'black' | 'white' | number[]) => ({ key: 'colour' as const, kind: 'colour' as const, label: 'Colour', default: d })
 
 /** In the order Photoshop draws them, bottom first. */
 export const FX_DEFS: FxDef[] = [
-  {
+  defineFx({
     kind: 'drop-shadow',
     label: 'Drop Shadow',
     place: 'below',
     params: [blend('multiply'), colour('black'), opacity(75), angle(120), n('distance', 'Distance', 0, 1000, 5, 'px'), n('spread', 'Spread', 0, 100, 0, '%', 'Hardens the shadow’s edge before it’s blurred.'), size(5)],
-    reach: (v) => (v.distance as number) + (v.size as number),
-  },
-  {
+    reach: (v) => v.distance + v.size,
+  }),
+  defineFx({
     kind: 'outer-glow',
     label: 'Outer Glow',
     place: 'below',
     params: [blend('screen'), colour([1, 1, 0.75]), opacity(75), n('spread', 'Spread', 0, 100, 0, '%'), size(5)],
-    reach: (v) => v.size as number,
-  },
-  {
+    reach: (v) => v.size,
+  }),
+  defineFx({
     kind: 'inner-shadow',
     label: 'Inner Shadow',
     place: 'on',
     params: [blend('multiply'), colour('black'), opacity(75), angle(120), n('distance', 'Distance', 0, 1000, 5, 'px'), n('choke', 'Choke', 0, 100, 0, '%'), size(5)],
-    reach: (v) => (v.distance as number) + (v.size as number),
-  },
-  {
+    reach: (v) => v.distance + v.size,
+  }),
+  defineFx({
     kind: 'inner-glow',
     label: 'Inner Glow',
     place: 'on',
@@ -69,23 +76,23 @@ export const FX_DEFS: FxDef[] = [
       n('choke', 'Choke', 0, 100, 0, '%'),
       size(5),
     ],
-    reach: (v) => v.size as number,
-  },
-  {
+    reach: (v) => v.size,
+  }),
+  defineFx({
     kind: 'satin',
     label: 'Satin',
     place: 'on',
     params: [blend('multiply'), colour('black'), opacity(50), n('angle', 'Angle', -180, 180, 19, '°'), n('distance', 'Distance', 0, 250, 11, 'px'), size(14), { key: 'invert', kind: 'bool', label: 'Invert', default: true }],
-    reach: (v) => (v.distance as number) + (v.size as number),
-  },
-  {
+    reach: (v) => v.distance + v.size,
+  }),
+  defineFx({
     kind: 'colour-overlay',
     label: 'Colour Overlay',
     place: 'on',
     params: [blend('normal'), colour([1, 0, 0]), opacity(100)],
     reach: () => 0,
-  },
-  {
+  }),
+  defineFx({
     kind: 'gradient-overlay',
     label: 'Gradient Overlay',
     place: 'on',
@@ -98,8 +105,8 @@ export const FX_DEFS: FxDef[] = [
       { key: 'reverse', kind: 'bool', label: 'Reverse', default: false },
     ],
     reach: () => 0,
-  },
-  {
+  }),
+  defineFx({
     kind: 'pattern-overlay',
     label: 'Pattern Overlay',
     place: 'on',
@@ -114,8 +121,8 @@ export const FX_DEFS: FxDef[] = [
       n('angle', 'Angle', -180, 180, 0, '°'),
     ],
     reach: () => 0,
-  },
-  {
+  }),
+  defineFx({
     kind: 'bevel',
     label: 'Bevel & Emboss',
     place: 'on',
@@ -134,9 +141,9 @@ export const FX_DEFS: FxDef[] = [
       { key: 'shadowColour', kind: 'colour', label: 'Shadow colour', default: 'black' },
       n('shadowOpacity', 'Shadow opacity', 0, 100, 75, '%'),
     ],
-    reach: (v) => (v.size as number) + (v.soften as number) + 2,
-  },
-  {
+    reach: (v) => v.size + v.soften + 2,
+  }),
+  defineFx({
     kind: 'stroke',
     label: 'Stroke',
     place: 'over',
@@ -147,8 +154,8 @@ export const FX_DEFS: FxDef[] = [
       opacity(100),
       colour('black'),
     ],
-    reach: (v) => v.size as number,
-  },
+    reach: (v) => v.size,
+  }),
 ]
 
 export const FX_BY_KIND = new Map(FX_DEFS.map((d) => [d.kind, d]))

@@ -3,7 +3,8 @@
  * tolerance, live shapes against their areas, stroke outlines (joins,
  * caps, dashes) against what they should cover, the coverage rasterizer
  * against exact areas, booleans against analytic areas and a sampled fuzz,
- * and path editing.
+ * path editing, width points (the Width tool's arithmetic), and vector
+ * brushes along paths.
  *
  * The GPU rasterizer is held to this file's reference in check:gpu.
  *
@@ -12,6 +13,7 @@
 import {
   cubicBounds,
   evalCubic,
+  anchor,
   flattenPath,
   linesFor,
   pathBounds,
@@ -23,13 +25,22 @@ import {
   type Cubic,
   type PathData,
   type Polyline,
+  type Subpath,
 } from '../src/geom/path'
 import { KAPPA, readShape, shapeInBox, shapePath, withBox, type ShapeParams } from '../src/geom/shapes'
-import { dashLines, strokeOutline, strokeReach, type StrokeStyle } from '../src/geom/stroke'
+import { ARROW_SHAPES, WIDTH_PRESETS, dashLines, presetOf, profileAt, strokeOutline, strokeReach, type StrokeStyle } from '../src/geom/stroke'
 import { contribution, coverageOf, fillSegments, inside, loopsToSegments, gridColumn, rasterRegion, regionSegments, sampledCoverage, segmentGrid, segmentsBounds, stripSegments, windingAt } from '../src/geom/raster'
 import { booleanPaths, type BoolOp } from '../src/geom/boolean'
-import { anchorsIn, convertAnchor, deleteAnchors, hitAnchor, hitSegment, insertAnchor, moveAnchors, moveHandle } from '../src/geom/edit'
-import { readAppearance, readGeometry, appearanceIn, geometryPath } from '../src/doc/vector'
+import { extendSubpath, fitFreehand, nearestOnSubpath, spliceSubpath } from '../src/geom/freehand'
+import { TRACE_PRESETS, shrinkForTrace, traceImage } from '../src/trace/trace'
+import { brushPieces, brushReach, colorizeColour } from '../src/vector/brush'
+import { builtinBrushes } from '../src/vector/brushLibrary'
+import { readBrush, type ArtBrush, type PatternBrush, type ScatterBrush } from '../src/doc/vectorBrush'
+import { appearanceReach } from '../src/vector/outline'
+import { deepEqual } from '../src/lib/equal'
+import { MAX_SHARE, addWidthPoint, deleteWidthPoints, flipAcross, flipAlong, measurePath, moveWidthPoint, nearestPlace, placeAt, sameProfile, setWidthPoint, shownPoints, sideOf, slideRange, tidyProfile } from '../src/geom/width'
+import { anchorsIn, breakAt, closeSubpath, convertAnchor, curvatureAnchor, deleteAnchors, hitAnchor, hitSegment, insertAnchor, joinSubpaths, moveAnchors, moveHandle, recurve, separate } from '../src/geom/edit'
+import { readAppearance, readGeometry, readPaint, appearanceIn, geometryPath } from '../src/doc/vector'
 import { patternValue } from '../src/vector/patterns'
 import { addVector, addVectorMask, combineWithBelow, createDoc, expandCompound, releaseCompound, setAppearance, setBoolOp, setGeometry, transformNode } from '../src/doc/edit'
 import { docToJson, readDocJson } from '../src/doc/serialize'
@@ -862,6 +873,340 @@ console.log('\nregions, and the path commands')
   Object.assign(nodes, { v1, v2, g })
   const parts = livePaintParts((id) => nodes[id], g)
   check('Live Paint: a part for each filled region, then the strokes', parts.length === 3 && Math.round(regionArea(parts[0].path)) === 2500 && Math.round(regionArea(parts[1].path)) === 7500 && parts[2].appearance[0].kind === 'stroke')
+}
+
+console.log('\nthe curvature rule, breaking and joining')
+{
+  const pt = (x: number, y: number, smooth = true) => ({ p: [x, y] as Pt, in: null, out: null, smooth })
+  const near2 = (a: Pt | null, b: Pt, tol = 1e-9) => !!a && Math.abs(a[0] - b[0]) <= tol && Math.abs(a[1] - b[1]) <= tol
+  // Three points in an arch: the middle one's handles level, a third of the way to each neighbour.
+  const arch = { closed: false, anchors: [pt(0, 100), pt(100, 0), pt(200, 100)] }
+  const mid = curvatureAnchor(arch, 1)
+  check('a smooth point’s handles lie along the line between its neighbours', near2(mid.in, [100 - Math.hypot(100, 100) / 3, 0]) && near2(mid.out, [100 + Math.hypot(100, 100) / 3, 0]))
+  const start = curvatureAnchor(arch, 0)
+  check('an open end has one handle, towards its neighbour', start.in === null && !!start.out)
+  // Mirrored across the chord from (0,100) to (100,0): the neighbour's tangent (1,0) seen from the end becomes (0,-1).
+  const dir = start.out ? [start.out[0] - 0, start.out[1] - 100] : [0, 0]
+  check('and bent as the curve through its neighbour goes: up, not along the chord', Math.abs(dir[0]) < 1e-9 && dir[1] < 0, JSON.stringify(dir))
+  const corner = curvatureAnchor({ closed: false, anchors: [pt(0, 0), pt(50, 50, false), pt(100, 0)] }, 1)
+  check('a corner keeps no handles', corner.in === null && corner.out === null)
+  const two = curvatureAnchor({ closed: false, anchors: [pt(0, 0), pt(100, 0)] }, 0)
+  check('two points make a straight line', !!two.out && Math.abs(two.out[1]) < 1e-9)
+  // A closed square of smooth points is close to a circle.
+  const ring = recurve({ closed: true, anchors: [pt(100, 0), pt(200, 100), pt(100, 200), pt(0, 100)] }, [0, 1, 2, 3])
+  const r = Math.hypot(...(evalCubic(segmentsOf(ring)[0], 0.5).map((v) => v - 100) as [number, number]))
+  check('four smooth points in a closed path make something near a circle', Math.abs(r - 100) < 6, r.toFixed(2))
+  const moved = recurve({ closed: false, anchors: [pt(0, 0), pt(100, 0), pt(200, 0), pt(300, 0), pt(400, 0)] }, [0])
+  check('recurve touches only the points round the one changed', !!moved.anchors[1].out && moved.anchors[3].in === null && moved.anchors[4].in === null)
+
+  // Breaking.
+  const sq = { fillRule: 'nonzero' as const, subpaths: [{ closed: true, anchors: [pt(0, 0, false), pt(100, 0, false), pt(100, 100, false), pt(0, 100, false)] }] }
+  const opened = breakAt(sq, [{ sub: 0, i: 2 }])
+  check('breaking a closed path at a point opens it there, the point at both ends', opened.subpaths.length === 1 && !opened.subpaths[0].closed && opened.subpaths[0].anchors.length === 5 && near2(opened.subpaths[0].anchors[0].p, [100, 100]) && near2(opened.subpaths[0].anchors[4].p, [100, 100]))
+  const two2 = breakAt(sq, [{ sub: 0, i: 0 }, { sub: 0, i: 2 }])
+  check('at two points, it falls in two', two2.subpaths.length === 2 && two2.subpaths.every((s) => s.anchors.length === 3 && !s.closed))
+  const line = { fillRule: 'nonzero' as const, subpaths: [{ closed: false, anchors: [pt(0, 0, false), pt(50, 0, false), pt(100, 0, false)] }] }
+  check('an open path at a middle point splits in two', breakAt(line, [{ sub: 0, i: 1 }]).subpaths.length === 2)
+  check('at its end, nothing changes', breakAt(line, [{ sub: 0, i: 2 }]).subpaths[0] === line.subpaths[0])
+
+  // Joining.
+  const a = { closed: false, anchors: [pt(0, 0, false), pt(100, 0, false)] }
+  const b = { closed: false, anchors: [pt(200, 0, false), pt(300, 0, false)] }
+  const ab = joinSubpaths(a, 'end', b, 'start', false)
+  check('two ends joined by a segment: one path, every point kept, in order', ab.anchors.map((x) => x.p[0]).join() === '0,100,200,300')
+  const ba = joinSubpaths(a, 'start', b, 'end', false)
+  check('from the other ends, turned round to meet', ba.anchors.map((x) => x.p[0]).join() === '100,0,300,200')
+  const touching = joinSubpaths(a, 'end', { closed: false, anchors: [pt(100, 0, false), pt(200, 50, false)] }, 'start', true)
+  check('ends that meet become one point', touching.anchors.length === 3 && touching.anchors.map((x) => x.p[0]).join() === '0,100,200')
+  const tri = closeSubpath({ closed: false, anchors: [pt(0, 0), pt(100, 0), pt(50, 80), pt(0, 0)] }, true)
+  check('a path whose ends meet closes into one point', tri.closed && tri.anchors.length === 3)
+  check('Separate: each subpath a path of its own', separate({ fillRule: 'evenodd', subpaths: [a, b] }).every((p) => p.subpaths.length === 1 && p.fillRule === 'evenodd'))
+}
+
+console.log('\nstroke features: profiles, arrowheads, dashes aligned to corners')
+{
+  const base: StrokeStyle = { width: 10, join: 'miter', cap: 'butt', miter: 4, dash: [], dashOffset: 0 }
+  const line = [{ pts: [0, 0, 100, 0], closed: false }]
+  const ptsOf = (loops: number[][]) => loops.flatMap((l) => Array.from({ length: l.length / 2 }, (_, i) => [l[i * 2], l[i * 2 + 1]] as [number, number]))
+  const widthAt = (loops: number[][], x: number) => {
+    const near = ptsOf(loops).filter((p) => Math.abs(p[0] - x) < 1.2)
+    return near.length ? Math.max(...near.map((p) => p[1])) - Math.min(...near.map((p) => p[1])) : 0
+  }
+  const taper = strokeOutline(line, { ...base, profile: WIDTH_PRESETS.find((p) => p.id === 'taper-both')!.points }, 0.05)
+  check('Taper Both: full width in the middle, none at the ends', Math.abs(widthAt(taper, 50) - 10) < 0.3 && widthAt(taper, 0.5) < 0.6 && widthAt(taper, 99.5) < 0.6, `${widthAt(taper, 50).toFixed(2)} ${widthAt(taper, 0.5).toFixed(2)}`)
+  check('eased between its points: a quarter of the way along, half the width', Math.abs(widthAt(taper, 25) - 5) < 0.4, widthAt(taper, 25).toFixed(2))
+  check('profileAt eases from one point to the next', Math.abs(profileAt([{ at: 0, left: 0, right: 0 }, { at: 1, left: 1, right: 1 }], 0.5, 'left') - 0.5) < 1e-12 && profileAt([{ at: 0.2, left: 0.3, right: 0.3 }], 0.9, 'right') === 0.3)
+  const oneSided = strokeOutline(line, { ...base, profile: [{ at: 0, left: 1, right: 0 }, { at: 1, left: 1, right: 0 }] }, 0.05)
+  check('a profile with no right side strokes the left only', ptsOf(oneSided).every((p) => p[1] >= -1e-6) && ptsOf(oneSided).some((p) => p[1] > 4.9))
+  check('a preset is known by its points, Custom when it isn’t one', presetOf(WIDTH_PRESETS[3].points) === WIDTH_PRESETS[3].id && presetOf([{ at: 0.3, left: 2, right: 1 }]) === null && presetOf(undefined) === 'uniform')
+
+  // Arrowheads.
+  const arrow = strokeOutline(line, { ...base, end: { shape: 'triangle', scale: 1 } }, 0.05)
+  const head = arrow.find((l) => l.length === 6)
+  check('a triangle head at the end: its tip on the path’s end, four widths long', !!head && Math.abs(head[0] - 100) < 1e-9 && Math.abs(head[1]) < 1e-9 && Math.abs(head[2] - 60) < 1e-9 && Math.abs(Math.abs(head[3]) - 20) < 1e-9, JSON.stringify(head))
+  const body = arrow.find((l) => l !== head)!
+  check('the line stops short under it', Math.max(...ptsOf([body]).map((p) => p[0])) < 100 - 20)
+  check('none on a closed path', strokeOutline([{ pts: [0, 0, 100, 0, 100, 100], closed: true }], { ...base, start: { shape: 'triangle', scale: 1 }, end: { shape: 'circle', scale: 1 } }, 0.05).length === 2)
+  check('every shape makes a head', ARROW_SHAPES.every(([shape]) => strokeOutline(line, { ...base, start: { shape, scale: 1.5 } }, 0.05).length >= 2))
+  check('a head reaches further than the stroke, and strokeReach says so', strokeReach({ ...base, end: { shape: 'triangle', scale: 1 } }) > strokeReach(base))
+  check('so does a profile wider than the stroke', strokeReach({ ...base, join: 'round', profile: [{ at: 0, left: 2, right: 2 }] }) === 10)
+
+  // Corners.
+  const square = flattenPath({ fillRule: 'nonzero', subpaths: [{ closed: true, anchors: [anchor(0, 0), anchor(100, 0), anchor(100, 100), anchor(0, 100)] }] }, 0.1)[0]
+  check('flattening marks a square’s four corners', JSON.stringify(square.corners) === '[0,1,2,3]', JSON.stringify(square.corners))
+  const k = 0.5523
+  const circle = flattenPath({ fillRule: 'nonzero', subpaths: [{ closed: true, anchors: [anchor(0, -50, [-50 * k, -50], [50 * k, -50], true), anchor(50, 0, [50, -50 * k], [50, 50 * k], true), anchor(0, 50, [50 * k, 50], [-50 * k, 50], true), anchor(-50, 0, [-50, 50 * k], [-50, -50 * k], true)] }] }, 0.1)[0]
+  check('and a circle’s none', !circle.corners?.length)
+  const dashed = strokeOutline([square], { ...base, width: 2, dash: [12, 8], dashAlign: true }, 0.05)
+  const covered = (x: number, y: number) => ptsOf(dashed).some((p) => Math.abs(p[0] - x) < 1.5 && Math.abs(p[1] - y) < 1.5)
+  check('aligned dashes: a dash at every corner of a square', covered(0, 0) && covered(100, 0) && covered(100, 100) && covered(0, 100))
+  // Each side is 100: five repeats of 20 fit exactly, so each side has four whole dashes and two halves at its corners.
+  check('a whole number of repeats on each side, a half dash either side of each corner', dashed.length === 4 * 6, String(dashed.length))
+}
+
+// --- width points (the Width tool) -----------------------------------------------------------------
+{
+  console.log('\nwidth points')
+  const ptsOf = (loops: number[][]) => loops.flatMap((l) => Array.from({ length: l.length / 2 }, (_, i) => [l[i * 2], l[i * 2 + 1]] as [number, number]))
+  const added = addWidthPoint(undefined, 0.3)
+  check('a point added to a uniform stroke brings full-width ends with it', added.profile.length === 3 && added.index === 1 && added.profile.every((p) => p.left === 1 && p.right === 1), JSON.stringify(added.profile))
+  const taper = WIDTH_PRESETS.find((p) => p.id === 'taper-start')!.points
+  const mid = addWidthPoint(taper, 0.5)
+  check('added where the stroke already is: as wide as it is there', Math.abs(mid.profile[mid.index].left - profileAt(taper, 0.5, 'left')) < 1e-9 && mid.profile.length === 3)
+  check('on a point already: that one, nothing added', addWidthPoint(taper, 1).profile.length === 2 && addWidthPoint(taper, 1).index === 1)
+  const set = setWidthPoint(added.profile, 1, 2, 0.5, false)
+  check('setting a point’s sides', set[1].left === 2 && set[1].right === 0.5 && set[0].left === 1)
+  check('a side can’t go below nothing or past the limit', setWidthPoint(added.profile, 1, -3, 999, false)[1].left === 0 && setWidthPoint(added.profile, 1, -3, 999, false)[1].right === MAX_SHARE)
+  const ring = [{ at: 0, left: 1, right: 1 }, { at: 0.5, left: 2, right: 2 }, { at: 1, left: 1, right: 1 }]
+  const seam = setWidthPoint(ring, 0, 3, 3, true)
+  check('on a closed path, the start’s point is the end’s too', seam[0].left === 3 && seam[2].left === 3 && seam[1].left === 2)
+  check('and only one of them shows', JSON.stringify(shownPoints(ring, true)) === '[0,1]' && JSON.stringify(shownPoints(ring, false)) === '[0,1,2]')
+  check('a point slides between its neighbours, never past them', moveWidthPoint(ring, 1, 0.8)[1].at === 0.8 && moveWidthPoint(ring, 1, 2)[1].at < 1 && moveWidthPoint(ring, 1, -1)[1].at > 0)
+  check('the ends stay where they are', moveWidthPoint(ring, 0, 0.4)[0].at === 0 && slideRange(ring, 2) === null)
+  check('deleting a point', deleteWidthPoints(ring, [1]) === undefined && deleteWidthPoints(set, [0])?.length === 2)
+  check('a profile left all full width is uniform: none', tidyProfile([{ at: 0, left: 1, right: 1 }, { at: 1, left: 1, right: 1 }]) === undefined && tidyProfile(taper)?.length === 2)
+  const lop = [{ at: 0, left: 0, right: 2 }, { at: 0.25, left: 1, right: 1 }, { at: 1, left: 1, right: 1 }]
+  const along = flipAlong(lop)!
+  check('Flip Along: end to end', along[0].at === 0 && along[2].at === 1 && along[2].right === 2 && Math.abs(along[1].at - 0.75) < 1e-12)
+  const across = flipAcross(lop)!
+  check('Flip Across: side to side', across[0].left === 2 && across[0].right === 0)
+  check('flipping twice is where it started', sameProfile(flipAlong(flipAlong(lop)), lop) && sameProfile(flipAcross(flipAcross(lop)), lop))
+
+  // Measuring along a path: a 100-long line and a 400-long square.
+  const lineP: PathData = { fillRule: 'nonzero', subpaths: [{ closed: false, anchors: [anchor(0, 0), anchor(100, 0)] }] }
+  const ms = measurePath(lineP, 0.1)
+  check('a line measured', Math.abs(ms[0].total - 100) < 1e-9)
+  const near = nearestPlace(ms, 30, 7)!
+  check('the nearest place to a point beside it', Math.abs(near.t - 0.3) < 1e-9 && Math.abs(near.dist - 7) < 1e-9 && near.dir[0] === 1)
+  check('which side of the path it is on, by the stroke’s left (towards (−dy, dx))', sideOf(near, 30, 7) === 1 && sideOf(near, 30, -7) === -1)
+  const at = placeAt(ms, 0, 0.75)!
+  check('the place a share of the way along', Math.abs(at.p[0] - 75) < 1e-9 && at.p[1] === 0)
+  const sq: PathData = { fillRule: 'nonzero', subpaths: [{ closed: true, anchors: [anchor(0, 0), anchor(100, 0), anchor(100, 100), anchor(0, 100)] }] }
+  const msq = measurePath(sq, 0.1)
+  check('a closed path measured with its closing side', Math.abs(msq[0].total - 400) < 1e-9)
+  const back = placeAt(msq, 0, 0.875)!
+  check('a place on the closing side', Math.abs(back.p[0] - 0) < 1e-9 && Math.abs(back.p[1] - 50) < 1e-9 && back.dir[1] === -1)
+  check('the nearest place on the closing side too', Math.abs(nearestPlace(msq, -5, 50)!.t - 0.875) < 1e-9)
+  // The stroke's own sense of where a share of the way is: a point there in the profile widens the outline there.
+  const bump = strokeOutline(flattenPath(lineP, 0.1), { width: 4, join: 'miter', cap: 'butt', miter: 4, dash: [], dashOffset: 0, profile: [{ at: 0, left: 1, right: 1 }, { at: 0.3, left: 3, right: 1 }, { at: 1, left: 1, right: 1 }] }, 0.05)
+  const ys = ptsOf(bump).filter((p) => Math.abs(p[0] - 30) < 1.1).map((p) => p[1])
+  check('the outline is widest on the left where the tool puts the point', Math.max(...ys) > 5.5 && Math.min(...ys) > -2.5, JSON.stringify(ys))
+}
+
+// --- vector brushes -----------------------------------------------------------------------------
+{
+  console.log('\nvector brushes')
+  const lib = builtinBrushes('rgb')
+  const B = (id: string) => lib.find((b) => b.id === `builtin:${id}`)!
+  const red = solid([1, 0, 0])
+  const lineOf = (x0: number, x1: number): Polyline[] => [{ pts: [x0, 0, x1, 0], closed: false }]
+  const boxOfPieces = (ps: { loops: number[][] }[]) => {
+    let b = [Infinity, Infinity, -Infinity, -Infinity]
+    for (const p of ps) for (const l of p.loops) for (let i = 0; i < l.length; i += 2) b = [Math.min(b[0], l[i]), Math.min(b[1], l[i + 1]), Math.max(b[2], l[i]), Math.max(b[3], l[i + 1])]
+    return b
+  }
+  const near = (a: number, b: number, t = 0.05) => Math.abs(a - b) <= t
+  const lp = (ps: { loops: number[][] }[]) => ps.reduce((n, p) => n + p.loops.length, 0)
+
+  // Art: the lens is 100 long and 18 high (its curves reach 9 either side).
+  const ink = brushPieces(lineOf(0, 200), { width: 10, paint: red }, B('taper'), 'rgb', 0.05)
+  let bx = boxOfPieces(ink)
+  check('an art brush stretches its art along the whole path', ink.length === 1 && near(bx[0], 0, 0.1) && near(bx[2], 200, 0.1), JSON.stringify(bx))
+  check('its height on the path is the stroke’s width', near(bx[3] - bx[1], 10, 0.15), String(bx[3] - bx[1]))
+  check('Tints of black art in a red stroke: red', ink[0].paint.kind === 'solid' && JSON.stringify(ink[0].paint.colour) === '[1,0,0]')
+  bx = boxOfPieces(brushPieces(lineOf(0, 50), { width: 10, paint: red }, B('taper'), 'rgb', 0.05))
+  check('on a shorter path, squeezed to its length', near(bx[2], 50, 0.1) && near(bx[3] - bx[1], 10, 0.15))
+  const prop = brushPieces(lineOf(0, 200), { width: 10, paint: red }, { ...(B('taper') as ArtBrush), fit: 'proportional' }, 'rgb', 0.05)
+  bx = boxOfPieces(prop)
+  check('scaled in proportion: twice the art’s length, twice its height', near(bx[3] - bx[1], 36, 0.3), String(bx[3] - bx[1]))
+  // The arrow: its head is the last 22 of 100, 20 high; with guides it keeps its shape at any length.
+  const arrow = brushPieces(lineOf(0, 300), { width: 20, paint: red }, B('arrow'), 'rgb', 0.05)
+  const head = arrow[1].loops[0]
+  const xs = Array.from({ length: head.length / 2 }, (_, i) => head[2 * i])
+  check('stretched between guides: the head keeps its length at the end', near(Math.max(...xs), 300, 0.2) && near(Math.min(...xs), 278, 0.3), `${Math.min(...xs)} ${Math.max(...xs)}`)
+  const flipped = brushPieces(lineOf(0, 300), { width: 20, paint: red }, { ...(B('arrow') as ArtBrush), flipAlong: true }, 'rgb', 0.05)
+  const fxs = flipped[1].loops[0].filter((_, i) => i % 2 === 0)
+  check('Flip Along puts the head at the start', near(Math.min(...fxs), 0, 0.2) && near(Math.max(...fxs), 22, 0.3), `${Math.min(...fxs)} ${Math.max(...fxs)}`)
+  // A profile narrows it: Taper Start is nothing at the start.
+  const tap = brushPieces(lineOf(0, 200), { width: 20, paint: red, profile: [{ at: 0, left: 0, right: 0 }, { at: 1, left: 1, right: 1 }] }, B('ribbon'), 'rgb', 0.05)
+  const nearStart = tap.flatMap((p) => p.loops.flatMap((l) => Array.from({ length: l.length / 2 }, (_, i) => [l[2 * i], l[2 * i + 1]]))).filter(([x]) => x < 1)
+  check('a width profile shapes the art too', nearStart.every(([, y]) => Math.abs(y) < 0.2))
+  // Along a curve: the art bends; a quarter circle of radius 100.
+  const arc: Polyline[] = [{ pts: Array.from({ length: 65 }, (_, i) => [Math.cos((i / 64) * (Math.PI / 2)) * 100, Math.sin((i / 64) * (Math.PI / 2)) * 100]).flat(), closed: false }]
+  const bent = brushPieces(arc, { width: 10, paint: red }, B('ribbon'), 'rgb', 0.05)
+  const radii = bent.flatMap((p) => p.loops.flatMap((l) => Array.from({ length: l.length / 2 }, (_, i) => Math.hypot(l[2 * i], l[2 * i + 1]))))
+  check('along a curve the art bends with it, as wide all the way', Math.min(...radii) > 94.9 && Math.max(...radii) < 105.1, `${Math.min(...radii)} ${Math.max(...radii)}`)
+  // Hue shift: the ribbon's key colour (its first, red) becomes the stroke's; blue turns the rest with it.
+  const blue = brushPieces(lineOf(0, 100), { width: 10, paint: solid([0, 0, 1]) }, B('ribbon'), 'rgb', 0.05)
+  const c0 = (blue[0].paint as { colour: number[] }).colour
+  check('Hue Shift: the key colour turns to the stroke’s hue', c0[2] > c0[0] && c0[2] > c0[1], JSON.stringify(c0))
+  check('Tints: white art stays white, mid grey half way', JSON.stringify(colorizeColour([1, 1, 1], 'tints', [1, 0, 0], [0, 0, 0], 'rgb')) === '[1,1,1]' && near(colorizeColour([0.5, 0.5, 0.5], 'tints', [1, 0, 0], [0, 0, 0], 'rgb')[1], 0.5, 0.01))
+  check('Tints and Shades: black art makes black, mid grey the stroke’s colour', colorizeColour([0, 0, 0], 'tints-shades', [1, 0, 0], [0, 0, 0], 'rgb').every((v) => v < 1e-9) && JSON.stringify(colorizeColour([0.5, 0.5, 0.5], 'tints-shades', [1, 0, 0], [0, 0, 0], 'rgb').map((v) => Math.round(v * 100) / 100)) === '[1,0,0]')
+  check('in CMYK, tints thin the ink', near(colorizeColour([0, 0, 0, 0], 'tints', [0, 1, 1, 0], [0, 0, 0, 1], 'cmyk').reduce((a, b) => a + b, 0), 0, 1e-9))
+
+  // Scatter: copies along the path, the same every time.
+  const dots = brushPieces(lineOf(0, 400), { width: 10, paint: red }, B('dots'), 'rgb', 0.05)
+  const again = brushPieces(lineOf(0, 400), { width: 10, paint: red }, B('dots'), 'rgb', 0.05)
+  check('a scatter brush puts copies along the path', lp(dots) >= 15 && lp(dots) <= 40, String(lp(dots)))
+  check('varied the same way every time', JSON.stringify(dots) === JSON.stringify(again))
+  bx = boxOfPieces(dots)
+  check('scattered off the path no further than it says, nor past the reach', Math.max(Math.abs(bx[1]), Math.abs(bx[3])) <= brushReach(B('dots'), 10, undefined) && bx[3] - bx[1] > 8, JSON.stringify(bx))
+  const tight = brushPieces(lineOf(0, 400), { width: 10, paint: red }, { ...(B('dots') as ScatterBrush), spacing: [1, 1], size: [1, 1], scatter: [0, 0] }, 'rgb', 0.05)
+  check('spacing 1 at size 1: copies touching, one per copy length', lp(tight) === 41 || lp(tight) === 40, String(lp(tight)))
+
+  // Pattern: beads are 12 long, 8 high; at width 8 a 120-long line takes ten.
+  const beads = brushPieces(lineOf(0, 120), { width: 8, paint: red }, B('beads'), 'rgb', 0.05)
+  check('a pattern brush repeats its tile a whole number of times', beads.length === 2 && beads[1].loops.length === 10, String(beads[1]?.loops.length))
+  const beads2 = brushPieces(lineOf(0, 125), { width: 8, paint: red }, B('beads'), 'rgb', 0.05)
+  check('stretched to fit a length that isn’t a whole number of tiles', beads2[1].loops.length === 10 && near(boxOfPieces(beads2)[2], 125, 0.1))
+  const spaced = brushPieces(lineOf(0, 125), { width: 8, paint: red }, { ...(B('beads') as PatternBrush), fit: 'space' }, 'rgb', 0.05)
+  const sb = boxOfPieces([spaced[1]])
+  check('or kept their length, space added', spaced[1].loops.length === 10 && near(sb[3] - sb[1], 8, 0.1) && sb[0] > 0.2)
+  const square = flattenPath({ fillRule: 'nonzero', subpaths: [{ closed: true, anchors: [anchor(0, 0), anchor(200, 0), anchor(200, 200), anchor(0, 200)] }] }, 0.1)
+  const rail = brushPieces(square, { width: 20, paint: red }, B('railroad'), 'rgb', 0.05)
+  const cornerPiece = rail.find((p) => p.loops.length === 4 && p.loops.every((l) => l.length === 8))
+  check('corner tiles stand at a square’s four corners', !!cornerPiece && cornerPiece.loops.every((l) => [[0, 0], [200, 0], [200, 200], [0, 200]].some(([x, y]) => near((l[0] + l[4]) / 2, x, 0.5) && near((l[1] + l[5]) / 2, y, 0.5))))
+  const arrowStart = brushPieces(lineOf(0, 200), { width: 8, paint: red }, { ...(B('beads') as PatternBrush), start: B('taper').kind === 'art' ? (B('taper') as ArtBrush).art : undefined }, 'rgb', 0.05)
+  check('a start tile at an open path’s start', arrowStart.length === 3)
+
+  // Every built-in stays within its reach, and reads back from a file whole.
+  const curve = flattenPath({ fillRule: 'nonzero', subpaths: [{ closed: false, anchors: [anchor(0, 0, null, [80, -120]), anchor(300, 0, [220, 120], null)] }] }, 0.1)
+  const box = [0, -90, 300, 90]
+  const within = lib.every((b) => {
+    const r = brushReach(b, 12, undefined, 400)
+    const pb = boxOfPieces(brushPieces(curve, { width: 12, paint: red }, b, 'rgb', 0.05))
+    return pb[0] >= box[0] - r && pb[2] <= box[2] + r && pb[1] >= box[1] - r && pb[3] <= box[3] + r
+  })
+  check('every built-in brush draws within its reach', within)
+  const readers = { path: (v: unknown) => (readGeometry({ kind: 'path', path: v }, () => {}) as { path: PathData }).path, paint: readPaint }
+  check('every built-in brush reads back from a file as it was', lib.every((b) => deepEqual(readBrush(JSON.parse(JSON.stringify(b)), readers as never), b)))
+  check('a brush without artwork can’t be read', readBrush({ kind: 'art', id: 'x', art: { parts: [], box: [0, 0, 1, 1] } }, readers as never) === null)
+  const stroke = { ...strokeItem(red, 6), brush: B('stars') }
+  const back = readAppearance(JSON.parse(JSON.stringify([stroke])), () => {})
+  check('a stroke keeps its brush through a file', (back[0] as { brush?: { id: string } }).brush?.id === 'builtin:stars')
+  check('in another mode, the brush’s colours go with it', (appearanceIn([{ ...stroke, brush: B('confetti') }], 'gray')[0] as { brush: ScatterBrush }).brush.art.parts[0].paint.kind === 'solid' && ((appearanceIn([{ ...stroke, brush: B('confetti') }], 'gray')[0] as { brush: ScatterBrush }).brush.art.parts[0].paint as { colour: number[] }).colour.length === 1)
+  check('its reach is the brush’s, not a plain stroke’s', appearanceReach([stroke]) > 6)
+}
+
+// --- Image Trace ---------------------------------------------------------------------------------
+{
+  console.log('\nImage Trace')
+  const W = 64
+  const H = 48
+  /** An image W × H from a function of the pixel. */
+  const img = (f: (x: number, y: number) => [number, number, number, number]) => {
+    const out = new Uint8Array(W * H * 4)
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) out.set(f(x, y), (y * W + x) * 4)
+    return out
+  }
+  const areaOf = (p: PathData) => flattenPath(p, 0.05).reduce((a, l) => a + polyArea(l.pts), 0)
+  const opts = { ...TRACE_PRESETS[0].options, noise: 4 }
+  // A black square on white.
+  const sq = img((x, y) => (x >= 10 && x < 30 && y >= 8 && y < 28 ? [0, 0, 0, 255] : [255, 255, 255, 255]))
+  const t1 = traceImage(sq, W, H, opts)
+  const black = t1.layers.find((l) => l.colour[0] === 0)!
+  const white = t1.layers.find((l) => l.colour[0] === 255)!
+  check('black and white: two shapes, one per colour', t1.layers.length === 2 && !!black && !!white)
+  const bb = pathBounds(black.path)!
+  check('the square traced where it is, its corners square', Math.abs(bb[0] - 10) < 0.01 && Math.abs(bb[1] - 8) < 0.01 && Math.abs(bb[2] - 30) < 0.01 && Math.abs(bb[3] - 28) < 0.01 && black.path.subpaths[0].anchors.length === 4, `${bb} ${black.path.subpaths[0].anchors.length}`)
+  check('its area exact', Math.abs(Math.abs(areaOf(black.path)) - 400) < 0.5, String(areaOf(black.path)))
+  check('white round it, with the square as a hole', white.path.subpaths.length === 2)
+  const whiteArea = flattenPath(white.path, 0.05).map((l) => polyArea(l.pts))
+  check('the white’s outline less its hole is the rest of the image', Math.abs(Math.abs(whiteArea[0]) - Math.abs(whiteArea[1]) - (W * H - 400)) < 0.5 || Math.abs(Math.abs(whiteArea[1]) - Math.abs(whiteArea[0]) - (W * H - 400)) < 0.5, whiteArea.join())
+  // A circle: smooth, few anchors, the right area.
+  const cx = 32
+  const cy = 24
+  const R = 15
+  const disc = img((x, y) => ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 < R * R ? [0, 0, 0, 255] : [255, 255, 255, 255]))
+  const t2 = traceImage(disc, W, H, opts)
+  const dp = t2.layers.find((l) => l.colour[0] === 0)!.path
+  check('a circle comes out smooth, a handful of curves', dp.subpaths[0].anchors.length <= 12 && dp.subpaths[0].anchors.some((a) => a.in && a.out), String(dp.subpaths[0].anchors.length))
+  check('and its area within a few percent of the circle’s', Math.abs(Math.abs(areaOf(dp)) - Math.PI * R * R) / (Math.PI * R * R) < 0.03, String(areaOf(dp)))
+  // Where the black and white meet, the same curve on both: no gap between them.
+  const ring = t2.layers.find((l) => l.colour[0] === 255)!.path
+  const holeA = ring.subpaths.find((s) => s.anchors.every((a) => Math.hypot(a.p[0] - cx, a.p[1] - cy) < R + 2))!
+  const outer = dp.subpaths[0]
+  const sameCurve = holeA && holeA.anchors.length === outer.anchors.length && holeA.anchors.every((a) => outer.anchors.some((b) => Math.hypot(a.p[0] - b.p[0], a.p[1] - b.p[1]) < 1e-9))
+  check('the circle and the hole in the white are one curve, abutting', !!sameCurve)
+  // Specks: noise.
+  const specks = img((x, y) => ((x * 7 + y * 13) % 97 === 0 ? [0, 0, 0, 255] : [255, 255, 255, 255]))
+  check('specks smaller than the noise size are dropped', traceImage(specks, W, H, { ...opts, noise: 4 }).layers.length === 1 && traceImage(specks, W, H, { ...opts, noise: 1 }).layers.length === 2)
+  // Transparency: left out.
+  const halfClear = img((x) => (x < 32 ? [0, 0, 0, 255] : [0, 0, 0, 0]))
+  const t3 = traceImage(halfClear, W, H, opts)
+  check('pixels that are see-through are left out', t3.layers.length === 1 && Math.abs(Math.abs(areaOf(t3.layers[0].path)) - 32 * H) < 0.5)
+  check('Ignore White leaves out the white', traceImage(sq, W, H, { ...opts, ignoreWhite: true }).layers.length === 1)
+  // Colours: three bands of colour, three shapes.
+  const bands = img((x) => (x < 20 ? [220, 30, 40, 255] : x < 44 ? [30, 160, 60, 255] : [40, 60, 200, 255]))
+  const t4 = traceImage(bands, W, H, { ...opts, mode: 'colour', colours: 3 })
+  check('colour: three bands, three shapes in their colours', t4.layers.length === 3 && t4.layers.some((l) => l.colour[0] > 200 && l.colour[1] < 50), JSON.stringify(t4.layers.map((l) => l.colour)))
+  const total = t4.layers.reduce((a, l) => a + Math.abs(areaOf(l.path)), 0)
+  check('abutting: their areas add up to the image’s', Math.abs(total - W * H) < 1, String(total))
+  check('stats count the regions, anchors and colours', t4.stats.paths === 3 && t4.stats.colours === 3 && t4.stats.anchors >= 12)
+  // Gray levels.
+  const ramp = img((x) => [x * 4, x * 4, x * 4, 255])
+  check('shades of gray: as many as asked, at most', traceImage(ramp, W, H, { ...opts, mode: 'gray', colours: 4 }).layers.length === 4)
+  const small = shrinkForTrace(sq, W, H, 32)
+  check('a large image made smaller for tracing, by whole pixels', small.w === 32 && small.h === 24 && small.scale === 2)
+}
+
+// --- freehand paths --------------------------------------------------------------------------------
+{
+  console.log('\nfreehand paths')
+  // A wobbly hand along a gentle arc.
+  const hand: Pt[] = Array.from({ length: 120 }, (_, i) => [i * 2, 40 * Math.sin(i / 38) + (i % 2 ? 0.6 : -0.6)])
+  const fit = fitFreehand(hand, 2, false)
+  check('a freehand stroke becomes a few curves', fit.anchors.length >= 2 && fit.anchors.length <= 8 && !fit.closed, String(fit.anchors.length))
+  const far = Math.max(...hand.map((p) => nearestOnSubpath(fit, p[0], p[1])!.dist))
+  check('within the fidelity of every point the hand made', far <= 2.5, far.toFixed(2))
+  const smoother = fitFreehand(hand, 8, false)
+  check('a larger fidelity, fewer anchors', smoother.anchors.length <= fit.anchors.length)
+  // A loop: closed.
+  const loop: Pt[] = Array.from({ length: 80 }, (_, i) => [50 + 30 * Math.cos((i / 80) * Math.PI * 2), 50 + 30 * Math.sin((i / 80) * Math.PI * 2)])
+  check('a closed stroke makes a closed path', fitFreehand(loop, 1, true).closed)
+  // The nearest place on a line from (0, 0) to (100, 0).
+  const line: Subpath = { closed: false, anchors: [anchor(0, 0), anchor(100, 0)] }
+  const nl = nearestOnSubpath(line, 30, 5)!
+  check('the nearest place on a path', nl.seg === 0 && Math.abs(nl.p[0] - 30) < 1e-6 && Math.abs(nl.dist - 5) < 1e-6)
+  // Redrawing: a bump drawn from x = 30 to x = 70 over a straight path from 0 to 100.
+  const bump = fitFreehand(Array.from({ length: 41 }, (_, i) => [30 + i, -20 * Math.sin((i / 40) * Math.PI)] as Pt), 0.5, false).anchors
+  const re = spliceSubpath(line, nearestOnSubpath(line, 30, 0)!, nearestOnSubpath(line, 70, 0)!, bump)
+  const xs = re.anchors.map((a) => a.p[0])
+  check('redrawn between two places: kept before and after, the stroke between', re.anchors[0].p[0] === 0 && re.anchors[re.anchors.length - 1].p[0] === 100 && xs.some((x) => x > 30 && x < 70), JSON.stringify(xs))
+  const peak = nearestOnSubpath(re, 50, -20)!
+  check('the new part is where it was drawn', peak.dist < 1, String(peak.dist))
+  const back = spliceSubpath(line, nearestOnSubpath(line, 70, 0)!, nearestOnSubpath(line, 30, 0)!, [...bump].reverse().map((a) => ({ ...a, in: a.out, out: a.in })))
+  check('drawn the other way along the path, the same', back.anchors[0].p[0] === 0 && back.anchors[back.anchors.length - 1].p[0] === 100 && nearestOnSubpath(back, 50, -20)!.dist < 1)
+  // Carried on from an end.
+  const on = extendSubpath(line, true, [anchor(100, 0), anchor(150, 30)])
+  check('carried on from its end', on.anchors.length === 3 && on.anchors[2].p[0] === 150)
+  const onStart = extendSubpath(line, false, [anchor(0, 0), anchor(-40, 10)])
+  check('or from its start', onStart.anchors.length === 3 && onStart.anchors[0].p[0] === -40 && onStart.anchors[2].p[0] === 100)
+  // A closed square redrawn along one side: still closed, the other three sides kept.
+  const sq: Subpath = { closed: true, anchors: [anchor(0, 0), anchor(100, 0), anchor(100, 100), anchor(0, 100)] }
+  const dent = fitFreehand(Array.from({ length: 41 }, (_, i) => [30 + i, 15 * Math.sin((i / 40) * Math.PI)] as Pt), 0.5, false).anchors
+  const sqRe = spliceSubpath(sq, nearestOnSubpath(sq, 30, 0)!, nearestOnSubpath(sq, 70, 0)!, dent)
+  check('a closed path redrawn stays closed, its other sides kept', sqRe.closed && [[100, 100], [0, 100], [0, 0], [100, 0]].every(([x, y]) => sqRe.anchors.some((a) => Math.hypot(a.p[0] - x, a.p[1] - y) < 1e-6)) && nearestOnSubpath(sqRe, 50, 15)!.dist < 1, JSON.stringify(sqRe.anchors.map((a) => a.p)))
 }
 
 console.log(`\n${failures === 0 ? 'all clear' : `${failures} failure(s)`}`)

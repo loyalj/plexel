@@ -9,9 +9,13 @@
 // document. Display tiles are read by hand, so filtering crosses tile
 // edges without seams: nearest when magnified, bilinear otherwise.
 //
-// Over that, the selection: its coverage at the level being drawn, from
-// its own atlas, as marching ants where it crosses half, or in Quick Mask
-// as a red tint over what isn't selected; and a crop's shade.
+// Over that, the alpha and spot channels shown: an alpha's tint over what
+// it masks (or selects), a spot's ink over the image; with the colour
+// channels hidden, paper, and the first alpha as gray. Then the selection:
+// its coverage at the level being drawn, from its own atlas, as marching
+// ants where it crosses half, or in Quick Mask as a red tint over what
+// isn't selected; and a crop's shade. The channels' coverage is in the
+// same atlas, each with its own stretch of `sel_tiles`.
 //
 // A tiled document in Tiled View repeats: a pixel in a copy is moved into
 // the document by whole periods first (exactly, in the finest level's
@@ -54,6 +58,11 @@ struct Screen {
   // 1 where the view repeats the document across, and down.
   wrap: vec4f,
   levels: array<Level, 3>,
+  // The alpha and spot channels shown, and 1 when the colour channels are all hidden.
+  chans: vec4f,
+  // Per channel: its colour (display) and opacity or solidity; then its kind (0 an alpha
+  // marking what's masked, 1 what's selected, 2 a spot) and where its tiles start in sel_tiles.
+  chan: array<vec4f, 8>,
 }
 
 @group(0) @binding(0) var<uniform> S: Screen;
@@ -140,6 +149,11 @@ fn with_cursor(c: vec4f, pos: vec2f) -> vec4f {
 
 // The selection's coverage at a device pixel: 0..1, or -1 where it isn't ready.
 fn sel_at(p: vec2f) -> f32 {
+  return cover_at(0u, p);
+}
+
+// A coverage at a device pixel, its tiles from `start` in sel_tiles: 0..1, or -1 where it isn't ready.
+fn cover_at(start: u32, p: vec2f) -> f32 {
   let L = S.levels[0];
   let q = vec2f(L.m0.x * p.x + L.m0.z * p.y + L.m1.x, L.m0.y * p.x + L.m0.w * p.y + L.m1.y);
   if (q.x < S.doc.x || q.y < S.doc.y || q.x >= S.doc.z || q.y >= S.doc.w) { return 0.0; }
@@ -148,7 +162,7 @@ fn sel_at(p: vec2f) -> f32 {
   let tx = ix >> 8u;
   let ty = iy >> 8u;
   if (tx < 0 || ty < 0 || tx >= L.grid.z || ty >= L.grid.w) { return -1.0; }
-  let e = sel_tiles[u32(ty * L.grid.z + tx)];
+  let e = sel_tiles[start + u32(ty * L.grid.z + tx)];
   if (e == -1) { return -1.0; }
   if (e == -2) { return 0.0; }
   if (e == -3) { return 1.0; }
@@ -179,6 +193,36 @@ fn with_selection(c: vec4f, p: vec2f) -> vec4f {
   return select(vec4f(1.0, 1.0, 1.0, 1.0), vec4f(0.0, 0.0, 0.0, 1.0), on);
 }
 
+// The alpha and spot channels shown, over the image (or over paper, the colour hidden).
+fn with_channels(c: vec4f, p: vec2f) -> vec4f {
+  let n = u32(S.chans.x);
+  let hidden = S.chans.y > 0.5;
+  if (n == 0u && !hidden) { return c; }
+  let L = S.levels[0];
+  let q = vec2f(L.m0.x * p.x + L.m0.z * p.y + L.m1.x, L.m0.y * p.x + L.m0.w * p.y + L.m1.y);
+  if (q.x < S.doc.x || q.y < S.doc.y || q.x >= S.doc.z || q.y >= S.doc.w) { return c; }
+  var out = select(c.rgb, vec3f(1.0), hidden);
+  var gray = hidden;
+  for (var k = 0u; k < n; k++) {
+    let colour = S.chan[k * 2u];
+    let info = S.chan[k * 2u + 1u];
+    let v = cover_at(u32(info.y), p);
+    if (v < 0.0) { continue; }
+    let kind = u32(info.x);
+    if (kind == 2u) {
+      // A spot ink: multiplied over what's under it, then towards the ink itself by its solidity.
+      out = mix(out, mix(out * colour.rgb, colour.rgb, colour.w), v);
+    } else if (gray) {
+      // An alpha alone: white what's selected.
+      out = vec3f(v);
+      gray = false;
+    } else {
+      out = mix(out, colour.rgb, colour.w * select(1.0 - v, v, kind == 1u));
+    }
+  }
+  return vec4f(out, 1.0);
+}
+
 fn cross2(a: vec2f, b: vec2f, p: vec2f) -> f32 {
   return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 }
@@ -201,7 +245,7 @@ fn with_shade(c: vec4f, p: vec2f) -> vec4f {
 
 @fragment
 fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  return with_cursor(with_shade(with_selection(scene(pos), pos.xy), pos.xy), pos.xy);
+  return with_cursor(with_shade(with_selection(with_channels(scene(pos), pos.xy), pos.xy), pos.xy), pos.xy);
 }
 
 // A device pixel in a copy of a tiled document, moved by whole periods to

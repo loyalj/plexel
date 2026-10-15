@@ -26,7 +26,7 @@ import { notify } from './notices'
 import { moveBy } from '../doc/edit'
 
 /** How many layers the next Align or Distribute would move. */
-export function alignCount(d: OpenDoc | null): number {
+function alignCount(d: OpenDoc | null): number {
   return d ? movable(d, true).length : 0
 }
 

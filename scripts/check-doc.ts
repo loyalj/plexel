@@ -12,6 +12,8 @@
 import { describeEdit } from '../src/doc/describe'
 import {
   DEFAULT_PROFILES,
+  moveChannel,
+  setChannelOptions,
   DOC_FORMAT,
   addGroup,
   addAdjustment,
@@ -61,9 +63,10 @@ import {
 } from '../src/doc/edit'
 import { HISTORY_LIMIT, canRedo, canUndo, commit, initHistory, jumpTo, redo, redoLabel, steps, undo, undoLabel } from '../src/doc/history'
 import { NODE_DEFS, NODE_KINDS, makeNode } from '../src/doc/nodes'
+import { deepEqual } from '../src/lib/equal'
 import { DOC_APP, docToJson, readDocJson } from '../src/doc/serialize'
 import { freshName, layerRows, neighbourOf, placeOf, subtree } from '../src/doc/tree'
-import { MAX_SIDE, type Doc, type DocNode } from '../src/doc/types'
+import { MAX_SIDE, channelKind, channelOpacity, type Doc, type DocNode } from '../src/doc/types'
 import { fragmentLayers, fragmentOf, pasteFragment, pixelFragment } from '../src/doc/fragment'
 
 let failures = 0
@@ -473,6 +476,23 @@ console.log('\npatterns, alpha channels and fill layers')
   check('and so does Canvas Size', grown.channels?.[0].transform[4] === 100)
   check('Save Selection into a channel replaces its pixels and puts it back in place', setChannelTiles(cropped, 'c1', 'new').channels?.[0].tiles === 'new' && setChannelTiles(cropped, 'c1', 'new').channels?.[0].transform[4] === 0)
   check('channels rename, move and go', renameChannel(d, 'c1', 'Hair').channels?.[0].name === 'Hair' && !removeChannel(d, 'c1').channels)
+  check('a stroke on a channel replaces its pixels where they lie, its transform kept', setChannelTiles(cropped, 'c1', 'new', true).channels?.[0].transform[4] === -30 && setChannelTiles(cropped, 'c1', cropped.channels![0].tiles, true) === cropped)
+
+  // Spot channels and how channels show.
+  const ink = { space: 'cmyk' as const, profile: DEFAULT_PROFILES.cmyk, c: [0, 0.8, 0.9, 0] }
+  let sd = addChannel(d, { id: 'c2', name: 'Varnish', tiles: null, transform: [1, 0, 0, 1, 0, 0], kind: 'spot', ink, opacity: 0.25 })
+  sd = setChannelOptions(sd, 'c1', { tint: [0, 0, 1], marks: 'selected', opacity: 0.7 })
+  const sb = readDocJson(docToJson(sd))
+  check('spot channels and channel options read back as written', sb.ok && sb.warnings.length === 0 && deepEqual(sb.doc.channels, sd.channels), sb.ok ? JSON.stringify(sb.doc.channels) : sb.error)
+  check('channelKind and channelOpacity fill in the defaults', channelKind(d.channels![0]) === 'alpha' && channelOpacity(d.channels![0]) === 0.5 && channelOpacity({ ...sd.channels![1], opacity: undefined }) === 0)
+  const asAlpha = setChannelOptions(sd, 'c2', { kind: 'alpha' })
+  check('a spot made an alpha drops its ink and starts at an alpha’s opacity', channelKind(asAlpha.channels![1]) === 'alpha' && !asAlpha.channels![1].ink && channelOpacity(asAlpha.channels![1]) === 0.5)
+  check('a spot can’t lose its ink', setChannelOptions(sd, 'c1', { kind: 'spot' }) === sd)
+  check('options that change nothing are no step', setChannelOptions(sd, 'c1', { tint: [0, 0, 1] }) === sd)
+  const badSpot = readDocJson(JSON.stringify({ format: DOC_FORMAT, app: DOC_APP, doc: { ...JSON.parse(docToJson(sd)).doc, channels: [{ id: 'c9', name: 'Odd', tiles: null, transform: [1, 0, 0, 1, 0, 0], kind: 'spot', ink: 'pink', opacity: 7 }] } }))
+  check('a spot channel with no readable ink comes in as an alpha, and said', badSpot.ok && badSpot.doc.channels?.[0].kind === undefined && badSpot.doc.channels![0].opacity === 1 && badSpot.warnings.some((w) => /ink/.test(w)))
+  check('channels go in where asked', addChannel(sd, { id: 'c3', name: 'First', tiles: null, transform: [1, 0, 0, 1, 0, 0] }, 0).channels?.[0].id === 'c3')
+  check('and move', moveChannel(sd, 'c2', 0).channels?.map((c) => c.id).join() === 'c2,c1')
   check('patterns rename and go', renamePattern(d, 'p1', 'Tiles').patterns?.[0].name === 'Tiles' && !removePattern(d, 'p1').patterns)
   const frag = fragmentOf(d, ['v1'], 'fr')
   check('a fragment carries the patterns its layers paint with, and no channels', frag.patterns?.length === 1 && frag.patterns[0].id === 'p1' && !frag.channels)

@@ -20,14 +20,51 @@
  * BENCH_OUT if that's set. Budgets live in PERFORMANCE.md; this reports,
  * and says which budgets it met.
  *
+ * With BENCH_PROFILE set to a folder, the page and the engine worker are
+ * profiled (CPU, sampled each millisecond) for the 96 MP document's first
+ * picture, while the PSD is written, and from opening it again until it's
+ * drawn, and the profiles saved there as .cpuprofile files, first-picture-*,
+ * write-* and reopen-* (open them in Chrome's DevTools, Performance).
+ *
  * Run with: npm run bench
  */
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { finish, open, waitForEngine, waitUntil } from './harness.mjs'
 
 const { page, url } = await open({ viewport: { width: 1600, height: 1000 } })
 await page.goto(url)
 await waitForEngine(page)
+
+/** Profiles running on the page and in the engine worker, when BENCH_PROFILE asks, and the part of the run they're of. */
+let profiling = []
+let profiled = ''
+const profileDir = process.env.BENCH_PROFILE
+/** Saves the profiles running, if any, as `${profiled}-<thread>.cpuprofile`. */
+async function stopProfiles() {
+  if (!profileDir || !profiling.length) return
+  mkdirSync(profileDir, { recursive: true })
+  for (const [thread, s] of profiling) {
+    const { profile } = await s.send('Profiler.stop')
+    writeFileSync(join(profileDir, `${profiled}-${thread}.cpuprofile`), JSON.stringify(profile))
+  }
+  console.log(`  profiles of ${profiled} saved in ${profileDir}`)
+  profiling = []
+}
+if (profileDir) {
+  // Called from the page: saves what's being profiled, and starts profiling `name`.
+  await page.exposeFunction('benchProfileStart', async (name) => {
+    await stopProfiles()
+    const workers = page.workers().filter((w) => w.url().includes('worker'))
+    profiling = [['page', await page.createCDPSession()], ...workers.map((w, i) => [`worker-${i}`, w.client])]
+    profiled = name
+    for (const [, s] of profiling) {
+      await s.send('Profiler.enable')
+      await s.send('Profiler.setSamplingInterval', { interval: 1000 })
+      await s.send('Profiler.start')
+    }
+  })
+}
 
 const call = (method, args) => page.evaluate((m, a) => globalThis.plexel.engine().call(m, a), method, args)
 const probe = (args) => call('test.probe', args)
@@ -78,11 +115,12 @@ await page.evaluate(() => {
   globalThis.plexel.engine().onFrame((m) => globalThis.benchFrames.push({ at: performance.now(), ms: m.ms, rendered: m.rendered, pending: m.pending }))
 })
 const opened = await page.evaluate(
-  (w, h, noiseId, whiteId) => {
+  async (w, h, noiseId, whiteId) => {
     const { createDoc, insertNode, makeNode } = globalThis.plexel.doc
     let doc = createDoc({ name: 'Bench', width: w, height: h, resolution: 300, mode: 'rgb', depth: 8, profile: { builtin: 'srgb' } }, 'bench-root')
     doc = insertNode(doc, makeNode('pixel', 'bench-bg', 'Background', { tiles: whiteId }), doc.root, 0)
     doc = insertNode(doc, makeNode('pixel', 'bench-noise', 'Noise', { tiles: noiseId }), doc.root, 1)
+    await globalThis.benchProfileStart?.('first-picture')
     globalThis.benchFrames.length = 0
     const at = performance.now()
     globalThis.plexel.documents().add({ doc, file: null, saved: true })
@@ -100,6 +138,7 @@ const first = await page.evaluate((t0) => {
   return { firstPicture: f.find((x) => x.rendered > 0).at - t0, complete: f[f.length - 1].at - t0, frames: f.length, tiles: f.reduce((a, x) => a + x.rendered, 0) }
 }, opened)
 out.firstFrame = first
+await stopProfiles()
 console.log(`  first picture after ${ms(first.firstPicture)}, every tile in view after ${ms(first.complete)} (${first.tiles} tiles over ${first.frames} frames)`)
 
 /** Runs `step` once a frame for `n` frames and reports what the engine did meanwhile. */
@@ -369,10 +408,10 @@ await page.evaluate((paras) => {
 }, paragraphs)
 await waitUntil(page, () => { const f = globalThis.benchFrames; return f.some((x) => x.rendered > 0) && f[f.length - 1].pending === 0 }, { timeout: 120000 })
 out.textRedrawMs = Date.now() - t10
-// Layout alone, again from nothing (a copy of the node misses the cache).
+// Layout alone, again from nothing: a deep copy of the node, so neither its own layout nor its paragraphs' (text/layout.ts, paraCache) are kept from before.
 const lay = await page.evaluate(() => {
   const d = globalThis.plexel.documents().active().history.present
-  const n = { ...d.nodes['bench-text'] }
+  const n = structuredClone(d.nodes['bench-text'])
   const t = performance.now()
   const l = globalThis.plexel.text.layoutOf(n, d)
   return { ms: performance.now() - t, glyphs: l.glyphs.placements.length / 7, outlines: l.glyphs.outlines.length, lines: l.lines.length, overflow: l.overflow }
@@ -425,11 +464,15 @@ await page.evaluate(() => {
   const P = globalThis.plexel
   const d = P.documents().active()
   globalThis.benchPsd = null
-  const t0 = performance.now()
-  P.exports
-    .psdOf(d.history.present, d.key, false)
+  let t0 = 0
+  Promise.resolve(globalThis.benchProfileStart?.('write'))
+    .then(() => {
+      t0 = performance.now()
+      return P.exports.psdOf(d.history.present, d.key, false)
+    })
     .then(async (ex) => {
       const writeMs = performance.now() - t0
+      await globalThis.benchProfileStart?.('reopen')
       const t1 = performance.now()
       await P.files.openFile(new File([ex.bytes], 'bench.psd'), null)
       const openMs = performance.now() - t1
@@ -460,6 +503,7 @@ else {
     }, psd.opened)
     if (drawn === null) await new Promise((r) => setTimeout(r, 1000))
   }
+  await stopProfiles()
   const last = await page.evaluate(() => globalThis.benchFrames.at(-1) ?? null)
   out.psd.drawnMs = drawn
   console.log(drawn !== null ? `  and drawn, fitted, ${ms(drawn)} after opening` : `  not drawn within two minutes of opening: ${last ? last.pending : '?'} tiles still waiting`)

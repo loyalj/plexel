@@ -10,7 +10,8 @@
  * `sampleLut`.
  *
  * On top of the table, the document's look (color/lut.ts, `displayRef`):
- * CMYK inks hidden for separations, colours the proof condition can't
+ * channels hidden (CMYK inks for separations, any colour channel from the
+ * Channels panel), one channel alone in gray, colours the proof condition can't
  * reproduce marked (the table's A, past half), and CMYK pixels over the
  * ink limit marked.
  *
@@ -22,14 +23,14 @@ import type { ColourMode } from '../../doc/types'
 import type { Look, Lut } from '../../color/lut'
 import { bufferAccess, preamble, type BufferFormat } from './common'
 
-/** LutParams: dims, size, kSlices, flags (1 gamut, 2 ink limit); the inks shown; the gamut alarm (w: the ink limit); the ink alarm. */
+/** LutParams: dims, size, kSlices, flags (1 gamut, 2 ink limit, 4 one channel in gray, its index << 8); the channels shown; the gamut alarm (w: the ink limit); the ink alarm. */
 export const LUT_PARAMS_BYTES = 64
 
 export function writeLutParams(lut: Lut, look: Look): ArrayBuffer {
   const out = new ArrayBuffer(LUT_PARAMS_BYTES)
   const u = new Uint32Array(out)
   const f = new Float32Array(out)
-  u.set([lut.dims, lut.size, lut.kSlices, (look.gamut ? 1 : 0) | (look.inkLimit > 0 && lut.input === 'cmyk' ? 2 : 0)], 0)
+  u.set([lut.dims, lut.size, lut.kSlices, (look.gamut ? 1 : 0) | (look.inkLimit > 0 && lut.input === 'cmyk' ? 2 : 0) | (look.gray >= 0 ? 4 | (look.gray << 8) : 0)], 0)
   f.set(look.inks.map((x) => (x ? 1 : 0)), 4)
   f.set([...look.alarm, look.inkLimit], 8)
   f.set([...look.inkAlarm, 0], 12)
@@ -44,7 +45,7 @@ export function displayWgsl(f: BufferFormat): string {
     cmyk: 'return vec4f(1.0) - unpremult(p);',
   }
   const lookup: Record<ColourMode, string> = {
-    rgb: 'tetra(0u, v.xyz)',
+    rgb: 'tetra(0u, v.xyz * D.inks.xyz)',
     gray: 'gray(v.x)',
     cmyk: 'cmyk(v * D.inks)',
   }
@@ -139,6 +140,10 @@ fn values(p: Px) -> vec4f {
 
 // The look on a document colour: color/lut.ts displayRef.
 fn look(v: vec4f) -> vec3f {
+  if ((D.flags & 4u) != 0u) {
+    let g = clamp(${f.mode === 'cmyk' ? '1.0 - v[D.flags >> 8u]' : 'v[D.flags >> 8u]'}, 0.0, 1.0);
+    return vec3f(g);
+  }
   let t = ${lookup[f.mode]};
   var out = t.xyz;
   if ((D.flags & 1u) != 0u && t.w <= 0.5) { out = D.alarm.xyz; }

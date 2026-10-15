@@ -270,8 +270,8 @@ function sampled(s: Subpath, step: number): Pt[] {
   return out
 }
 
-/** Cubics through points, within `tol`, split where the fit is worst until each is (Schneider). */
-function fitCubics(pts: Pt[], tol: number, out: Cubic[], depth = 0) {
+/** Cubics through points, within `tol`, split where the fit is worst until each is (Schneider). Image Trace fits its boundaries with it too. */
+export function fitCubics(pts: Pt[], tol: number, out: Cubic[], depth = 0) {
   if (pts.length === 2) {
     const [a, b] = pts
     out.push([a[0], a[1], a[0] + (b[0] - a[0]) / 3, a[1] + (b[1] - a[1]) / 3, a[0] + ((b[0] - a[0]) * 2) / 3, a[1] + ((b[1] - a[1]) * 2) / 3, b[0], b[1]])

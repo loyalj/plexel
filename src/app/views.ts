@@ -138,6 +138,19 @@ class ViewStore {
     })
   }
 
+  /**
+   * A box of the document (a selection's, a layer's) framed: centred, as
+   * large as fits with a margin, unrotated, never past 1600%.
+   */
+  fitBox(box: [number, number, number, number]) {
+    const [x0, y0, x1, y1] = box
+    if (!(x1 > x0) || !(y1 > y0)) return
+    this.change(() => {
+      const f = fitView(x1 - x0, y1 - y0, engine().canvasSize(), 48, false)
+      return { ...f, zoom: Math.min(16, f.zoom), cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 }
+    })
+  }
+
   /** 100%: one document pixel to one CSS pixel, about the centre of the view. */
   actualSize() {
     this.zoomTo(1)

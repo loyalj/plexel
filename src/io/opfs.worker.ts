@@ -15,7 +15,10 @@ interface SyncHandle {
   close(): void
 }
 
-scope.onmessage = async (e) => {
+scope.onmessage = (e) => void write(e)
+
+/** One file written whole; the answer, or why not, posted back with its id. */
+async function write(e: MessageEvent) {
   const { id, path, data } = e.data
   try {
     let dir = await navigator.storage.getDirectory()

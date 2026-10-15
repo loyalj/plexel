@@ -14,7 +14,7 @@
  *
  * Run with: npm run check:fills
  */
-import { check, finish, frames, open, settle, waitUntil, waitForEngine } from './harness.mjs'
+import { check, dialogShown, finish, frames, open, pageHelpers, settle, waitForEngine, waitUntil } from './harness.mjs'
 import { decodePng, pixelAt } from './png.mjs'
 
 const { page, url } = await open({ viewport: { width: 1280, height: 860 } })
@@ -22,13 +22,7 @@ await page.goto(url)
 await waitForEngine(page)
 
 // --- helpers (as check-tools.mjs's) ------------------------------------------------------
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
+const { press } = pageHelpers(page)
 const clickMenu = async (menu, command, submenu) => {
   await page.evaluate((m) => [...document.querySelectorAll('.menu-title')].find((b) => b.textContent === m).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })), menu)
   await frames(page)
@@ -39,10 +33,7 @@ const clickMenu = async (menu, command, submenu) => {
   await page.click(`[data-command="${command}"]`)
   await frames(page)
 }
-const idle = async () => {
-  await frames(page)
-  await page.evaluate(() => globalThis.plexel.engine().call('render.idle', {}))
-}
+const { idle } = pageHelpers(page)
 const rect = () => page.$eval('[data-engine-canvas]', (e) => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height } })
 const shot = async () => decodePng(Buffer.from(await page.screenshot()))
 const at = async (dx, dy, img) => {
@@ -133,7 +124,7 @@ console.log('\nEdit → Fill')
 await newDoc()
 await marquee([-200, -100], [0, 100])
 await press('Shift+F5')
-check('Shift+F5 opens Fill', !!(await page.$('[data-dialog="fill"]')))
+check('Shift+F5 opens Fill', await dialogShown(page, 'fill'))
 await page.select('#fill-contents', 'black')
 await page.select('#fill-blend', 'multiply')
 await page.click('#fill-opacity', { clickCount: 3 })
@@ -188,7 +179,7 @@ const fl = await page.evaluate(() => {
 check('a fill layer of the foreground, chosen', fl?.kind === 'fill' && fl.props.paint.kind === 'solid')
 check('it covers the canvas', near(await at(-300, 200), [0, 160, 0]) && near(await at(300, -200), [0, 160, 0]))
 check('Properties edits its paint', !!(await page.$('[data-props="fill"] #props-fill-paint')))
-await page.select('#props-fill-paint', 'gradient')
+await page.$eval('#props-fill-paint-gradient', (e) => e.click())
 check('switching it to a gradient is one step', await stepIs('Fill Layer'))
 await idle()
 {
@@ -358,7 +349,7 @@ check('Smooth is a step', await stepIs('Smooth'))
 console.log('\nColour Range')
 await press('Control+KeyD')
 await clickMenu('Select', 'select.colour-range')
-check('Colour Range opens beside the canvas, not over it', !!(await page.$('.scrim.floating [data-dialog="colourRange"]')))
+check('Colour Range opens beside the canvas, not over it', (await dialogShown(page, 'colourRange')) && !!(await page.$('.scrim.floating [data-dialog="colourRange"]')))
 await clickAt(0, 0)
 await waitUntil(page, () => document.querySelector('[data-range-samples]')?.getAttribute('data-range-samples') === '1').catch(() => {})
 await settle(400)
@@ -390,7 +381,7 @@ await dialogSubmit('loadSelection')
 check('Load Selection brings it back', (await stepIs('Load Selection')) && boundsNear(await bounds(), [300, 200, 550, 450], 3))
 await clickMenu('Window', 'window.panel.channels')
 await frames(page)
-check('the Channels panel lists it', !!(await page.$('[data-panel="channels"] [data-channel]')))
+check('the Channels panel lists it', !!(await page.$('[data-panel="channels"] [data-channel-row][data-kind="alpha"]')))
 
 // --- Select and Mask --------------------------------------------------------------------------------
 console.log('\nSelect and Mask')
@@ -429,9 +420,13 @@ for (const [x, y] of [
   await settle(60)
   await clickAt(x, y)
 }
+// Photoshop's habits: Alt-click a straight side out to a stray point, and Backspace takes it back.
+await clickAt(250, -250, ['Alt'])
+await press('Backspace')
+await settle(400)
 await clickAt(-97, -103)
 check('a click on the start closes it, as one step', await stepIs('Magnetic Lasso'))
-check('the outline followed the square’s edges', boundsNear(await bounds(), [300, 200, 500, 400], 4), JSON.stringify(await bounds()))
+check('the outline followed the square’s edges, the point taken back not in it', boundsNear(await bounds(), [300, 200, 500, 400], 4), JSON.stringify(await bounds()))
 await page.evaluate(() => globalThis.plexel.selectTools().update('lasso', { mode: 'freehand' }))
 
 await finish()

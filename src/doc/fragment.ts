@@ -27,7 +27,7 @@ function linkedSwatches(a: AppearanceItem[], out: Set<string>) {
 }
 
 /** The ids of the patterns made from pixels that nodes paint with: in fills and strokes, fill layers and Pattern Overlay. */
-export function usedPatterns(nodes: Iterable<DocNode>): Set<string> {
+function usedPatterns(nodes: Iterable<DocNode>): Set<string> {
   const out = new Set<string>()
   const paint = (p: Paint) => p.kind === 'pattern' && out.add(p.pattern)
   for (const n of nodes) {
@@ -64,12 +64,26 @@ export function fragmentOf(doc: Doc, ids: NodeId[], rootId: NodeId): Doc {
   // Graphic styles the copied shapes are linked to go with them.
   const styleIds = new Set(Object.values(nodes).map((n) => linkOf(n)).filter((x): x is string => !!x))
   const graphicStyles = (doc.graphicStyles ?? []).filter((g) => styleIds.has(g.id))
+  // The symbols copied instances show go with them, and the symbols those symbols' instances show.
+  const symbolIds = new Set<string>()
+  const visit = (list: DocNode[]) => {
+    for (const n of list) {
+      if (n.kind !== 'symbol' || symbolIds.has(n.props.symbol)) continue
+      symbolIds.add(n.props.symbol)
+      const s = doc.symbols?.find((x) => x.id === n.props.symbol)
+      if (s) visit(Object.values(s.content.nodes))
+    }
+  }
+  visit(Object.values(nodes))
+  const symbols = (doc.symbols ?? []).filter((s) => symbolIds.has(s.id))
   const frag: Doc = { ...doc, root: rootId, nodes, selection: null, guides: [] }
   delete frag.swatches
   delete frag.graphicStyles
   delete frag.patterns
   delete frag.channels
   delete frag.tiled
+  delete frag.symbols
+  if (symbols.length) frag.symbols = symbols
   if (swatches.length) frag.swatches = swatches
   if (patterns.length) frag.patterns = patterns
   if (graphicStyles.length) frag.graphicStyles = graphicStyles
@@ -159,6 +173,10 @@ export function pasteFragment(doc: Doc, frag: Doc, o: PasteOptions): { doc: Doc;
   const haveStyles = new Set((out.graphicStyles ?? []).map((g) => g.id))
   const addStyles = (frag.graphicStyles ?? []).filter((g) => !haveStyles.has(g.id))
   if (addStyles.length) out = { ...out, graphicStyles: [...(out.graphicStyles ?? []), ...addStyles] }
+  // Symbols the document doesn't have (by id) come with their instances; one it has is its own.
+  const haveSymbols = new Set((out.symbols ?? []).map((s) => s.id))
+  const addSymbols = (frag.symbols ?? []).filter((s) => !haveSymbols.has(s.id))
+  if (addSymbols.length) out = { ...out, symbols: [...(out.symbols ?? []), ...addSymbols] }
   return { doc: out, ids: placed }
 }
 
@@ -196,6 +214,7 @@ export function pixelFragment(source: Doc, rootId: NodeId, layerId: NodeId, name
   root.children = [layerId]
   const frag: Doc = { ...source, root: rootId, nodes: { [rootId]: root, [layerId]: layer }, selection: null, guides: [] }
   delete frag.swatches
+  delete frag.symbols
   delete frag.textStyles
   delete frag.tiled
   delete frag.patterns

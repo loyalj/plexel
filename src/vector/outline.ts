@@ -9,11 +9,14 @@
  * pixel. Strokes are outlined in the shape's own coordinates (so a stroke
  * turns and scales with it) and the outline taken into level pixels. A
  * stroke inside or outside a closed path is a stroke twice as wide, kept
- * where the fill is (inside) or isn't (outside): its `clip`.
+ * where the fill is (inside) or isn't (outside): its `clip`. A stroke
+ * with a vector brush is its artwork's parts, each in its own paint
+ * (`parts`), laid together as the one stroke.
  */
 import type { ColourMode } from '../doc/types'
-import { appearanceIn, strokeStyleOf, type AppearanceItem } from '../doc/vector'
-import { maxScale, type Box, type FillRule, type Mat, type Pt } from '../geom/path'
+import { appearanceIn, strokeStyleOf, type AppearanceItem, type Paint, type StrokeItem } from '../doc/vector'
+import { brushPieces, brushReach } from './brush'
+import { flattenPath, maxScale, type Box, type FillRule, type Mat, type PathData, type Pt } from '../geom/path'
 import { warpLines } from '../geom/warp'
 import { flattenOutline, glyphsToPath, isGlyphs, outlineBounds, outlineClosed, outlineEmpty, outlineFillRule, type Outline } from '../geom/glyphs'
 import { hasPathEffects, itemPath } from './itemEffects'
@@ -32,6 +35,12 @@ export interface ItemOutline {
   /** Its segments' box in level pixels, for skipping tiles it doesn't touch. */
   box: Box | null
   clip: { segs: number[]; rule: FillRule; mode: 'inside' | 'outside' } | null
+  /**
+   * A brush stroke's parts, each its own segments and paint, painted in
+   * order over one another and then laid on as one item (its opacity, blend
+   * and effects). `segs` is then all of them together, for its box.
+   */
+  parts?: { segs: number[]; rule: FillRule; paint: Paint; box: Box | null }[]
 }
 
 export interface VectorOutline {
@@ -81,6 +90,16 @@ export function vectorOutline(path: Outline, appearance: AppearanceItem[], trans
       continue
     }
     if (item.width <= 0) continue
+    if (item.brush) {
+      // The brush's artwork along the path, each part in its paint; laid on as one stroke.
+      const parts = brushPieces(g.nodeLines(), item, item.brush, mode, tolNode).map((p) => {
+        const segs = loopsToSegments(bent(p.loops), m)
+        return { segs, rule: p.rule, paint: p.paint, box: segmentsBounds(segs) }
+      })
+      const segs = parts.flatMap((p) => p.segs)
+      items.push({ item, segs, rule: 'nonzero', box: segmentsBounds(segs), clip: null, parts })
+      continue
+    }
     const aligned = g.closed && item.align !== 'centre'
     const loops = strokeOutline(g.nodeLines(), strokeStyleOf(item, aligned ? item.width * 2 : item.width), tolNode)
     const segs = loopsToSegments(bent(loops), m)
@@ -95,11 +114,73 @@ export function vectorOutline(path: Outline, appearance: AppearanceItem[], trans
   return { items, pathBox }
 }
 
-/** How far past its path a node's strokes reach, in its own units. */
-export function appearanceReach(appearance: AppearanceItem[]): number {
+/**
+ * A stroke as the outline it paints, a path to fill (nonzero), in the
+ * path's own units: for files that can't hold a width profile, arrowheads
+ * or dashes fitted to corners (SVG, PDF). An inside or outside stroke is
+ * the outline of one twice as wide; the file clips it as it does a plain
+ * one.
+ */
+export function strokeAsPath(path: PathData, item: StrokeItem): PathData {
+  const closed = path.subpaths.length > 0 && path.subpaths.every((s) => s.closed)
+  const aligned = closed && item.align !== 'centre'
+  const tol = Math.max(0.01, item.width / 400)
+  const loops = strokeOutline(flattenPath(path, tol), strokeStyleOf(item, aligned ? item.width * 2 : item.width), tol)
+  return {
+    fillRule: 'nonzero',
+    subpaths: loops.filter((l) => l.length >= 6).map((l) => {
+      const anchors = []
+      for (let i = 0; i < l.length; i += 2) anchors.push({ p: [l[i], l[i + 1]] as Pt, in: null, out: null, smooth: false })
+      return { closed: true, anchors }
+    }),
+  }
+}
+
+/**
+ * A brush stroke as paths to fill, one per part of its artwork with its
+ * paint (colorized), in the path's own units: for SVG and PDF, and Outline
+ * Stroke. Paints are in `mode`.
+ */
+export function brushAsPaths(path: PathData, item: StrokeItem, mode: ColourMode): { path: PathData; paint: Paint }[] {
+  if (!item.brush) return []
+  const tol = Math.max(0.01, item.width / 400)
+  return brushPieces(flattenPath(path, tol), item, item.brush, mode, tol).map((p) => ({
+    paint: p.paint,
+    path: {
+      fillRule: p.rule,
+      subpaths: p.loops.map((l) => {
+        const anchors = []
+        for (let i = 0; i < l.length; i += 2) anchors.push({ p: [l[i], l[i + 1]] as Pt, in: null, out: null, smooth: false })
+        return { closed: true, anchors }
+      }),
+    },
+  }))
+}
+
+/** The longest line of a path (flattened coarsely): how wide a proportional art brush gets. */
+export function longestLine(path: PathData): number {
+  let best = 0
+  for (const l of flattenPath(path, 0.5)) {
+    let d = 0
+    for (let i = 2; i < l.pts.length; i += 2) d += Math.hypot(l.pts[i] - l.pts[i - 2], l.pts[i + 1] - l.pts[i - 1])
+    if (l.closed && l.pts.length >= 4) d += Math.hypot(l.pts[0] - l.pts[l.pts.length - 2], l.pts[1] - l.pts[l.pts.length - 1])
+    best = Math.max(best, d)
+  }
+  return best
+}
+
+/** Whether any of a node's strokes is a proportional art brush, whose reach needs its path's length. */
+export const needsLength = (appearance: AppearanceItem[]) => appearance.some((it) => it.kind === 'stroke' && it.enabled && it.brush?.kind === 'art' && it.brush.fit === 'proportional')
+
+/** How far past its path a node's strokes reach, in its own units; `longest` is its longest line, for a proportional art brush. */
+export function appearanceReach(appearance: AppearanceItem[], longest = 0): number {
   let r = 0
   for (const it of appearance) {
     if (it.kind !== 'stroke' || !it.enabled) continue
+    if (it.brush) {
+      r = Math.max(r, brushReach(it.brush, it.width, it.profile, longest))
+      continue
+    }
     const style = strokeStyleOf(it, it.align === 'centre' ? it.width : it.width * 2)
     r = Math.max(r, strokeReach(style))
   }

@@ -27,7 +27,7 @@ import { gridStep, origins } from './viewAids'
 import { views } from './views'
 
 /** How near, in CSS pixels on screen, something must come to snap. */
-export const SNAP_PX = 8
+const SNAP_PX = 8
 
 export interface Snapper {
   /** A point dragged to (x, y): where it lands. */

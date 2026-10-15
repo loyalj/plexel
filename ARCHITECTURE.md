@@ -73,7 +73,9 @@ rewrites. These are the habits that did it, and Plexel keeps every one:
 7. **The manual is data and is tested.** MANUAL.md's parameter tables are the
    in-app hover help, pulled out at build time by a Vite plugin, and
    `check:manual` builds the manual's tutorials and checks what the text
-   claims.
+   claims. *Not built yet* (13 October 2026): neither the plugin nor
+   `check:manual` exists; the hover help comes from the registries' own
+   hints, and nothing checks MANUAL.md. On the deferred list.
 8. **Defensive I/O.** Every storage call is guarded. Loaders clamp and drop
    bad input and collect `warnings[]` instead of throwing. A migrations table
    handles renames without bumping the format. A file newer than the build is
@@ -160,7 +162,14 @@ src/
   io/         importers and exporters, the .pxll zip, File System Access,
               OPFS storage, autosave journal, recovery
   input/      pointer, pen and keyboard capture, shortcuts
-  hooks/      useDocument, useFiles and other app-level hooks
+  app/        the page's stores and actions: documents, tools and their
+              gestures, selections, the clipboard, autosave, the overlay;
+              what the components call and read
+  lib/        small helpers any layer may use: Listeners (every store's
+              change listeners), useStable (callbacks that keep their
+              identity, for memoised panels), deepEqual, clamp and clamp01
+  checks/     the GPU probes check-gpu drives inside the engine (probe.ts),
+              loaded only for the checks
   ui/         React components: shell, panels, dialogs, controls
 scripts/      check-*.ts, check-*.mjs, run-checks.mjs, run-ts.mjs,
               harness.mjs, bench-*.ts
@@ -191,14 +200,31 @@ interface Doc {
   guides: Guide[]
   swatches?: DocSwatch[]             // process, global and spot colours (doc/swatches.ts)
   patterns?: DocPattern[]            // patterns made from pixels: tile sets, by id
-  channels?: DocChannel[]            // alpha channels: saved selections, each with a transform
+  channels?: DocChannel[]            // alpha and spot channels: coverage, each with a transform and how it shows
   styles: { char, para, graphic }    // named styles, referenced by id
 }
 ```
 
-There is a single canvas for now. Artboards arrive later as a node kind
-under the root. The canvas fields above become the defaults that artboards
-override, so nothing else changes.
+**Artboards** (`doc/artboards.ts`) are groups at the top level carrying an
+`artboard` (size, background, clip); an artboard's corner is its group's
+translation, so moving one is moving a group, and Canvas Size, Crop and
+the rest move it with everything else. The canvas is the pasteboard round
+them, grown (`fitCanvas`, reporting how far things moved so the view can
+follow) whenever they'd leave it. **Symbols** (`doc/symbols.ts`) are
+`symbols: { id, name, content: Doc }`, a document per symbol as a smart
+object's contents are, and instances are nodes of kind `symbol` whose
+transform takes the symbol's coordinates into the document's.
+
+Nothing below the document model knows either: `doc/expand.ts` turns an
+artboard into an isolated group with a background rectangle at the bottom
+and a vector clip mask, and an instance into a group of copies of its
+symbol's layers through its transform (ids `<instance>~<layer>`, which
+`ownerOf` maps back), nested instances in turn. `EngineHost.setScene`, the
+exporters and picking all read the expanded document; it's kept per
+document and per node (and per symbol version), so unchanged nodes stay
+the same objects and the engine is sent only what changed. Exporting an
+artboard is `artboardDoc`: the document cropped to it with only it in the
+root, through every exporter as it is.
 
 ### Nodes
 
@@ -238,7 +264,7 @@ defaults, container rules and render evaluator:
 | `linked` | A smart object whose source is an outside file, kept by handle, with an OPFS copy so the document still opens without it. |
 | `mask` | A pixel mask or vector mask, with live density and feather. |
 | `fill` | Photoshop's fill layer: one paint (a colour, a gradient, a pattern) over the whole plane, without an edge, shaped by its masks. |
-| `artboard` | Later. |
+| `symbol` | An instance of one of the document's symbols, placed by its transform; drawn as copies of the symbol's layers. (Artboards are groups with an `artboard`, not a kind of their own.) |
 
 **Effects and clipping follow one rule.** An adjustment or filter placed
 among siblings applies to the composite below it inside the same parent. One
@@ -278,8 +304,8 @@ are always in the document's mode.
 
 A selection is a coverage tile set plus, when it came from a path, the path
 itself (`Doc.selection`). Changes to it are history steps, and it's saved
-in the file. Saved selections and spot channels become extra channels on
-the document, which the tile store already allows for.
+in the file. Alpha and spot channels are coverage sets of their own, kept
+beside the layers (Channels, below).
 
 **Coverage** (`tiles/coverage.ts`) is gray 8-bit tiles in the document's
 grid: the gray value is how much a pixel is selected, no tile is nothing,
@@ -347,6 +373,52 @@ in the engine worker, never on the whole image at once:
 - **Alpha channels** (`Doc.channels`) are coverage sets with a transform of
   their own, as masks have, so Crop and Canvas Size move them without
   touching their pixels; loading one samples it through its transform.
+
+### Channels
+
+- **Alpha and spot channels are coverage.** A `DocChannel` is a coverage
+  set with a transform, plus how it shows: an alpha channel's tint (sRGB),
+  its opacity and whether the tint marks what's masked or selected; a spot
+  channel's ink (a colour value in its own space, as swatches keep theirs,
+  named by the channel) and its solidity. A spot's coverage is how much
+  ink, so a missing tile is no ink; PSD keeps it the other way round
+  (black is ink) and is turned round on the way in and out.
+- **What's shown and picked is view state** (`app/channels.ts`), per open
+  document, not in the history or the file: the colour channels shown,
+  the alpha and spot channels shown (spots by default, alphas not), and
+  the target, some colour channels or one alpha or spot channel. Picking
+  a layer targets the colour channels again; Quick Mask takes precedence.
+- **The colour channels on screen** are the display pass's: the look
+  (`color/lut.ts`) masks hidden channels, as Separations' inks are
+  masked (RGB's lights at zero, CMYK's inks at none), and one channel alone
+  is shown as its own value in gray, past the table. `displayRef` is held
+  to it.
+- **Alpha and spot channels on screen** are the screen pass's: each shown
+  one's coverage at the level shown is rendered into the selection's atlas
+  by the mask kernel (`renderCover`, keyed by channel), its tiles' slots
+  after the selection's in `sel_tiles`, at most four at once. An alpha is
+  its tint over what it marks; a spot multiplies its ink over the picture,
+  then moves towards the ink by its solidity; with every colour channel
+  hidden, the canvas is paper and the first alpha shows as gray.
+- **Painting a channel** is painting a gray target, as Quick Mask paints
+  the selection: strokes go to the engine on a node id of their own
+  (`#channel:<id>`), resolved to the channel's set and transform, and
+  drawn live through the coverage overlay; fills go through the same
+  `select.fill` and `fill.paint` as a mask's, and commit to the channel in
+  its own pixels. The Magic Wand and the Paint Bucket read a channel through
+  `readCover8`, as the canvas shows it.
+- **Painting some colour channels** keeps the others: the stroke kernel's
+  `with_stroke` puts back the straight colour of each channel not
+  targeted, and alpha (bits in the stroke parameters; `keepPlanes` in
+  `ref/paint.ts` is its reference), so it's right live and baked; fills,
+  Delete, content-aware fill and filters applied for good go through
+  `fill.keepPlanes` (`tiles/planes.ts`), which builds new tiles only where
+  the edit changed one.
+- **Thumbnails and loading** (`engine/channelHost.ts`): colour channels
+  from the composite at a small mip level, over white; alpha and spot
+  channels from `readCover8`. A colour channel loads as the selection by
+  its value (CMYK's by its ink's absence), the composite by its luminosity,
+  from the full-size composite a band of tiles at a time.
 
 ### The clipboard
 
@@ -464,7 +536,8 @@ tiles.
   missing tile is transparent, and a *uniform* tile is stored as one value,
   so a filled background costs bytes, not megabytes.
 - **Channels are planar.** Each tile holds one plane per channel: RGB+A is 4,
-  Gray+A is 2, CMYK+A is 5, plus any extra or spot channels. On the GPU the
+  Gray+A is 2, CMYK+A is 5 (alpha and spot channels are sets of their own,
+  gray coverage). On the GPU the
   planes are packed into textures of up to four channels: CMYK+A is two.
 - **Alpha is straight**, not premultiplied, as PSD keeps it. The GPU
   premultiplies when it composites.
@@ -493,7 +566,11 @@ tiles.
   a brush stroke only the mips above the changed tiles are rebuilt. Mips are
   never invalidated, only evicted.
   Uniform and empty tiles are known from the store's bookkeeping and never
-  uploaded, at any level.
+  uploaded, at any level. An upload writes the tile's planar samples, as
+  the store holds them, into a frame's upload ring, and a render pass packs
+  them into the atlas layer (shaders/upload.ts); a frame whose ring is full
+  stops and goes on next frame, and work outside the frames (thumbnails,
+  exports) interleaves on the CPU instead.
 - **Reading on demand.** A tile can stay in the file it came from (a big
   `.pxll`'s stored pack) until it's first needed; past the memory budget it's
   dropped rather than spilled, since the file still has it. Before that file
@@ -592,7 +669,8 @@ mip level.*
   Mask stroke shows as it's painted. The screen shader draws marching ants
   where coverage crosses a half between neighbouring screen pixels, dashed
   and crawling, or in Quick Mask a red tint by what isn't selected, and a
-  crop's shade. Lines and handles from the tools (`render/overlay.ts`) are
+  crop's shade. Alpha and spot channels shown are drawn under that, from
+  the same atlas (Channels, above). Lines and handles from the tools (`render/overlay.ts`) are
   cut into triangles on the CPU each frame, through the frame's own view,
   and drawn in the same pass.
 
@@ -705,7 +783,59 @@ children, each with its operation, and an appearance of its own.
   document to the engine and commit once. They edit the target: the
   selected shape's path, or its vector mask. Editing a live shape's anchors
   converts it to a path. The outline, anchors and handles are the overlay's,
-  in the accent colour.
+  in the accent colour; smooth points round, corners square.
+- **Points across shapes.** The selected anchors are kept per node
+  (`AnchorSelection`, by id): Direct Selection hit-tests every selected
+  shape (the key layer's first), its box reaches every visible, unlocked
+  shape and selects those layers, and a drag moves each shape's points in
+  its own coordinates (the document's move through the inverse of its
+  transform's linear part), committed as one step; Delete, Join and Break
+  work across them. A vector mask being edited is edited alone.
+- **The curvature rule** (`geom/edit.ts` `curvatureAnchor`, `recurve`): a
+  smooth point's handles lie along the line between its neighbours, a third
+  of the way to each; an open end's turns towards where the curve through
+  its neighbour heads (the neighbour's tangent mirrored across the chord).
+  The Curvature tool applies it to the points round the one it changed; the
+  Pen's Smart mode to the points it placed by a click, keeping handles
+  pulled out by hand. One drawing session serves the Pen, Smart and the
+  Curvature tool.
+- **Joining and breaking** are pure functions too (`breakAt`,
+  `joinSubpaths`, `closeSubpath`, `separate`); joining two shapes moves
+  the second's subpath into the first's coordinates.
+- **The Width tool** (`app/widthTool.ts`) edits the profile of a shape's
+  topmost stroke, nothing else: its arithmetic is `geom/width.ts` (adding a
+  point as wide as the stroke is there, setting, sliding between
+  neighbours, deleting, flipping; a profile all at full width becomes none;
+  a closed path's points at 0 and 1 kept as one). It measures each subpath
+  as the stroke does (flattened, its length, the closing side included) to
+  find where a press is (a share of the length) and which side (towards
+  the normal (−dy, dx), the outline's left), in the shape's own units, so
+  a transformed shape is no different. Drags preview through the engine
+  and commit one step through `setAppearance`; the overlay is drawn only
+  while it's still the tool's (the overlay's version), so switching tools
+  can't wipe another tool's. Saved profiles are `app/widthProfiles.ts`,
+  kept by the browser like the tools' settings.
+- **Vector brushes** (`doc/vectorBrush.ts` the model, `vector/brush.ts` the
+  drawing): a stroke item can hold a brush, a copy of the library's
+  (`Doc.vectorBrushes`, or a built-in one from `vector/brushLibrary.ts`),
+  so a stroke draws the same anywhere it's pasted; editing a brush can
+  re-copy it into every stroke with its id (`restrokeWith`). Artwork is
+  filled parts, each its own paint, x along the path, y across. Each line
+  of the flattened path becomes a **rail**: distances along it and a
+  normal at each point averaged from its segments (lengthened by 1/cos of
+  half the turn, at most twice), interpolated along each segment, so art
+  bends round a flattened curve rather than kinking. Art at (x, y) goes to
+  (s(x), y·k·profile) on the rail, each loop carried through by
+  `warpLines` (the envelope code), cut until it follows; scatter copies and
+  corner tiles are only moved, turned and scaled. Colorization (tints,
+  tints and shades, hue shift) recolours parts in the document's mode. The
+  result is one `ItemOutline` with `parts`: the graph (and its CPU
+  reference) paints the parts over one another into one buffer, which is
+  then laid on with the stroke's opacity, blend and effects, as a plain
+  stroke is. A proportional art brush is as wide as the path is long, so
+  bounds pass the longest line to `appearanceReach`. SVG and PDF get the
+  parts as filled paths (`brushAsPaths`); Outline Stroke makes them shapes
+  in a group.
 
 ### The filter and adjustment pack
 
@@ -870,7 +1000,19 @@ Built in phase 8, all pure and checked in Node (`check:geom`):
   the flattened polyline, meeting where they cross on a gentle turn (so the
   outline doesn't overlap itself there and its edge's anti-aliasing stays
   exact). The renderer fills that outline, so "Outline Stroke" is the same
-  code with its result kept. Width profiles and arrowheads come later.
+  code with its result kept. Each point of a line carries its distance
+  along the subpath and a half-width either side: a **width profile**
+  (width points along the subpath, eased between) sets them, the side
+  offsets, joins and caps take them, and straight runs are cut finer so a
+  taper is smooth. **Arrowheads** are loops added at an open line's ends,
+  pointing along the line a head's length back, the line trimmed under a
+  filled head. **Dashes aligned to corners** cut the line at the corners
+  `flattenPath` marks (anchors whose two sides don't continue each other)
+  and fit a whole number of repeats to each run, half a dash either side of
+  a corner. SVG and PDF get such a stroke as its outline, filled
+  (`strokeAsPath`); PSD keeps it plain and says so. **Scale Strokes** off
+  makes Free Transform divide the strokes' widths and dashes by the
+  transform's scale (the root of its determinant).
 - **Regions** (`geom/regions.ts`): every area shapes' outlines cut the
   plane into, with the shapes it's inside, by the booleans: the shapes
   added one at a time, each region so far cut into what's in the new shape
@@ -1045,10 +1187,11 @@ set through the vector pipeline.
   the new set, and the set is pinned against collection until then.
 - **Jitter is seeded**, so the same pen samples always make the same stroke,
   and the checks replay strokes against the CPU reference.
-- **Targets.** A stroke paints a pixel layer, a mask, or (in Quick Mask)
-  the selection itself; the last two are gray 8-bit with their own
-  transform, painted in gray levels, where missing tiles are the outside
-  value under the stroke.
+- **Targets.** A stroke paints a pixel layer (only some of its colour
+  channels, when only some are targeted), a mask, an alpha or spot
+  channel, or (in Quick Mask) the selection itself; all but the first are
+  gray 8-bit with their own transform, painted in gray levels, where
+  missing tiles are the outside value under the stroke.
 - **Confined to the selection** as the stroke is laid on, not as it's
   stamped: each stroke tile has the selection's coverage beside it, in the
   layer's pixels, read from the tile store when the tile is first touched,
@@ -1102,6 +1245,11 @@ same `commit` as every panel, so undo and autosave are never special cases.
   group's whole contents'); handles work in the layer's own frame, so
   scaling a turned layer scales along its own edges. Rasterize bakes a
   layer's transform into new tiles on the document's grid.
+  Several layers share one box in the document, and each gets the same
+  affine. The Move tool's transform controls (`app/transformControls.ts`)
+  draw that box round selected shapes and open a session for one drag of
+  a handle, committed when the pointer lifts; they register with
+  canvasTools rather than being imported by it, so there's no cycle.
 - **Crop** changes the canvas, not the layers: every node's transform is
   moved (and, straightening, turned) into the new canvas's coordinates, as
   Canvas Size does, so nothing is lost.
@@ -1275,9 +1423,47 @@ sRGB and drop the profile, so they are used only where that doesn't matter.
 | PNG | own decoder | own encoder | 8/16-bit, ICC, via `DecompressionStream` / `CompressionStream` |
 | JPEG | browser decode + own ICC parse; CMYK through our own decoder | browser / wasm encoder | `io/jpegDecode.ts`: baseline and progressive, Adobe YCCK and inverted CMYK |
 | TIFF | own | own | 8/16-bit, RGB/Gray/CMYK, LZW/deflate, layers later |
-| WebP, AVIF | browser | browser (WebP) / wasm (AVIF) | |
+| WebP | browser decode + own profile read (`io/webp.ts`) | browser encoder (lossless at quality 1 exactly), profile put in by `io/webp.ts` (the file made extended: VP8X, ICCP) | Chrome's encoder writes no profile |
+| AVIF | browser | wasm (later) | |
+| PNG-8 | (PNG's decoder) | `io/quantize.ts` (median cut over a 15-bit histogram, nearest colour, Floyd–Steinberg) and `encodePngIndexed` | Save for Web's; one-bit transparency |
+
+**Freehand paths** (`geom/freehand.ts`, the tools in `app/freehand.ts`): a
+stroke's points thinned and fitted by `fitPoints` (shared with Image
+Trace: corners by chord angles over a few points so a hand's jitter isn't
+a corner, smoothing, Schneider cubics, handles lined up where fitted
+curves meet inside a run). Redrawing a selected path splices the fitted
+stroke between the nearest places on it to the stroke's ends (cubics split
+there), turned round if drawn against the path, the arc it runs along
+replaced on a closed one; from an open end it extends. The Blob Brush is
+the stroke's round outline (`strokeOutline`) united with the same-coloured
+plain shapes it touches in its group (`booleanPaths`), then refitted.
+
+**Image Trace** (`trace/trace.ts`, in a worker of its own,
+`app/imageTrace.ts` for the document side): colours (a threshold, gray
+levels, or median cut through `io/quantize.ts`, a box blur first),
+regions (4-connected flood fill; noise regions joined to the neighbour
+they share most edge with, smallest first), boundary loops on the pixel
+lattice (each region on its left, saddles turned left), cut at junctions
+(three or more labels round a lattice point, or a diagonal pair). Each
+piece is fitted once (corners by chord angles, the staircase smoothed,
+`fitCubics` from `geom/regions.ts`) and looked up by its ends for the
+region on its other side, reversed: shapes abut exactly. One shape per
+colour, all its regions in one even-odd path.
+
+Colours set anywhere but the Colour panel are chips (`ui/ColourChip.tsx`):
+`ColourChip` edits a ColourValue, `DocColourChip` a colour in a document's
+terms (converted with Colour Settings' intent), `HexColourChip` the app's
+own sRGB colours. The picker is portalled over everything and changes the
+colour live; the caller's coalesce key makes a session one step.
+
+Save for Web asks the engine for each file it shows (`image.optimize`,
+`engine/imageHost.ts`): the composite as 8-bit RGBA, in sRGB or the
+document's RGB profile, is kept while the document is the same, so a
+setting changed only resamples (a canvas, smoothing high) and encodes
+again. The dialog decodes each file back to show it.
 | GIF, BMP | browser | own | |
 | SVG | own XML parser → vector nodes | own writer | `io/svg/`; checked against resvg's renders and Chrome's |
+| EPS | — | own writer (`io/eps/write.ts`, EPSF 3.0, Level 3), the PDF writer's host | device colours, Separation inks, shfill gradients; flattened up to the last layer that isn't opaque vectors (PostScript has no transparency), clear parts colour-keyed (ImageType 4); Flate + ASCII85, 7-bit clean; drawn by Ghostscript (WebAssembly, a dev dependency) in check:interchange |
 | PDF | later: vectors and images | own writer, PDF/X-4 for CMYK | `io/pdf/`; read back by pdf.js in the checks. `.ai` files will open through their PDF part |
 | PSD / PSB | own reader | own writer | `io/psd/`, our own rather than ag-psd (below) |
 | Camera RAW | later, LibRaw in wasm | | |
@@ -1326,7 +1512,9 @@ The PDF is one page in the document's own colour (an ICCBased colour space
 from its profile), with transparency groups for groups, ExtGState for
 opacity and blend modes, shadings for gradients, and image XObjects with
 soft masks for the rest. Spot swatches are Separation colour spaces with
-their process equivalent as the alternate. A CMYK document gets a PDF/X-4
+their process equivalent as the alternate; spot channels are images in
+the Separation of their ink (shared by name with a swatch's), drawn last
+with overprint on, so each is a plate of its own. A CMYK document gets a PDF/X-4
 output intent of its profile. Text is outlines for now; live text with
 subset fonts is a later step.
 
@@ -1343,6 +1531,41 @@ subset fonts is a later step.
 - Hand-built controls: number fields that scrub, sliders, curves and levels
   editors, gradient editors and colour wheels. Typed entry and units (px, mm,
   cm, in, pt, pica) are available everywhere.
+- **The shared controls** (`ui/controls.tsx`), so a number or a choice
+  behaves the same everywhere: `NumberInput` (typed until Enter or a blur,
+  Esc back, arrows step), `ScrubLabel` and `scrub` (a label dragged
+  sideways, Shift and Alt for speed), `SliderField` (a real range input
+  styled as the bar, the number and the label laid over it on a grid, so
+  the keys, the tests' selectors and assistive tools still find a range),
+  `Segmented` (a radio group of buttons), `Hint` and `Label` (an ⓘ with
+  a `data-tip`). `installLabelScrub` gives the labels of plain number
+  fields (dialogs keep their values as strings) scrubbing too, by setting
+  the input's value as typing would. Notes are of three kinds, each with
+  its class: an explanation is a hint; a fact about the thing (a count, a
+  size) is `field-meta`; nothing here is `field-empty`, its how-to a hint.
+- **Long jobs** (`app/jobs.ts`, `engine/jobs.ts`, `ui/JobBar.tsx`): a call that
+  can take a while carries a `job` id; the engine reports `progress`
+  messages for it (at most ten a second) and polls a cancelled set at
+  `checkpoint`s that also yield to the worker's queue, so a `job.cancel`
+  message can arrive mid-job. Content-aware fill's search, in a worker of
+  its own, reports from its loop and is terminated on cancel; PSD import
+  reports per layer through `PsdHost.progress`; a bake (GPU work that
+  can't be stopped part way) drops its result. The page's promise rejects
+  with `Cancelled` at once.
+- **Previewing dialogs** (`Dialog floating="preview"`, `app/previewing.ts`):
+  no backdrop; while one is open, `data-previewing` on `<html>` turns off
+  the panels', bars' and menus' pointer events, and the canvas's presses
+  pan. Every dialog moves by its title bar, its offset kept per dialog id
+  (`plexel.dialogs.v1`) and pulled back on screen.
+- **Your toolbar** (`ui/toolbarPrefs.ts`): slot ids (a group's or a lone
+  tool's) in order, those hidden, the columns; read defensively, new slots
+  placed after their neighbour in the shipped order. **Shortcut sets**
+  (`input/keySets.ts`): a set is the keys that differ from the registry's,
+  applied through `assignKey` so no key ends on two commands; the dialog
+  names the set the draft matches.
+- **The type and spacing scale** is tokens on `:root` (`--text-xs`…`lg`,
+  `--space-1`…`6`, `--control-h`, `--panel-head-h`); Compact redefines
+  the larger steps rather than restyling each part.
 - Themes on tokens, in dark and light, checked for contrast by `check:theme`.
   Canvas chrome colours come from the same tokens.
 - Customisable shortcuts and a command palette (Ctrl+K) built from one
@@ -1397,6 +1620,19 @@ subset fonts is a later step.
   moves: a drag keeps its target and indicator in a small store of its own,
   so moving the pointer never redraws the app, and a floating window being
   dragged is moved on the DOM and committed when let go.
+- **A docked column shares its height** (`Dock.tsx`): its groups are flex
+  items that never shrink past their tab bar and a strip (`GROUP_FLOOR`),
+  each clipping and scrolling what's in it. Without shares, a group takes
+  the height of what's in it (the last one the room left), and when they
+  don't all fit, `useLevel` water-fills: one height every group is held to
+  (a `max-height` through `--level`), the most that lets them all fit,
+  worked out from each group's tab bar and its body's `scrollHeight` and
+  kept current by a ResizeObserver on the column and what's in each
+  group. Dragging a divider gives every group in the column its drawn
+  height as a share (`setColumnHeights`), and shares are flex-grow from
+  zero, so they keep their proportions in any window. A group's tabs are
+  measured from an unseen copy at natural width; those past the bar's
+  width (keeping the front one) go to a » menu.
 - **Workspaces** (`ui/workspace.ts`) are the six task presets
   (`WORKSPACES`, each a column of panels and a width) and your own, saved
   with a name and the layout they were saved with. The saved workspace holds
@@ -1438,10 +1674,16 @@ subset fonts is a later step.
 
 | Suite | Kind | What it holds |
 | --- | --- | --- |
+| `check:static` | fast | types (tsc); the lint (eslint.config.js: promises not waited for or misused, the rules of hooks, type-only imports marked); dependencies (.dependency-cruiser.cjs: no runtime import cycles, doc/ tiles/ color/ geom/ text/ lib/ never importing the app, interface, engine or renderer); unused files and packages (knip.json) |
+| `check:artboards` | fast | artboards made, moved (carrying their layers), sized (not), kept at the top level; the canvas grown round them and the shift reported; the pasteboard's area; one artboard as a document; symbols made, placed, edited, renamed, replaced, broken and deleted, nested; both expanded into plain layers and kept as the same objects; files read back; instances copied with their symbols; where a new layer goes |
 | `check:commands` | fast | the command registry, menus, shortcuts and your own keys (giving, taking, refusing, recording, reading), palette search, the layout (icons, stacked windows, whole-window moves), workspace files, view-state loading |
 | `check:doc` | fast | edits, history, coalescing, normalize, describeEdit, save round trip, migrations |
 | `check:snap` | fast | snapping points and boxes to lines, the grid and equal spacing, and the smart guides reported; align and distribute; guide edits, layouts, Crop and Canvas Size moving guides, saving them; the settings read defensively; the overlay's guides and grids; shortcuts on ; and ' |
+| `check:flow` | browser | a filter dialog undimmed, the canvas only panning under it, the dialog moved, reopened where it was, put back, closed by Esc wherever the focus is; a control marked off its default and reset by a double-click; Zoom to Selection, a thumbnail double-clicked; the colour picker at the pointer, its colour kept or put back by Esc; shortcut sets chosen, saved, recognised; the toolbar edited (a slot off and in the … slot, moved, two columns, Restore Defaults); Tiled View's frame and its way back; content-aware fill's job bar, its progress, and Esc cancelling it with nothing changed |
+| `check:boards` | browser | New Document with an artboard, the pasteboard, New Artboard, the Artboard tool drawing, moving and sizing one, its name dragged, a shape drawn going onto its artboard and clipped (and not, Clip off), the Move tool carrying a layer onto another artboard, exporting every artboard (a zip) and the selected one, Release Artboard; New Symbol, placing from the panel, editing in the symbol's tab with every instance following, undo followed by the tab, Break Link, Rasterize |
+| `check:panels` | browser | a column's groups sharing its height (one scroll level, tab bars never covered, short panels whole), dividers trading height and keeping proportions in a shorter window, a double-click fitting them; tabs in the » menu; slider bars scrubbed by their label, numbers stepped by the arrows and put back by Esc, box fields scrubbed, segmented choices and their arrow keys, ⓘ hints and their tooltips, a dialog's number label scrubbing |
 | `check:filters` | browser | the Filter menu's submenus, Twirl kept on the layer's box, Lens Blur and an effect's blend mode, a filter layer, Document → Adjustments applied for good, Colour Lookup from a `.cube` file |
+| `check:channels` | browser | the Channels panel: colour channels shown alone in gray and hidden, some colour channels painted and filled, alpha channels made, painted, filled, cleared, tinted and loaded, spot channels made from the selection and shown as ink, Channel Options, reordering, colour channels and the luminosity loaded, the Magic Wand on a channel, the shortcuts, PSD round trips |
 | `check:construct` | browser | Pathfinder's Divide and Minus Front, the Shape Builder merging and deleting regions, the Live Paint Bucket (making a group, filling, emptying), Live Paint's Expand, Outline Stroke, Offset Path and Simplify |
 | `check:appearance` | browser | a Drop Shadow and an Offset Path on one fill from Properties; the Graphic Styles panel: new from a shape, given to another, redefined, a link broken |
 | `check:warp` | browser | Free Transform's Distort, Perspective and Warp (a style, then its mesh dragged, then picked up again), a shape warped as outlines, Rasterize keeping a warp, Liquify brushed, committed and restored |
@@ -1467,7 +1709,7 @@ subset fonts is a later step.
 | `check:retouch` | fast | content-aware fill continuing stripes, gradients and textures, its source region, soft holes, every mode, timings; healing (tone from round, texture from the source, no seam) and pull-push |
 | `check:fills` | browser | Edit → Fill, Define Pattern, fill layers, the Gradient tool, the Paint Bucket, content-aware fill, Quick Selection, the Magnetic Lasso, Colour Range, Grow, Border, Smooth, Transform Selection, alpha channels and Select and Mask's edge, through the real UI |
 | `check:proof` | browser | Mode and Convert to Profile, Proof Setup, Proof Colours and the Gamut Warning on screen, the Separations panel, spot swatches linked at a tint, an ASE library loaded |
-| `check:manual` | fast | manual tutorials and parameter tables against the registries |
+| `check:manual` | fast | *not built yet*: manual tutorials and parameter tables against the registries |
 | `check:theme` | fast | full token sets, contrast pairs |
 | `check:engine` | browser | the device, drawing, theme and size changes, idling, the no-WebGPU page |
 | `check:shell` | browser | menus, palette, shortcuts, dialogs, the dock, view state across reloads |
@@ -1482,6 +1724,18 @@ The browser suites run Chrome through `puppeteer-core` with WebGPU enabled
 on the real GPU (`--enable-unsafe-webgpu --enable-gpu`; headless Chrome
 keeps WebGPU behind that flag). The canvas belongs to the worker, so what it
 drew is read back from screenshots.
+
+`npm run check` (scripts/run-checks.mjs) runs suites several at once: the
+headless ones one a core, the browser ones four at a time (they share the
+GPU), longest first by their last times (node_modules/.cache), each one's
+output shown whole when it ends. The browser suites run against a
+production build under Vite's preview server, which is what ships and which
+editing src/ can't reload mid-run; `--dev` uses the dev server. `--only a,b`
+runs some; `--retry-failed` runs a failure again alone and reports one that
+passes then as flaky. All 44 suites in about seven minutes, where one after
+another took fifteen. The suites share their common steps from
+scripts/harness.mjs (`pageHelpers`: `press`, `idle`; `dialogShown`), and
+waitForEngine also waits for the dialogs' code (they load on demand).
 `npm run bench` measures stroke latency, pan and zoom frame times, filter
 throughput and the time to open a big file, against budgets in
 PERFORMANCE.md.
@@ -1491,9 +1745,17 @@ PERFORMANCE.md.
 - `vite.config.ts`: `build.target: 'es2022'`, React in its own chunk, workers
   as ES modules (unlike Fresyn's worklet, workers have a module loader), wasm
   served as hashed assets, COOP/COEP on the dev server.
-- `public/_headers`: immutable caching for `/assets/*`, plus `nosniff`, the
-  referrer policy and COOP/COEP on `/*`. Cross-origin isolation is what lets
-  the tile slabs and the pen ring be shared memory.
+- **Loaded on demand**, not in the first download: reading and writing
+  PSD, SVG and PDF, ABR import (`import()` where they're used, app/files.ts),
+  the text layout with its line breaking and bidi tables (with the fonts,
+  app/text.ts), and the dialogs (`React.lazy` in App.tsx, under one
+  Suspense). What only says what a file is lives apart (io/sniff.ts), as
+  does what Copy and the Type tool need at once (io/svg/pathData.ts,
+  text/framePath.ts). The wasm modules compile as they download.
+- `public/_headers`: immutable caching for `/assets/*`, a week for
+  `/fonts/*`, plus `nosniff`, the referrer policy and COOP/COEP on `/*`.
+  Cross-origin isolation is what lets the tile slabs and the pen ring be
+  shared memory.
 - `npm run deploy` is `check:fast && build && wrangler pages deploy dist
   --project-name=plexel`. The `plexel.dblpl.us` custom domain is attached to
   the Pages project in the Cloudflare dashboard.
@@ -1550,8 +1812,8 @@ before the UI offers every combination.
 10. **Print colour end to end.** Mode conversion and Convert to Profile,
     soft-proofing, gamut warnings, separations and the ink limit, colour
     adjustments in CMYK through the profile, document swatches with global
-    and spot colours, ASE libraries. Done; spot channels in pixel layers
-    and measured press profiles were put off.
+    and spot colours, ASE libraries. Done; measured press profiles were put
+    off, and spot channels came with Channels, after the quality pass.
 11. **Interchange.** SVG in and out, PDF out, PSD and PSB in and out, CMYK
     JPEGs. Done; live PDF text, bleed, Photoshop's patterns and smart
     filters, and opening PDF were put off.
@@ -1566,8 +1828,8 @@ before the UI offers every combination.
     from pixels, the Paint Bucket; Quick Selection, the Magnetic Lasso,
     Colour Range, Grow and Similar, Border and Smooth, Transform Selection,
     alpha channels, and Select and Mask's edge detection and refine brush.
-    Done; patterns from pixels in Pattern Overlay, painting alpha channels
-    and Photoshop's patterns were put off.
+    Done; patterns from pixels in Pattern Overlay and Photoshop's patterns
+    were put off; painting alpha channels came with Channels.
 
 Then, from the gap map: **docking and floating panels** and workspaces of
 your own; **guides, grids and snapping**: rulers, guides (in PSD too), the

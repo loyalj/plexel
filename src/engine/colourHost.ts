@@ -20,8 +20,7 @@ const assetBytes = new Map<string, Uint8Array>()
 
 export function colour() {
   started ??= (async () => {
-    const bytes = await (await fetch(wasmUrl)).arrayBuffer()
-    const cms = await startCms(bytes)
+    const cms = await startCms({ url: wasmUrl })
     ready = { cms, registry: new ProfileRegistry(cms, { get: (h) => assetBytes.get(h) }) }
     return ready
   })()

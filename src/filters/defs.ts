@@ -12,7 +12,7 @@
  * is transparent; the region is always gathered wide enough that this
  * never reaches the tile it's for.
  */
-import { readParamValues, type ParamDef } from '../doc/params'
+import { readParamValues, type ParamDef, type ParamValues } from '../doc/params'
 import { gaussBoxes } from '../tiles/coverage'
 import type { Box, Pt } from '../geom/path'
 import { aspectOf, displace, frameBox, framed, onFrame, pinch, polar, ripple, spherize, twirl, wave, zigzag, type MapSampler } from '../geom/distort'
@@ -32,14 +32,15 @@ export interface FilterContext {
   seed: number
 }
 
-export interface FilterDef {
+/** A filter, its methods given its parameters' values as V (FilterDef: any filter's, as plain records). */
+export interface FilterDefOf<V> {
   id: string
   label: string
-  params: ParamDef[]
+  params: readonly ParamDef[]
   /** How far it reads, in pixels at the level (scale = 2^level). */
-  reach(v: Record<string, unknown>, scale: number): number
+  reach(v: V, scale: number): number
   /** The reference: a new region from the old. A filter that remaps leaves the region as it is. */
-  ref(img: Region, v: Record<string, unknown>, ctx: FilterContext): Region
+  ref(img: Region, v: V, ctx: FilterContext): Region
   /**
    * A filter that moves pixels about the canvas rather than reading round
    * them (Offset): where each canvas pixel takes its colour from, in pixels
@@ -48,7 +49,7 @@ export interface FilterDef {
    * tile by tile (graph.ts remapTile) instead of gathering a region, and
    * what it gives is the canvas only.
    */
-  remap?(x: number, y: number, v: Record<string, unknown>, w: number, h: number): [number, number] | null
+  remap?(x: number, y: number, v: V, w: number, h: number): [number, number] | null
   /**
    * A geometric effect (Warp, Liquify): it moves the node's content about
    * rather than changing its colours, by a warp in the node's own
@@ -57,13 +58,25 @@ export interface FilterDef {
    * warp that maps forwards are warped as outlines, keeping their edges.
    * Null when the settings move nothing.
    */
-  warp?(v: Record<string, unknown>, env?: WarpEnv): Warp | null
+  warp?(v: V, env?: WarpEnv): Warp | null
   /** Where it goes in the Filter menu: Blur, Distort, Noise, Pixelate, Render, Sharpen, Stylize or Other. */
   category?: string
   /** Kept on a frame (the unit square to the box of the layer's content when it was added), as Twirl and the radial distortions are. */
   framed?: boolean
   /** Left out of the Filter menu: it has a command of its own (Free Transform's Warp, Liquify). */
   hidden?: boolean
+}
+
+export type FilterDef = FilterDefOf<Record<string, unknown>>
+
+/**
+ * A filter defined with its parameters' values typed from the parameters
+ * themselves (`v.radius` a number where radius is a number parameter), so
+ * a renamed key or a wrong kind fails to compile. The registry holds every
+ * filter as a FilterDef; the one cast is here.
+ */
+function defineFilter<const P extends readonly ParamDef[]>(def: Omit<FilterDefOf<ParamValues<P>>, 'params'> & { params: P }): FilterDef {
+  return def as unknown as FilterDef
 }
 
 /** A geometric effect's warp, in the node's own coordinates. */
@@ -88,7 +101,7 @@ export const MAX_REACH = 512
 /** The Median filter's largest radius, at the level drawn. */
 export const MEDIAN_MAX = 5
 
-const num = (key: string, label: string, min: number, max: number, def: number, unit: string, step = 1, hint?: string): ParamDef => ({ key, kind: 'number', label, min, max, step, unit, default: def, hint })
+const num = <K extends string>(key: K, label: string, min: number, max: number, def: number, unit: string, step = 1, hint?: string) => ({ key, kind: 'number' as const, label, min, max, step, unit, default: def, hint })
 
 // --- passes, shared by the references --------------------------------------------------
 
@@ -156,52 +169,52 @@ export function hash01(x: number, y: number, seed: number, k: number): number {
 // --- the registry ----------------------------------------------------------------------------
 
 export const FILTER_DEFS: FilterDef[] = [
-  {
+  defineFilter({
     id: 'gaussian-blur',
     label: 'Gaussian Blur',
     params: [num('radius', 'Radius', 0.1, 250, 4, 'px', 0.1, 'How far the blur spreads: about a standard deviation.')],
-    reach: (v, s) => boxesFor((v.radius as number) / s).reduce((a, b) => a + b, 0),
-    ref: (img, v, ctx) => gaussianRegion(img, (v.radius as number) / ctx.scale),
-  },
-  {
+    reach: (v, s) => boxesFor(v.radius / s).reduce((a, b) => a + b, 0),
+    ref: (img, v, ctx) => gaussianRegion(img, v.radius / ctx.scale),
+  }),
+  defineFilter({
     id: 'box-blur',
     label: 'Box Blur',
     params: [num('radius', 'Radius', 1, 250, 4, 'px')],
-    reach: (v, s) => Math.round((v.radius as number) / s),
+    reach: (v, s) => Math.round(v.radius / s),
     ref(img, v, ctx) {
-      const r = Math.round((v.radius as number) / ctx.scale)
+      const r = Math.round(v.radius / ctx.scale)
       return boxPass(boxPass(img, r, true), r, false)
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'unsharp-mask',
     label: 'Unsharp Mask',
     params: [num('amount', 'Amount', 1, 500, 100, '%'), num('radius', 'Radius', 0.1, 250, 2, 'px', 0.1), num('threshold', 'Threshold', 0, 255, 0, 'levels', 1, 'Edges that differ by less than this are left alone.')],
-    reach: (v, s) => boxesFor((v.radius as number) / s).reduce((a, b) => a + b, 0),
+    reach: (v, s) => boxesFor(v.radius / s).reduce((a, b) => a + b, 0),
     ref(img, v, ctx) {
-      const b = gaussianRegion(img, (v.radius as number) / ctx.scale)
-      const amt = (v.amount as number) / 100
-      const t = (v.threshold as number) / 255
+      const b = gaussianRegion(img, v.radius / ctx.scale)
+      const amt = v.amount / 100
+      const t = v.threshold / 255
       return mapColour(img, (s, i) => {
         const bs = straight(b.data, i * img.stride, img.stride)
         return s.map((x, c) => (Math.abs(x - bs[c]) < t ? x : x + amt * (x - bs[c])))
       })
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'high-pass',
     label: 'High Pass',
     params: [num('radius', 'Radius', 0.1, 250, 10, 'px', 0.1)],
-    reach: (v, s) => boxesFor((v.radius as number) / s).reduce((a, b) => a + b, 0),
+    reach: (v, s) => boxesFor(v.radius / s).reduce((a, b) => a + b, 0),
     ref(img, v, ctx) {
-      const b = gaussianRegion(img, (v.radius as number) / ctx.scale)
+      const b = gaussianRegion(img, v.radius / ctx.scale)
       return mapColour(img, (s, i) => {
         const bs = straight(b.data, i * img.stride, img.stride)
         return s.map((x, c) => 0.5 + x - bs[c])
       })
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'add-noise',
     label: 'Add Noise',
     params: [
@@ -211,7 +224,7 @@ export const FILTER_DEFS: FilterDef[] = [
     ],
     reach: () => 0,
     ref(img, v, ctx) {
-      const amt = (v.amount as number) / 100
+      const amt = v.amount / 100
       const gauss = v.distribution === 'gaussian'
       const mono = !!v.monochromatic
       return mapColour(img, (s, i) => {
@@ -220,14 +233,14 @@ export const FILTER_DEFS: FilterDef[] = [
         return s.map((c, k) => c + noiseAt(x, y, ctx.seed, mono ? 0 : k, gauss) * amt)
       })
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'median',
     label: 'Median',
     params: [num('radius', 'Radius', 1, MEDIAN_MAX, 1, 'px', 1, 'Each pixel becomes the middle value of the square around it, channel by channel.')],
-    reach: (v, s) => Math.min(MEDIAN_MAX, Math.round((v.radius as number) / s)),
+    reach: (v, s) => Math.min(MEDIAN_MAX, Math.round(v.radius / s)),
     ref(img, v, ctx) {
-      const r = Math.min(MEDIAN_MAX, Math.round((v.radius as number) / ctx.scale))
+      const r = Math.min(MEDIAN_MAX, Math.round(v.radius / ctx.scale))
       if (r <= 0) return img
       const { size, stride } = img
       const out = new Float64Array(img.data.length)
@@ -248,14 +261,14 @@ export const FILTER_DEFS: FilterDef[] = [
       }
       return { size, stride, data: out }
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'motion-blur',
     label: 'Motion Blur',
     params: [num('angle', 'Angle', -90, 90, 0, '°'), num('distance', 'Distance', 1, 500, 10, 'px')],
-    reach: (v, s) => Math.ceil((v.distance as number) / s / 2) + 1,
+    reach: (v, s) => Math.ceil(v.distance / s / 2) + 1,
     ref(img, v, ctx) {
-      const taps = motionTaps(v.angle as number, (v.distance as number) / ctx.scale)
+      const taps = motionTaps(v.angle, v.distance / ctx.scale)
       const { size, stride } = img
       const out = new Float64Array(img.data.length)
       const at = (x: number, y: number, c: number) => (x < 0 || y < 0 || x >= size || y >= size ? 0 : img.data[(y * size + x) * stride + c])
@@ -279,10 +292,10 @@ export const FILTER_DEFS: FilterDef[] = [
       }
       return { size, stride, data: out }
     },
-  },
+  }),
 ]
 
-FILTER_DEFS.push({
+FILTER_DEFS.push(defineFilter({
   id: 'offset',
   label: 'Offset',
   params: [
@@ -304,14 +317,14 @@ FILTER_DEFS.push({
   reach: () => 0,
   ref: (img) => img,
   remap(x, y, v, w, h) {
-    const sx = x - Math.round(v.horizontal as number)
-    const sy = y - Math.round(v.vertical as number)
+    const sx = x - Math.round(v.horizontal)
+    const sy = y - Math.round(v.vertical)
     const edge = v.edge as OffsetEdge
     if (edge === 'wrap') return [((sx % w) + w) % w, ((sy % h) + h) % h]
     if (edge === 'repeat') return [Math.min(w - 1, Math.max(0, sx)), Math.min(h - 1, Math.max(0, sy))]
     return sx < 0 || sy < 0 || sx >= w || sy >= h ? null : [sx, sy]
   },
-})
+}))
 
 // --- the filter pack: blurs, sharpening, stylize, pixelate, noise, render, other ---------------
 
@@ -392,7 +405,7 @@ export function lensRegion(img: Region, r: number, boost: number, threshold: num
 export const surfaceStep = (r: number) => Math.max(1, Math.ceil(r / 8))
 
 FILTER_DEFS.push(
-  {
+  defineFilter({
     id: 'lens-blur',
     label: 'Lens Blur',
     category: 'Blur',
@@ -401,18 +414,18 @@ FILTER_DEFS.push(
       num('brightness', 'Specular brightness', 0, 100, 0, '%', 1, 'How much the brightest spots bloom into discs, as out-of-focus lights do.'),
       num('threshold', 'Specular threshold', 0, 255, 230, 'levels', 1, 'How bright a spot must be to bloom.'),
     ],
-    reach: (v, s) => Math.ceil((v.radius as number) / s) + 2,
-    ref: (img, v, ctx) => lensRegion(img, (v.radius as number) / ctx.scale, ((v.brightness as number) / 100) * 4, (v.threshold as number) / 255),
-  },
-  {
+    reach: (v, s) => Math.ceil(v.radius / s) + 2,
+    ref: (img, v, ctx) => lensRegion(img, v.radius / ctx.scale, (v.brightness / 100) * 4, v.threshold / 255),
+  }),
+  defineFilter({
     id: 'surface-blur',
     label: 'Surface Blur',
     category: 'Blur',
     params: [num('radius', 'Radius', 1, 100, 5, 'px'), num('threshold', 'Threshold', 2, 255, 15, 'levels', 1, 'Edges that differ by more than about this are kept sharp.')],
-    reach: (v, s) => Math.ceil((v.radius as number) / s),
+    reach: (v, s) => Math.ceil(v.radius / s),
     ref(img, v, ctx) {
-      const r = Math.max(0, Math.round((v.radius as number) / ctx.scale))
-      const t = (v.threshold as number) / 255
+      const r = Math.max(0, Math.round(v.radius / ctx.scale))
+      const t = v.threshold / 255
       const step = surfaceStep(r)
       const { size, stride } = img
       const out = new Float64Array(img.data.length)
@@ -433,8 +446,8 @@ FILTER_DEFS.push(
         }
       return { size, stride, data: out }
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'smart-sharpen',
     label: 'Smart Sharpen',
     category: 'Sharpen',
@@ -445,30 +458,30 @@ FILTER_DEFS.push(
       { ...num('angle', 'Angle', -90, 90, 0, '°'), when: (v) => v.remove === 'motion' },
       num('noise', 'Reduce noise', 0, 100, 10, '%', 1, 'Differences smaller than this much are left alone, so grain isn’t sharpened.'),
     ],
-    reach: (v, s) => Math.ceil(((v.remove === 'gaussian' ? 3 : 1) * (v.radius as number)) / s) + 2,
+    reach: (v, s) => Math.ceil(((v.remove === 'gaussian' ? 3 : 1) * v.radius) / s) + 2,
     ref(img, v, ctx) {
-      const r = (v.radius as number) / ctx.scale
-      const blur = v.remove === 'gaussian' ? gaussianRegion(img, r) : v.remove === 'lens' ? lensRegion(img, r, 0, 1) : FILTER_BY_ID.get('motion-blur')!.ref(img, { angle: v.angle, distance: (v.radius as number) * 2 }, ctx)
-      const amt = (v.amount as number) / 100
-      const t = (((v.noise as number) / 100) * 16) / 255
+      const r = v.radius / ctx.scale
+      const blur = v.remove === 'gaussian' ? gaussianRegion(img, r) : v.remove === 'lens' ? lensRegion(img, r, 0, 1) : FILTER_BY_ID.get('motion-blur')!.ref(img, { angle: v.angle, distance: v.radius * 2 }, ctx)
+      const amt = v.amount / 100
+      const t = ((v.noise / 100) * 16) / 255
       return mapColour(img, (s, i) => {
         const bs = straight(blur.data, i * img.stride, img.stride)
         return s.map((x, c) => (Math.abs(x - bs[c]) < t ? x : x + amt * (x - bs[c])))
       })
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'emboss',
     label: 'Emboss',
     category: 'Stylize',
     params: [num('angle', 'Angle', -180, 180, 135, '°'), num('height', 'Height', 1, 10, 3, 'px'), num('amount', 'Amount', 1, 500, 100, '%')],
-    reach: (v, s) => Math.ceil((v.height as number) / s) + 2,
+    reach: (v, s) => Math.ceil(v.height / s) + 2,
     ref(img, v, ctx) {
-      const a = ((v.angle as number) * Math.PI) / 180
-      const h = (v.height as number) / ctx.scale
+      const a = (v.angle * Math.PI) / 180
+      const h = v.height / ctx.scale
       const dx = Math.cos(a) * h
       const dy = -Math.sin(a) * h
-      const k = (v.amount as number) / 100
+      const k = v.amount / 100
       const bl = (px: number, py: number) => {
         let m = 0
         for (let c = 0; c < img.stride - 1; c++) m += bil(img, px, py, c)
@@ -480,8 +493,8 @@ FILTER_DEFS.push(
         return new Array(img.stride - 1).fill(g)
       })
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'find-edges',
     label: 'Find Edges',
     category: 'Stylize',
@@ -496,16 +509,16 @@ FILTER_DEFS.push(
           return 1 - Math.hypot(gx, gy) * 0.5
         }),
       ),
-  },
-  {
+  }),
+  defineFilter({
     id: 'solarize',
     label: 'Solarize',
     category: 'Stylize',
     params: [],
     reach: () => 0,
     ref: (img) => mapColour(img, (s) => s.map((x) => (x > 0.5 ? 1 - x : x))),
-  },
-  {
+  }),
+  defineFilter({
     id: 'lighting',
     label: 'Lighting Effects',
     category: 'Render',
@@ -521,8 +534,8 @@ FILTER_DEFS.push(
     reach: () => 1,
     ref(img, v) {
       const L = lightOf(v)
-      const lc = workingOf(v.colour as number[], img.stride)
-      const h = v.height as number
+      const lc = workingOf(v.colour, img.stride)
+      const h = v.height
       return perPixel(img, (x, y) => {
         const gx = lumAt(img, x + 1, y) - lumAt(img, x - 1, y)
         const gy = lumAt(img, x, y + 1) - lumAt(img, x, y - 1)
@@ -531,12 +544,12 @@ FILTER_DEFS.push(
         const diff = Math.max(0, N[0] * L[0] + N[1] * L[1] + N[2] * L[2])
         const H = [L[0], L[1], L[2] + 1]
         const hl = Math.hypot(...H)
-        const spec = Math.pow(Math.max(0, (N[0] * H[0] + N[1] * H[1] + N[2] * H[2]) / hl), 24) * ((v.gloss as number) / 100)
-        return Array.from({ length: img.stride - 1 }, (_, c) => st(img, x, y, c) * ((v.ambience as number) / 100 + ((v.intensity as number) / 100) * diff * (lc[c] ?? 1)) + spec * (lc[c] ?? 1))
+        const spec = Math.pow(Math.max(0, (N[0] * H[0] + N[1] * H[1] + N[2] * H[2]) / hl), 24) * (v.gloss / 100)
+        return Array.from({ length: img.stride - 1 }, (_, c) => st(img, x, y, c) * (v.ambience / 100 + (v.intensity / 100) * diff * (lc[c] ?? 1)) + spec * (lc[c] ?? 1))
       })
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'clouds',
     label: 'Clouds',
     category: 'Render',
@@ -548,22 +561,22 @@ FILTER_DEFS.push(
     ],
     reach: () => 0,
     ref(img, v, ctx) {
-      const f = workingOf(v.from as number[], img.stride)
-      const t = workingOf(v.to as number[], img.stride)
+      const f = workingOf(v.from, img.stride)
+      const t = workingOf(v.to, img.stride)
       return perPixel(img, (x, y) => {
-        const n = cloudsAt((ctx.origin[0] + x + 0.5) / ((v.scale as number) / ctx.scale), (ctx.origin[1] + y + 0.5) / ((v.scale as number) / ctx.scale), v.seed as number)
+        const n = cloudsAt((ctx.origin[0] + x + 0.5) / (v.scale / ctx.scale), (ctx.origin[1] + y + 0.5) / (v.scale / ctx.scale), v.seed)
         return f.map((a, c) => a + ((t[c] ?? a) - a) * n)
       })
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'mosaic',
     label: 'Mosaic',
     category: 'Pixelate',
     params: [num('cell', 'Cell size', 2, 200, 10, 'px', 1, 'Each square is the average of the pixels in it.')],
-    reach: (v, s) => Math.ceil((v.cell as number) / s) + 1,
+    reach: (v, s) => Math.ceil(v.cell / s) + 1,
     ref(img, v, ctx) {
-      const cell = Math.max(1, (v.cell as number) / ctx.scale)
+      const cell = Math.max(1, v.cell / ctx.scale)
       const m = mosaicTaps(cell)
       const { size, stride } = img
       const out = new Float64Array(img.data.length)
@@ -579,16 +592,16 @@ FILTER_DEFS.push(
         }
       return { size, stride, data: out }
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'dust-scratches',
     label: 'Dust & Scratches',
     category: 'Noise',
     params: [num('radius', 'Radius', 1, MEDIAN_MAX, 2, 'px'), num('threshold', 'Threshold', 0, 255, 10, 'levels', 1, 'Only pixels that differ from round them by more than this are smoothed: specks, not texture.')],
-    reach: (v, s) => Math.min(MEDIAN_MAX, Math.round((v.radius as number) / s)),
+    reach: (v, s) => Math.min(MEDIAN_MAX, Math.round(v.radius / s)),
     ref(img, v, ctx) {
       const m = FILTER_BY_ID.get('median')!.ref(img, { radius: v.radius }, ctx)
-      const t = (v.threshold as number) / 255
+      const t = v.threshold / 255
       const { size, stride } = img
       const out = new Float64Array(m.data)
       for (let i = 0; i < size * size; i++) {
@@ -598,16 +611,16 @@ FILTER_DEFS.push(
       }
       return { size, stride, data: out }
     },
-  },
+  }),
   ...(['minimum', 'maximum'] as const).map(
-    (id): FilterDef => ({
+    (id) => defineFilter({
       id,
       label: id === 'minimum' ? 'Minimum' : 'Maximum',
       category: 'Other',
       params: [num('radius', 'Radius', 1, 100, 1, 'px', 1, id === 'minimum' ? 'Darker and thinner: each pixel the least round it.' : 'Lighter and wider: each pixel the most round it.')],
-      reach: (v, s) => Math.max(1, Math.round((v.radius as number) / s)),
+      reach: (v, s) => Math.max(1, Math.round(v.radius / s)),
       ref(img, v, ctx) {
-        const r = Math.max(1, Math.round((v.radius as number) / ctx.scale))
+        const r = Math.max(1, Math.round(v.radius / ctx.scale))
         const big = id === 'maximum'
         const pass = (src: Region, horizontal: boolean): Region => {
           const { size, stride } = src
@@ -631,7 +644,7 @@ FILTER_DEFS.push(
 )
 
 /** A colour parameter (the document's terms, CMYK as ink) in the working space regions are in (CMYK as light). */
-export const workingOf = (c: number[], stride: number) => (stride === 5 ? c.map((v) => 1 - v) : c)
+const workingOf = (c: number[], stride: number) => (stride === 5 ? c.map((v) => 1 - v) : c)
 
 /** Mosaic's taps a side: one a pixel, up to sixteen. */
 export const mosaicTaps = (cell: number) => Math.max(1, Math.min(16, Math.ceil(cell)))
@@ -678,7 +691,7 @@ export function cloudsAt(x: number, y: number, seed: number): number {
  * Gaussian sigma `sigma`, moved (dx, dy), in `colour` (working space) at
  * `opacity`, laid under what's there. The reference the GPU's is held to.
  */
-export function shadowRegion(img: Region, sigma: number, dx: number, dy: number, colour: number[], opacity: number): Region {
+function shadowRegion(img: Region, sigma: number, dx: number, dy: number, colour: number[], opacity: number): Region {
   const b = gaussianRegion(img, sigma)
   const { size, stride } = img
   const out = new Float64Array(img.data)
@@ -694,7 +707,7 @@ export function shadowRegion(img: Region, sigma: number, dx: number, dy: number,
 }
 
 FILTER_DEFS.push(
-  {
+  defineFilter({
     id: 'drop-shadow',
     label: 'Drop Shadow',
     category: 'Stylize',
@@ -705,21 +718,21 @@ FILTER_DEFS.push(
       num('distance', 'Distance', 0, 500, 5, 'px'),
       num('size', 'Size', 0, 250, 5, 'px', 1, 'How soft the shadow is.'),
     ],
-    reach: (v, s) => Math.ceil(((v.size as number) * 1.5 + (v.distance as number)) / s) + 2,
+    reach: (v, s) => Math.ceil((v.size * 1.5 + v.distance) / s) + 2,
     ref(img, v, ctx) {
-      const a = ((v.angle as number) * Math.PI) / 180
-      const d = (v.distance as number) / ctx.scale
-      return shadowRegion(img, (v.size as number) / ctx.scale / 2, -Math.cos(a) * d, Math.sin(a) * d, workingOf(v.colour as number[], img.stride), (v.opacity as number) / 100)
+      const a = (v.angle * Math.PI) / 180
+      const d = v.distance / ctx.scale
+      return shadowRegion(img, v.size / ctx.scale / 2, -Math.cos(a) * d, Math.sin(a) * d, workingOf(v.colour, img.stride), v.opacity / 100)
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'outer-glow',
     label: 'Outer Glow',
     category: 'Stylize',
     params: [{ key: 'colour', kind: 'colour', label: 'Colour', default: [1, 1, 0.75] }, num('opacity', 'Opacity', 0, 100, 75, '%'), num('size', 'Size', 0, 250, 10, 'px', 1, 'How far the glow spreads.')],
-    reach: (v, s) => Math.ceil(((v.size as number) * 1.5) / s) + 2,
-    ref: (img, v, ctx) => shadowRegion(img, (v.size as number) / ctx.scale / 3, 0, 0, workingOf(v.colour as number[], img.stride), (v.opacity as number) / 100),
-  },
+    reach: (v, s) => Math.ceil((v.size * 1.5) / s) + 2,
+    ref: (img, v, ctx) => shadowRegion(img, v.size / ctx.scale / 3, 0, 0, workingOf(v.colour, img.stride), v.opacity / 100),
+  }),
 )
 
 // --- geometric effects ---------------------------------------------------------------------
@@ -732,7 +745,7 @@ const readCorners = (v: unknown): number[] | null => (Array.isArray(v) && v.leng
 export const styled = (v: Record<string, unknown>) => v.style !== 'none' && v.style !== 'custom'
 
 /** The mesh a warp's settings make: its style's, its own (Custom), or none. */
-export function meshOf(v: Record<string, unknown>): Mesh | null {
+function meshOf(v: Record<string, unknown>): Mesh | null {
   if (v.style === 'custom') return (v.mesh as Mesh | null) ?? null
   return styled(v) ? styleMesh(v.style as string, (v.bend as number) / 100, (v.horizontal as number) / 100, (v.vertical as number) / 100, v.orient === 'vertical') : null
 }
@@ -749,7 +762,7 @@ export function warpSpec(v: Record<string, unknown>) {
   return { frame, corners, mesh: bent ? mesh : null }
 }
 
-FILTER_DEFS.push({
+FILTER_DEFS.push(defineFilter({
   id: 'warp',
   label: 'Warp',
   hidden: true,
@@ -774,9 +787,9 @@ FILTER_DEFS.push({
     const m = new WarpMap(spec)
     return { inverse: (x, y) => m.inverse(x, y), forward: (x, y) => m.forward(x, y), bounds: (r) => m.bounds(r) }
   },
-})
+}))
 
-FILTER_DEFS.push({
+FILTER_DEFS.push(defineFilter({
   id: 'liquify',
   label: 'Liquify',
   hidden: true,
@@ -792,9 +805,9 @@ FILTER_DEFS.push({
   warp(v) {
     const f = v.field ? decodeField(v.field) : null
     if (!f || isEmptyField(f)) return null
-    return liquifyWarp(f, v.frame as number[])
+    return liquifyWarp(f, v.frame)
   },
-})
+}))
 
 const reaches = new WeakMap<Float32Array, number>()
 /**
@@ -802,7 +815,7 @@ const reaches = new WeakMap<Float32Array, number>()
  * there. The field is in its own coordinates, which `frame` takes into the
  * node's (the identity, until the node is rasterized from under it).
  */
-export function liquifyWarp(f: Field, frame: number[] = [1, 0, 0, 1, 0, 0]): Warp {
+function liquifyWarp(f: Field, frame: readonly number[] = [1, 0, 0, 1, 0, 0]): Warp {
   let reach = reaches.get(f.d)
   if (reach === undefined) reaches.set(f.d, (reach = fieldReach(f)))
   const plain = frame.every((v, i) => v === [1, 0, 0, 1, 0, 0][i])
@@ -861,7 +874,7 @@ export interface WarpEnv {
 }
 
 /** A framed filter's frame, or none (a filter made before it had one moves nothing). */
-const frameParam: ParamDef = { key: 'frame', kind: 'data', label: 'Frame', read: readFrame, default: null }
+const frameParam = { key: 'frame', kind: 'data', label: 'Frame', read: readFrame, default: null } as const satisfies ParamDef
 
 /** A warp from a map on the frame's unit square, keeping to the frame's box (or the rectangle asked about). */
 function framedWarp(frame: number[], g: (u: number, v: number) => Pt | null): Warp {
@@ -879,7 +892,7 @@ function nearWarp(inverse: (x: number, y: number) => [number, number, number] | 
 }
 
 FILTER_DEFS.push(
-  {
+  defineFilter({
     id: 'twirl',
     label: 'Twirl',
     category: 'Distort',
@@ -887,9 +900,9 @@ FILTER_DEFS.push(
     params: [num('angle', 'Angle', -999, 999, 50, '°', 1, 'How far the middle turns; the edge of the circle doesn’t.'), frameParam],
     reach: () => 0,
     ref: geometricRef,
-    warp: (v) => (v.frame && v.angle ? framedWarp(v.frame as number[], twirl(v.angle as number, aspectOf(v.frame as number[]))) : null),
-  },
-  {
+    warp: (v) => (v.frame && v.angle ? framedWarp(v.frame, twirl(v.angle, aspectOf(v.frame))) : null),
+  }),
+  defineFilter({
     id: 'pinch',
     label: 'Pinch',
     category: 'Distort',
@@ -897,9 +910,9 @@ FILTER_DEFS.push(
     params: [num('amount', 'Amount', -100, 100, 50, '%', 1, 'In towards the middle; out, when negative.'), frameParam],
     reach: () => 0,
     ref: geometricRef,
-    warp: (v) => (v.frame && v.amount ? framedWarp(v.frame as number[], pinch(v.amount as number, aspectOf(v.frame as number[]))) : null),
-  },
-  {
+    warp: (v) => (v.frame && v.amount ? framedWarp(v.frame, pinch(v.amount, aspectOf(v.frame))) : null),
+  }),
+  defineFilter({
     id: 'spherize',
     label: 'Spherize',
     category: 'Distort',
@@ -911,9 +924,9 @@ FILTER_DEFS.push(
     ],
     reach: () => 0,
     ref: geometricRef,
-    warp: (v) => (v.frame && v.amount ? framedWarp(v.frame as number[], spherize(v.amount as number, v.mode as 'normal' | 'horizontal' | 'vertical')) : null),
-  },
-  {
+    warp: (v) => (v.frame && v.amount ? framedWarp(v.frame, spherize(v.amount, v.mode as 'normal' | 'horizontal' | 'vertical')) : null),
+  }),
+  defineFilter({
     id: 'zigzag',
     label: 'ZigZag',
     category: 'Distort',
@@ -926,9 +939,9 @@ FILTER_DEFS.push(
     ],
     reach: () => 0,
     ref: geometricRef,
-    warp: (v) => (v.frame && v.amount ? framedWarp(v.frame as number[], zigzag(v.amount as number, v.ridges as number, v.style as string, aspectOf(v.frame as number[]))) : null),
-  },
-  {
+    warp: (v) => (v.frame && v.amount ? framedWarp(v.frame, zigzag(v.amount, v.ridges, v.style, aspectOf(v.frame))) : null),
+  }),
+  defineFilter({
     id: 'polar',
     label: 'Polar Coordinates',
     category: 'Distort',
@@ -936,9 +949,9 @@ FILTER_DEFS.push(
     params: [{ key: 'way', kind: 'choice', label: 'Way', options: [['to-polar', 'Rectangular to polar'], ['to-rect', 'Polar to rectangular']], default: 'to-polar' }, frameParam],
     reach: () => 0,
     ref: geometricRef,
-    warp: (v) => (v.frame ? { ...framedWarp(v.frame as number[], polar(v.way === 'to-polar')), seams: true } : null),
-  },
-  {
+    warp: (v) => (v.frame ? { ...framedWarp(v.frame, polar(v.way === 'to-polar')), seams: true } : null),
+  }),
+  defineFilter({
     id: 'wave',
     label: 'Wave',
     category: 'Distort',
@@ -956,14 +969,14 @@ FILTER_DEFS.push(
     reach: () => 0,
     ref: geometricRef,
     warp(v) {
-      const amp: [number, number] = [Math.min(v.minAmplitude as number, v.maxAmplitude as number), Math.max(v.minAmplitude as number, v.maxAmplitude as number)]
-      const sc: [number, number] = [(v.scaleH as number) / 100, (v.scaleV as number) / 100]
+      const amp: [number, number] = [Math.min(v.minAmplitude, v.maxAmplitude), Math.max(v.minAmplitude, v.maxAmplitude)]
+      const sc: [number, number] = [v.scaleH / 100, v.scaleV / 100]
       if (!sc[0] && !sc[1]) return null
-      const f = wave({ generators: v.generators as number, wavelength: [Math.min(v.minWavelength as number, v.maxWavelength as number), Math.max(v.minWavelength as number, v.maxWavelength as number)], amplitude: amp, scale: sc, kind: v.kind as string, seed: v.seed as number })
-      return nearWarp(f, amp[1] * Math.max(sc[0], sc[1]) + 2, Math.min(v.minWavelength as number, v.maxWavelength as number) / 8)
+      const f = wave({ generators: v.generators, wavelength: [Math.min(v.minWavelength, v.maxWavelength), Math.max(v.minWavelength, v.maxWavelength)], amplitude: amp, scale: sc, kind: v.kind, seed: v.seed })
+      return nearWarp(f, amp[1] * Math.max(sc[0], sc[1]) + 2, Math.min(v.minWavelength, v.maxWavelength) / 8)
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'ripple',
     label: 'Ripple',
     category: 'Distort',
@@ -973,10 +986,10 @@ FILTER_DEFS.push(
     warp(v) {
       if (!v.amount) return null
       const l = v.size === 'small' ? 8 : v.size === 'large' ? 40 : 18
-      return nearWarp(ripple(v.amount as number, l), Math.abs((v.amount as number) / 100) * l * 0.15 + 2, l / 12)
+      return nearWarp(ripple(v.amount, l), Math.abs(v.amount / 100) * l * 0.15 + 2, l / 12)
     },
-  },
-  {
+  }),
+  defineFilter({
     id: 'displace',
     label: 'Displace',
     category: 'Distort',
@@ -992,12 +1005,12 @@ FILTER_DEFS.push(
     ref: geometricRef,
     warp(v, env) {
       if (!v.map || !v.frame || (!v.scaleH && !v.scaleV)) return null
-      const m = Math.max(Math.abs(v.scaleH as number), Math.abs(v.scaleV as number)) + 2
-      const p = env?.pattern(v.map as string)
+      const m = Math.max(Math.abs(v.scaleH), Math.abs(v.scaleV)) + 2
+      const p = env?.pattern(v.map)
       // Without the pattern to hand (working out bounds), as far as it could move anything.
       if (!p) return nearWarp((x, y) => [x, y, 1], m)
       const lv = p.levels[0]
-      const frame = v.frame as number[]
+      const frame = v.frame
       // In pattern pixels: stretched across the box, or tiled from its corner at the pattern's size.
       const side = [Math.hypot(frame[0], frame[1]), Math.hypot(frame[2], frame[3])]
       const sample: MapSampler = (u, w) => {
@@ -1015,9 +1028,9 @@ FILTER_DEFS.push(
         const ch = (c: number) => (at(x0, y0, c) * (1 - fx) + at(x0 + 1, y0, c) * fx) * (1 - fy) + (at(x0, y0 + 1, c) * (1 - fx) + at(x0 + 1, y0 + 1, c) * fx) * fy
         return env!.mode === 'gray' ? [ch(0)] : [ch(0), ch(1), ch(2)]
       }
-      return nearWarp(displace(sample, [v.scaleH as number, v.scaleV as number], frame), m)
+      return nearWarp(displace(sample, [v.scaleH, v.scaleV], frame), m)
     },
-  },
+  }),
 )
 
 /** A geometric filter's reference: its warp run on the region. */

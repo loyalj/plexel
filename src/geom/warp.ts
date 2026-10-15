@@ -23,7 +23,7 @@ import type { Box, Pt } from './path'
 
 export type H3 = number[]
 
-export const H_IDENTITY: H3 = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+const H_IDENTITY: H3 = [1, 0, 0, 0, 1, 0, 0, 0, 1]
 
 /** H applied to (x, y, 1): homogeneous (X, Y, W). */
 export const applyH = (h: H3, x: number, y: number): [number, number, number] => [h[0] * x + h[1] * y + h[2], h[3] * x + h[4] * y + h[5], h[6] * x + h[7] * y + h[8]]
@@ -34,7 +34,7 @@ export function mapH(h: H3, x: number, y: number): Pt | null {
   return W > 1e-12 ? [X / W, Y / W] : null
 }
 
-export function mulH(a: H3, b: H3): H3 {
+function mulH(a: H3, b: H3): H3 {
   const o = new Array(9).fill(0)
   for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) for (let k = 0; k < 3; k++) o[r * 3 + c] += a[r * 3 + k] * b[k * 3 + c]
   return o
@@ -52,7 +52,7 @@ export function invertH(h: H3): H3 | null {
 }
 
 /** An affine [a, b, c, d, e, f] as a homography. */
-export const affineH = (m: readonly number[]): H3 => [m[0], m[2], m[4], m[1], m[3], m[5], 0, 0, 1]
+const affineH = (m: readonly number[]): H3 => [m[0], m[2], m[4], m[1], m[3], m[5], 0, 0, 1]
 
 /** The homography taking the unit square's corners (0,0), (1,0), (1,1), (0,1) to q's four, in that order; null when they're degenerate. */
 export function squareToQuad(q: Pt[]): H3 | null {
@@ -508,7 +508,7 @@ export class WarpMap {
 }
 
 /** The box round where a rectangle's edges go under `f`, sampled finely, with a little to spare. */
-export function mappedBounds(r: Box, f: (x: number, y: number) => Pt | null, n = 32): Box | null {
+function mappedBounds(r: Box, f: (x: number, y: number) => Pt | null, n = 32): Box | null {
   let b: Box | null = null
   const add = (x: number, y: number) => {
     const p = f(x, y)
@@ -588,7 +588,7 @@ export interface Field {
 }
 
 /** The most points a field has a side. */
-export const FIELD_MAX = 320
+const FIELD_MAX = 320
 
 /** An empty field for a node whose content is `box`: a quarter as much again all round, so things can be pushed out of it. */
 export function newField(box: Box): Field {

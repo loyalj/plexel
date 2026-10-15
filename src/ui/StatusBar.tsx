@@ -39,12 +39,12 @@ export function StatusBar({ state, doc, zoom, rotation, autosave }: { state: Eng
       <KeyHints />
       <span className="statusbar-spacer" />
       {(autosave.state === 'failed' || autosave.state === 'unavailable') && (
-        <span className="status-warn" data-status="autosave" title={autosave.reason}>
+        <span className="status-warn" data-status="autosave" data-tip={autosave.reason}>
           Not autosaving
         </span>
       )}
       {!isolated && (
-        <span className="status-warn" title="The page isn't cross-origin isolated, so it can't share memory with the engine. Check the COOP and COEP headers.">
+        <span className="status-warn" data-tip="The page isn't cross-origin isolated, so it can't share memory with the engine. Check the COOP and COEP headers.">
           Not isolated
         </span>
       )}
@@ -53,7 +53,7 @@ export function StatusBar({ state, doc, zoom, rotation, autosave }: { state: Eng
           {state.width} × {state.height} px
         </span>
       )}
-      <span className="status-engine" data-engine-status={state.status} data-frames={state.frames} title={state.gpu?.description || undefined}>
+      <span className="status-engine" data-engine-status={state.status} data-frames={state.frames} data-tip={state.gpu?.description || undefined}>
         <span className="status-dot" />
         {STATUS_WORDS[state.status]}
         {state.gpu && <span className="status-faint">{gpuName(state.gpu.vendor, state.gpu.architecture)}</span>}

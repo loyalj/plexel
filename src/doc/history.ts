@@ -32,7 +32,7 @@ export interface History<T> {
 export const HISTORY_LIMIT = 100
 
 /** What the first entry in the list is called: where the session started. */
-export const OPENED = 'Open'
+const OPENED = 'Open'
 
 export function initHistory<T>(present: T, label = OPENED): History<T> {
   return { past: [], present, future: [], labels: [], label, futureLabels: [] }

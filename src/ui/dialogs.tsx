@@ -1,6 +1,5 @@
 /** The dialogs the Help menu opens. Each is a Dialog with its own body. */
-import type { EngineState } from '../engine/EngineHost'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { engine } from '../engine/EngineHost'
 import type { EngineCalls } from '../engine/protocol'
 import { Dialog } from './Dialog'
@@ -35,7 +34,8 @@ export function AboutDialog({ onClose }: { onClose(): void }) {
 const bytes = (n: number) =>
   n >= 2 ** 30 ? `${(n / 2 ** 30).toFixed(1)} GiB` : n >= 2 ** 20 ? `${(n / 2 ** 20).toFixed(0)} MiB` : `${n} B`
 
-export function GpuDialog({ state, onClose }: { state: EngineState; onClose(): void }) {
+export function GpuDialog({ onClose }: { onClose(): void }) {
+  const state = useSyncExternalStore(engine().subscribe, engine().getState)
   const g = state.gpu
   const [tiles, setTiles] = useState<EngineCalls['tiles.stats']['result'] | null>(null)
   const [render, setRender] = useState<EngineCalls['render.stats']['result'] | null>(null)

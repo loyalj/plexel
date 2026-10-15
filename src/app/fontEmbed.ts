@@ -13,7 +13,7 @@ import type { Doc } from '../doc/types'
 import { sha256 } from '../io/assets'
 import { fontLibraryNow } from './fonts'
 
-export { fontsUsed }
+
 
 
 /**

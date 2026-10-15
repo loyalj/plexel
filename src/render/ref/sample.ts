@@ -45,7 +45,7 @@ export const PATCH = 64
 export const MIXER_PICK = 0.25
 
 /** How far the Mixer's reservoir goes towards the canvas paint on the brush each dab: by wetness and mix. */
-export const mixerDirt = (tool: SampleTool, d: LayerDab) => tool.wet * d.wet * tool.mix * d.mix * MIXER_PICK
+const mixerDirt = (tool: SampleTool, d: LayerDab) => tool.wet * d.wet * tool.mix * d.mix * MIXER_PICK
 
 export interface SampleTool {
   kind: 'smudge' | 'mixer'
@@ -78,7 +78,7 @@ export function newLoad(channels: number, reservoir: Px | null): BrushLoad {
 export type CanvasReader = (ix: number, iy: number) => Px
 
 /** The canvas at a layer point, bilinearly between pixel centres. */
-export function canvasAt(read: CanvasReader, px: number, py: number, n: number): Px {
+function canvasAt(read: CanvasReader, px: number, py: number, n: number): Px {
   const fx = px - 0.5
   const fy = py - 0.5
   const x0 = Math.floor(fx)
@@ -101,7 +101,7 @@ export function canvasAt(read: CanvasReader, px: number, py: number, n: number):
 }
 
 /** Where patch texel (i, j) falls in the layer, for dab `d`: the tip's square mapped back through A⁻¹. */
-export function patchPoint(d: LayerDab, i: number, j: number): [number, number] {
+function patchPoint(d: LayerDab, i: number, j: number): [number, number] {
   const ux = ((i + 0.5) / PATCH) * 2 - 1
   const uy = ((j + 0.5) / PATCH) * 2 - 1
   const det = d.a[0] * d.a[3] - d.a[1] * d.a[2] || 1e-12
@@ -148,7 +148,7 @@ export function drain(load: BrushLoad, d: LayerDab, tool: SampleTool) {
 }
 
 /** A patch read bilinearly at tip-space point u, clamped at its edges: n + 1 floats. */
-export function patchAt(p: Float32Array, s: number, ux: number, uy: number): number[] {
+function patchAt(p: Float32Array, s: number, ux: number, uy: number): number[] {
   const fx = Math.min(PATCH - 1, Math.max(0, ((ux + 1) / 2) * PATCH - 0.5))
   const fy = Math.min(PATCH - 1, Math.max(0, ((uy + 1) / 2) * PATCH - 0.5))
   const x0 = Math.min(PATCH - 2, Math.floor(fx))
@@ -172,7 +172,7 @@ export interface SampleTile {
 export const newSampleTile = (n: number): SampleTile => ({ n, v: new Float32Array(TILE * TILE * (n + 2)) })
 
 /** One dab's paint and coverage at a layer pixel: what it would replace the canvas with, and by how much. */
-export function dabPaint(load: BrushLoad, d: LayerDab, tool: SampleTool, px: number, py: number, style: DabStyle): { T: number[]; k: number } | null {
+function dabPaint(load: BrushLoad, d: LayerDab, tool: SampleTool, px: number, py: number, style: DabStyle): { T: number[]; k: number } | null {
   const m = dabMask(d, px, py, style)
   if (m <= 0) return null
   const ox = px - d.cx

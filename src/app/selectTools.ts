@@ -6,6 +6,7 @@
  * browser, like the brushes.
  */
 import type { CombineOp } from '../tiles/coverage'
+import { Listeners } from '../lib/listeners'
 
 export interface SelectToolState {
   /** How a new shape combines with the selection, when no key says otherwise. */
@@ -20,7 +21,7 @@ export interface SelectToolState {
 
 const KEY = 'plexel.selectTools.v1'
 
-export const defaultSelectTools = (): SelectToolState => ({
+const defaultSelectTools = (): SelectToolState => ({
   op: 'replace',
   marquee: { shape: 'rect', feather: 0, antialias: true },
   lasso: { mode: 'freehand', feather: 0, antialias: true, width: 10, contrast: 0.1, frequency: 57 },
@@ -32,7 +33,7 @@ const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === 'nu
 const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d)
 
 /** Settings as saved, repaired where they're missing or wrong. */
-export function readSelectTools(raw: unknown): SelectToolState {
+function readSelectTools(raw: unknown): SelectToolState {
   const d = defaultSelectTools()
   if (!raw || typeof raw !== 'object') return d
   const r = raw as Record<string, Record<string, unknown> | undefined>
@@ -68,7 +69,7 @@ export function readSelectTools(raw: unknown): SelectToolState {
 
 class SelectToolStore {
   private state: SelectToolState
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
 
   constructor() {
     let raw: unknown = null
@@ -83,10 +84,7 @@ class SelectToolStore {
   get = () => this.state
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   update<K extends keyof SelectToolState>(key: K, patch: SelectToolState[K] extends object ? Partial<SelectToolState[K]> : SelectToolState[K]) {
@@ -98,7 +96,7 @@ class SelectToolStore {
     } catch {
       // Not remembered; still used.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 }
 

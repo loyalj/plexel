@@ -25,6 +25,7 @@ import type { Affine, BlendModeId, Doc, DocNode, NodeId } from '../../doc/types'
 import type { AppearanceItem, Geometry, Paint, PaintStop } from '../../doc/vector'
 import type { Anchor, PathData, Pt, Subpath } from '../../geom/path'
 import { parseXml, type XmlElement } from './xml'
+import { compose as mul } from '../../geom/affine'
 
 export interface SvgImage {
   node: NodeId
@@ -48,7 +49,6 @@ export interface SvgReadHost {
 
 type M = [number, number, number, number, number, number]
 const I: M = [1, 0, 0, 1, 0, 0]
-const mul = (a: M, b: M): M => [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1], a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3], a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]]
 const apply = (m: M, p: Pt): Pt => [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]]
 
 export function parseTransform(s: string | undefined): M {

@@ -166,9 +166,11 @@ export const tileLayerBytes = (mode: ColourMode, depth: Depth) => TILE_PIXELS * 
 /**
  * A tile's planar samples, interleaved as the atlas textures hold them: RGB
  * as RGBA, Gray as gray and alpha in the first two of four, CMYK as CMYK
- * plus a separate alpha plane.
+ * plus a separate alpha plane. The GPU does this for most uploads
+ * (shaders/upload.ts); this is for those that don't fit in the frame's
+ * upload ring.
  */
-export function interleave(mode: ColourMode, depth: Depth, s: Samples): (Uint8Array | Uint16Array)[] {
+function interleave(mode: ColourMode, depth: Depth, s: Samples): (Uint8Array | Uint16Array)[] {
   const planes = planesOf({ mode, depth })
   const used = mode === 'gray' ? 2 : 4
   const N = TILE_PIXELS
@@ -189,7 +191,7 @@ export function interleave(mode: ColourMode, depth: Depth, s: Samples): (Uint8Ar
   return [A, depth === 16 ? new Uint16Array(B) : new Uint8Array(B)]
 }
 
-/** Writes a tile's samples into an atlas slot. */
+/** Writes a tile's samples into an atlas slot, interleaved on the CPU. */
 export function uploadTile<K>(device: GPUDevice, atlas: Atlas<K>, slot: number, mode: ColourMode, depth: Depth, s: Samples) {
   const parts = interleave(mode, depth, s)
   parts.forEach((data, i) => {

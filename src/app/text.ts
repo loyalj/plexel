@@ -5,27 +5,33 @@
  * text that asked for it is laid out again and sent again.
  *
  * Fonts start loading the first time a document with text is open or the
- * Type tool is chosen, not before.
+ * Type tool is chosen, not before; so does the layout itself (text/layout.ts,
+ * with its line breaking and bidi tables), which isn't in the app's first
+ * download.
  */
 import type { Doc, DocNode } from '../doc/types'
 import { geometryPath } from '../doc/vector'
 import { EMPTY_GLYPHS } from '../geom/glyphs'
-import { layoutText, type TextLayout } from '../text/layout'
+import type { TextLayout, layoutText as LayoutText } from '../text/layout'
 import { engine } from '../engine/EngineHost'
 import { tools } from '../tools'
 import { documents } from './documents'
 import { fontLibrary, fontLibraryNow } from './fonts'
 import { notify } from './notices'
+import { Listeners } from '../lib/listeners'
 
 type TextNode = DocNode & { kind: 'text' }
 
 const layouts = new WeakMap<DocNode, { version: number; styles: Doc['textStyles']; layout: TextLayout }>()
 
-/** A text node laid out with the fonts loaded now; null until any are. */
+/** The layout module, once loaded (with the fonts, in start). */
+let layoutText: typeof LayoutText | null = null
+
+/** A text node laid out with the fonts loaded now; null until any are, and the layout is. */
 export function layoutOf(node: DocNode, doc: Doc): TextLayout | null {
   if (node.kind !== 'text') return null
   const lib = fontLibraryNow()
-  if (!lib?.ready()) return null
+  if (!lib?.ready() || !layoutText) return null
   const hit = layouts.get(node)
   if (hit && hit.version === lib.version && hit.styles === doc.textStyles) return hit.layout
   const n = node as TextNode
@@ -80,23 +86,29 @@ let started = false
  * panel's thumbnails.
  */
 let epoch = 0
-const epochListeners = new Set<() => void>()
+const epochChanges = new Listeners()
 const bumpEpoch = () => {
   epoch++
-  for (const fn of epochListeners) fn()
+  epochChanges.emit()
 }
 export const textEpoch = {
   get: () => epoch,
   subscribe: (fn: () => void) => {
-    epochListeners.add(fn)
-    return () => epochListeners.delete(fn)
+    return epochChanges.subscribe(fn)
   },
 }
+
+/** The fonts and the layout, both: what start waits for, and startFonts gives. */
+let ready: Promise<Awaited<ReturnType<typeof fontLibrary>>> | null = null
 
 function start() {
   if (started) return
   started = true
-  void fontLibrary().then((lib) => {
+  ready = Promise.all([fontLibrary(), import('../text/layout')]).then(([lib, m]) => {
+    layoutText = m.layoutText
+    return lib
+  })
+  void ready.then((lib) => {
     engine().setDecorator(decorate)
     bumpEpoch()
     // A font arriving: text is laid out and sent again, once a frame at most.
@@ -125,5 +137,5 @@ tools().subscribe(() => {
 /** Starts the fonts now: the checks and the Type tool call it. */
 export const startFonts = () => {
   start()
-  return fontLibrary()
+  return ready!
 }

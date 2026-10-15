@@ -17,13 +17,17 @@ import { MAX_RESOLUTION, MAX_SIDE, MIN_RESOLUTION, type ColourMode, type Depth, 
 import { UNITS, formatLength, toPixels, type Unit } from '../doc/units'
 import { recentFiles, type RecentFile } from '../io/handles'
 import { Dialog } from './Dialog'
+import { Label } from './controls'
+import { Hint } from './controls'
 
 // --- fields ------------------------------------------------------------------
 
-export function Field({ id, label, error, children }: { id: string; label: string; error?: string | null; children: ReactNode }) {
+export function Field({ id, label, error, children, hint }: { id: string; label: string; error?: string | null; children: ReactNode; hint?: string }) {
   return (
     <div className="field">
-      <label htmlFor={id}>{label}</label>
+      <Label htmlFor={id} hint={hint}>
+        {label}
+      </Label>
       {children}
       {error && (
         <span className="field-error" id={`${id}-error`} role="alert">
@@ -93,8 +97,9 @@ const BACKGROUNDS: { id: Background; name: string }[] = [
   { id: 'transparent', name: 'Transparent' },
 ]
 
-export function NewDocDialog({ onCreate, onClose }: { onCreate(o: NewDocOptions, background: Background): void; onClose(): void }) {
+export function NewDocDialog({ onCreate, onClose }: { onCreate(o: NewDocOptions, background: Background, artboard: boolean): void; onClose(): void }) {
   const [background, setBackground] = useState<Background>('white')
+  const [artboard, setArtboard] = useState(false)
   const [preset, setPreset] = useState<string>(DEFAULT_PRESET.id)
   const [name, setName] = useState('Untitled')
   const [unit, setUnit] = useState<Unit>(DEFAULT_PRESET.unit)
@@ -136,7 +141,7 @@ export function NewDocDialog({ onCreate, onClose }: { onCreate(o: NewDocOptions,
   const submit = (e: FormEvent) => {
     e.preventDefault()
     if (!px) return
-    onCreate({ name, width: px.w, height: px.h, resolution: r, mode, depth, profile: { builtin: profile } }, background)
+    onCreate({ name, width: px.w, height: px.h, resolution: r, mode, depth, profile: { builtin: profile } }, background, artboard)
   }
 
   return (
@@ -236,6 +241,11 @@ export function NewDocDialog({ onCreate, onClose }: { onCreate(o: NewDocOptions,
             ))}
           </select>
         </Field>
+        <label className="check">
+          <input type="checkbox" id="new-artboard" checked={artboard} onChange={(e) => setArtboard(e.target.checked)} />
+          Artboard
+          <Hint text="The document starts as an artboard this size on a pasteboard, as Photoshop’s Artboards option does: more can be added beside it (Layer → Artboards, or the Artboard tool, V)." />
+        </label>
         <p className="form-summary" data-summary>
           {px ? `${px.w.toLocaleString()} × ${px.h.toLocaleString()} pixels, ${MODE_NAMES[mode]} ${depth}-bit` : 'Fix the fields above to see the size.'}
         </p>
@@ -274,11 +284,10 @@ export function CanvasSizeDialog({ doc, onApply, onClose }: { doc: Doc; onApply(
   }
 
   return (
-    <Dialog id="canvasSize" title="Canvas Size" onClose={onClose} footer={<Footer form="canvas-form" primary="Resize Canvas" onCancel={onClose} disabled={!ok} />}>
+    <Dialog id="canvasSize" title="Canvas Size" hint="Layers keep their place against the anchor, and nothing outside the new canvas is deleted." onClose={onClose} footer={<Footer form="canvas-form" primary="Resize Canvas" onCancel={onClose} disabled={!ok} />}>
       <form id="canvas-form" className="form" onSubmit={submit}>
-        <p>
-          Now {doc.width.toLocaleString()} × {doc.height.toLocaleString()} pixels. Layers keep their place against the anchor, and
-          nothing outside the new canvas is deleted.
+        <p className="field-meta">
+          Now {doc.width.toLocaleString()} × {doc.height.toLocaleString()} pixels
         </p>
         <div className="field-row">
           <Field id="canvas-width" label="Width" error={errors.width}>
@@ -325,7 +334,7 @@ export function ResolutionDialog({ doc, onApply, onClose }: { doc: Doc; onApply(
   const n = parseNumber(ppi)
   const inches = !error && n ? `${formatLength(doc.width, 'in', n)} × ${formatLength(doc.height, 'in', n)} in, ${formatLength(doc.width, 'mm', n)} × ${formatLength(doc.height, 'mm', n)} mm` : ''
   return (
-    <Dialog id="resolution" title="Resolution" onClose={onClose} footer={<Footer form="ppi-form" primary="Set Resolution" onCancel={onClose} disabled={!!error} />}>
+    <Dialog id="resolution" title="Resolution" hint="The pixels stay as they are. The resolution says how big they print." onClose={onClose} footer={<Footer form="ppi-form" primary="Set Resolution" onCancel={onClose} disabled={!!error} />}>
       <form
         id="ppi-form"
         className="form"
@@ -334,7 +343,6 @@ export function ResolutionDialog({ doc, onApply, onClose }: { doc: Doc; onApply(
           if (!error) onApply(n!)
         }}
       >
-        <p>The pixels stay as they are. The resolution says how big they print.</p>
         <Field id="ppi" label="Pixels per inch" error={error}>
           <input id="ppi" inputMode="decimal" value={ppi} aria-invalid={!!error} onChange={(e) => setPpi(e.target.value)} autoFocus onFocus={(e) => e.target.select()} />
         </Field>
@@ -351,7 +359,7 @@ export function RenameDocDialog({ doc, onApply, onClose }: { doc: Doc; onApply(n
   const [name, setName] = useState(doc.name)
   const blank = !name.trim()
   return (
-    <Dialog id="renameDoc" title="Rename Document" onClose={onClose} footer={<Footer form="rename-form" primary="Rename" onCancel={onClose} disabled={blank} />}>
+    <Dialog id="renameDoc" title="Rename Document" hint="The name inside the document. Its file keeps its own name until you Save As." onClose={onClose} footer={<Footer form="rename-form" primary="Rename" onCancel={onClose} disabled={blank} />}>
       <form
         id="rename-form"
         className="form"
@@ -363,7 +371,6 @@ export function RenameDocDialog({ doc, onApply, onClose }: { doc: Doc; onApply(n
         <Field id="rename-name" label="Name" error={blank ? 'A document needs a name.' : null}>
           <input id="rename-name" value={name} onChange={(e) => setName(e.target.value)} autoFocus onFocus={(e) => e.target.select()} />
         </Field>
-        <p>This is the name inside the document. Its file keeps its own name until you Save As.</p>
         <button type="submit" hidden />
       </form>
     </Dialog>
@@ -372,7 +379,7 @@ export function RenameDocDialog({ doc, onApply, onClose }: { doc: Doc; onApply(n
 
 // --- Recent -----------------------------------------------------------------------------
 
-export function useRecent(): RecentFile[] | null {
+function useRecent(): RecentFile[] | null {
   const [list, setList] = useState<RecentFile[] | null>(null)
   useEffect(() => {
     let live = true
@@ -384,7 +391,7 @@ export function useRecent(): RecentFile[] | null {
   return list
 }
 
-export const ago = (at: number) => {
+const ago = (at: number) => {
   const s = (Date.now() - at) / 1000
   if (s < 60) return 'just now'
   if (s < 3600) return `${Math.floor(s / 60)} min ago`

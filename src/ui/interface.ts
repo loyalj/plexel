@@ -16,6 +16,7 @@
  * - `data-motion="reduce"` stops transitions and animations, as the
  *   system's reduced-motion setting already does.
  */
+import { Listeners } from '../lib/listeners'
 
 export interface InterfacePrefs {
   /** The interface's size, 0.8 to 1.5 (1 is 100%). */
@@ -49,7 +50,7 @@ export const DEFAULT_PREFS: InterfacePrefs = {
 
 const KEY = 'plexel.interface.v1'
 
-export function loadPrefs(): InterfacePrefs {
+function loadPrefs(): InterfacePrefs {
   let text: string | null = null
   try {
     text = localStorage.getItem(KEY)
@@ -89,7 +90,7 @@ export function applyPrefs(p: InterfacePrefs) {
 
 class PrefsStore {
   private value = DEFAULT_PREFS
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   private loaded = false
 
   get = () => {
@@ -101,10 +102,7 @@ class PrefsStore {
   }
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   update(change: Partial<InterfacePrefs>) {
@@ -115,7 +113,7 @@ class PrefsStore {
     } catch {
       // Kept for this visit only.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   reset() {

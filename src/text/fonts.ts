@@ -16,6 +16,7 @@
 import { DEFAULT_FONT } from '../doc/text'
 import { embeddable, type Face, type HarfBuzz } from './hb'
 import type { FontProvider } from './layout'
+import { Listeners } from '../lib/listeners'
 
 export type FontSource = 'builtin' | 'local' | 'user' | 'document'
 
@@ -52,22 +53,19 @@ export class FontLibrary implements FontProvider {
   private entries = new Map<string, FontEntry>()
   private files = new Map<string, FileState>()
   private fallbackFiles: Fallbacks = {}
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   /** Moves on whenever a font arrives or the list changes: layouts made before it are stale. */
   version = 0
 
   constructor(private hb: HarfBuzz) {}
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   private changed() {
     this.version++
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   /**

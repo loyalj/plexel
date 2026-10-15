@@ -8,12 +8,13 @@ import { DEFAULT_LOOK, type DocLook, type ProofSetup } from '../color/proof'
 import { engine } from '../engine/EngineHost'
 import { colourSettings } from './colourSettings'
 import { documents } from './documents'
+import { Listeners } from '../lib/listeners'
 
 const looks = new Map<string, DocLook>()
-const listeners = new Set<() => void>()
+const changes = new Listeners()
 
 /** The proof condition a document starts with: the working CMYK space, relative colorimetric. */
-export function defaultSetup(): ProofSetup {
+function defaultSetup(): ProofSetup {
   return { ...DEFAULT_LOOK.setup, profile: colourSettings.get().working.cmyk, mode: 'cmyk' }
 }
 
@@ -32,13 +33,10 @@ export const proofing = {
     const next = { ...proofing.get(key), ...patch }
     looks.set(key, next)
     engine().setLook(key, next)
-    for (const fn of listeners) fn()
+    changes.emit()
   },
   subscribe(fn: () => void) {
-    listeners.add(fn)
-    return () => {
-      listeners.delete(fn)
-    }
+    return changes.subscribe(fn)
   },
 }
 

@@ -24,10 +24,13 @@
  */
 import LineBreaker from 'linebreak'
 import bidiFactory from 'bidi-js'
-import { DEFAULT_FONT, leadingOf, paragraphText, resolveChar, resolvePara, type CharProps, type ParaProps, type TextContent, type TextStyles } from '../doc/text'
+import { DEFAULT_FONT, leadingOf, paragraphText, resolveChar, resolvePara, type CharProps, type ParaProps, type Paragraph, type TextContent, type TextStyles } from '../doc/text'
 import type { Face, Font, ShapedGlyph } from './hb'
-import { flattenPath, type Box, type PathData } from '../geom/path'
+import type { Box, PathData } from '../geom/path'
 import { glyphsBounds, type GlyphSet } from '../geom/glyphs'
+import { distanceAlong, pathPolys } from './framePath'
+
+export { distanceAlong }
 
 const bidi = bidiFactory()
 
@@ -39,6 +42,12 @@ export interface FontProvider {
   fallbacks(script: string): Face[]
   /** The face to use when a font is missing altogether. */
   defaultFace(): { face: Face; coords: Record<string, number> }
+  /**
+   * Moves on whenever what the provider gives changes (a font arrives).
+   * Given, paragraphs' shaping is kept between layouts (paraCache); a
+   * provider without one has every paragraph shaped each time.
+   */
+  readonly version?: number
 }
 
 export interface LayoutInput {
@@ -197,16 +206,29 @@ function shapeParagraph(text: string, runs: { start: number; end: number; props:
     }
     return faceCache.get(key) ?? fonts.defaultFace()
   }
+  // Each face entry's font, found once (Face.font makes a key of its coordinates each time it's asked).
+  const fontOf = new Map<{ face: Face; coords: Record<string, number> }, Font>()
+  const fontFor = (f: { face: Face; coords: Record<string, number> }) => {
+    let x = fontOf.get(f)
+    if (!x) fontOf.set(f, (x = f.face.font(f.coords)))
+    return x
+  }
+  // One entry per fallback face: characters set in the same one are then one item, shaped together.
+  const fallbackEntries = new Map<Face, { face: Face; coords: Record<string, number> }>()
+  const fallbackEntry = (face: Face) => {
+    let e = fallbackEntries.get(face)
+    if (!e) fallbackEntries.set(face, (e = { face, coords: {} }))
+    return e
+  }
   for (let i = 0; i < N; ) {
     const cp = text.codePointAt(i)!
     const len = cp > 0xffff ? 2 : 1
-    const ch = String.fromCodePoint(cp)
     let f = runFace(charProps[i])
-    // Marks stay with their base; spaces and controls with the run's font.
-    if (i > 0 && isMark(ch)) f = faces[i - 1]
-    else if (cp > 0x20 && !isSpace(cp) && !f.face.font(f.coords).hasGlyph(cp)) {
-      const alt = fonts.fallbacks(scripts[i]).find((x) => x.font().hasGlyph(cp))
-      if (alt) f = { face: alt, coords: {} }
+    // Marks stay with their base (none is below U+0300); spaces and controls with the run's font.
+    if (i > 0 && cp >= 0x300 && isMark(String.fromCodePoint(cp))) f = faces[i - 1]
+    else if (cp > 0x20 && !isSpace(cp) && !fontFor(f).hasGlyph(cp)) {
+      const alt = fonts.fallbacks(scripts[i]).find((x) => fontFor(fallbackEntry(x)).hasGlyph(cp))
+      if (alt) f = fallbackEntry(alt)
     }
     for (let k = 0; k < len; k++) faces[i + k] = f
     i += len
@@ -595,6 +617,28 @@ function lineMetrics(sh: Shaped, s: number, e: number): { ascent: number; descen
 // --- the whole text --------------------------------------------------------------------------------
 
 /** Lays text out: its glyphs, its lines, whether it overflows. */
+/**
+ * A paragraph shaped, split into segments, and broken into lines, with each
+ * line's glyphs placed, for each width it's been set at, kept by the
+ * paragraph object: an edit replaces only the paragraphs it touches
+ * (doc/text.ts), so typing in one paragraph of a long story shapes, breaks
+ * and places that one, and only moves the rest. Valid for the same provider
+ * at the same version, and the same styles.
+ */
+interface ParaCache {
+  fonts: FontProvider
+  version: number
+  styles: TextStyles | undefined
+  sh: Shaped
+  segs: Segment[]
+  /** By what it was composed for (`composeKey`): the line ends, and each line placed (by start, end and justification). */
+  set: Map<string, { ends: number[]; placed: Map<string, Placed> }>
+}
+
+/** Widths kept for a paragraph: a frame dragged wider sets it at many, and only the last few are likely again. */
+const WIDTHS_KEPT = 4
+const paraCache = new WeakMap<Paragraph, ParaCache>()
+
 export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout {
   const styles = input.styles
   const outlines: number[][] = []
@@ -654,17 +698,25 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
     const p = content.paragraphs[pi]
     const text = paragraphText(p)
     const para = resolvePara(p, styles)
-    const runs: { start: number; end: number; props: CharProps }[] = []
-    let at = 0
-    for (const r of p.runs) {
-      runs.push({ start: at, end: at + r.text.length, props: resolveChar(r, p, styles) })
-      at += r.text.length
+    // Path text's paragraph is made afresh each time (above), so there's nothing to keep.
+    const keep = !onPath && fonts.version !== undefined
+    let cached = keep ? paraCache.get(p) : undefined
+    if (cached && (cached.fonts !== fonts || cached.version !== fonts.version || cached.styles !== styles)) cached = undefined
+    if (!cached) {
+      const runs: { start: number; end: number; props: CharProps }[] = []
+      let at = 0
+      for (const r of p.runs) {
+        runs.push({ start: at, end: at + r.text.length, props: resolveChar(r, p, styles) })
+        at += r.text.length
+      }
+      // An empty paragraph still has its run's settings, for its line's height.
+      const shaped = shapeParagraph(text, runs.length ? runs : [{ start: 0, end: 0, props: resolveChar({ style: null, props: {} }, p, styles) }], para, fonts)
+      if (!text.length) shaped.charProps[0] = runs[0]?.props ?? resolveChar({ style: null, props: {} }, p, styles)
+      cached = { fonts, version: fonts.version ?? 0, styles, sh: shaped, segs: segments(shaped), set: new Map() }
+      if (keep) paraCache.set(p, cached)
     }
-    // An empty paragraph still has its run's settings, for its line's height.
-    const sh = shapeParagraph(text, runs.length ? runs : [{ start: 0, end: 0, props: resolveChar({ style: null, props: {} }, p, styles) }], para, fonts)
-    if (!text.length) sh.charProps[0] = runs[0]?.props ?? resolveChar({ style: null, props: {} }, p, styles)
+    const { sh, segs } = cached
     for (const m of sh.missing) missing.add(m)
-    const segs = segments(sh)
     if (!first) y += para.spaceBefore
 
     // Line widths: area text's frame (less indents); point and path text don't wrap.
@@ -672,10 +724,27 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
     const indentEnd = para.indentRight
     const fullWidth = area ? fx1 - fx0 - indentStart - indentEnd : Infinity
     const widthAt = (line: number) => (area ? fullWidth - (line === 0 ? para.indentFirst : 0) : Infinity)
+    // Kept with the paragraph, by what they depend on; a shaped frame's are worked out below, line by line, where they fall.
+    const composeKey = !area ? 'free' : rectFrame ? `${fullWidth}|${para.indentFirst}|${para.composer}|${para.align}` : null
     let ends: number[]
-    if (!area) ends = composeGreedy(sh, segs, () => Infinity)
+    let kept = composeKey !== null ? cached.set.get(composeKey) : undefined
+    if (kept) ends = kept.ends
+    else if (!area) ends = composeGreedy(sh, segs, () => Infinity)
     else if (rectFrame && para.composer === 'every') ends = composeOptimal(segs, fullWidth, para.align === 'justify' || para.align === 'justify-all', para.indentFirst) ?? composeGreedy(sh, segs, widthAt)
     else ends = area && !rectFrame ? [] : composeGreedy(sh, segs, widthAt)
+    if (composeKey !== null && !kept) {
+      kept = { ends, placed: new Map() }
+      cached.set.set(composeKey, kept)
+      if (cached.set.size > WIDTHS_KEPT) cached.set.delete(cached.set.keys().next().value!)
+    }
+    // A line placed, kept with the ends it was broken at; a shaped frame's lines are placed each time.
+    const placedLine = (from: number, to: number, extra: number): Placed => {
+      if (!kept) return placeLine(sh, from, to, extra)
+      const k = `${from}|${to}|${extra}`
+      let p = kept.placed.get(k)
+      if (!p) kept.placed.set(k, (p = placeLine(sh, from, to, extra)))
+      return p
+    }
 
     // A shaped frame's lines: where each was broken, so it's set there.
     const tops: number[] = []
@@ -737,7 +806,7 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
         x0 = span[0] + (sh.baseRtl ? indentEnd : indentStart + (li === 0 ? para.indentFirst : 0))
         x1 = span[1] - (sh.baseRtl ? indentStart + (li === 0 ? para.indentFirst : 0) : indentEnd)
       }
-      const natural = placeLine(sh, s, e, 0)
+      const natural = placedLine(s, e, 0)
       let extra = 0
       const justify = area && (para.align === 'justify-all' || (para.align === 'justify' && !lastLine))
       if (justify) {
@@ -748,7 +817,7 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
         // Negative where the composer chose to tighten the spaces.
         if (inner) extra = (x1 - x0 - natural.width) / inner
       }
-      const placed = extra ? placeLine(sh, s, e, extra) : natural
+      const placed = extra ? placedLine(s, e, extra) : natural
       // Where the line starts: by alignment, in the frame or about the origin.
       const align = para.align === 'justify' || para.align === 'justify-all' ? (sh.baseRtl ? 'right' : 'left') : para.align
       const startSide = sh.baseRtl ? (align === 'left' ? 'right' : align === 'right' ? 'left' : align) : align
@@ -819,7 +888,9 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
 /** Whether a frame is an upright rectangle: then every line is as wide as the next. */
 function isRect(polys: number[][]): boolean {
   if (polys.length !== 1) return false
-  const p = polys[0]
+  // Four corners; a closed path comes back to its first (pathPolys), so a fifth equal to it is allowed.
+  let p = polys[0]
+  if (p.length === 10 && Math.abs(p[8] - p[0]) < 1e-9 && Math.abs(p[9] - p[1]) < 1e-9) p = p.slice(0, 8)
   if (p.length !== 8) return false
   for (let i = 0; i < 4; i++) {
     const ax = p[i * 2]
@@ -837,34 +908,6 @@ function isRect(polys: number[][]): boolean {
  * there. Glyphs past the path's end aren't drawn.
  */
 /** A frame or text path flattened as layout reads it: a closed one ends back at its start, so text runs along its last side too. */
-function pathPolys(frame: PathData): number[][] {
-  return flattenPath(frame, 0.25).map((l) => (l.closed && l.pts.length >= 4 ? [...l.pts, l.pts[0], l.pts[1]] : l.pts))
-}
-
-/** How far along a text path (its first subpath, as layout reads it) the point nearest (x, y) is: where text clicked onto a path starts. */
-export function distanceAlong(frame: PathData, x: number, y: number): number {
-  const pts = pathPolys(frame)[0]
-  if (!pts || pts.length < 4) return 0
-  let best = Infinity
-  let at = 0
-  let run = 0
-  for (let i = 2; i < pts.length; i += 2) {
-    const ax = pts[i - 2]
-    const ay = pts[i - 1]
-    const dx = pts[i] - ax
-    const dy = pts[i + 1] - ay
-    const len = Math.hypot(dx, dy)
-    const t = len ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (len * len))) : 0
-    const d = Math.hypot(ax + dx * t - x, ay + dy * t - y)
-    if (d < best) {
-      best = d
-      at = run + t * len
-    }
-    run += len
-  }
-  return at
-}
-
 function alongPath(flat: GlyphSet, lines: Line[], pts: number[], offset: number, align: string): { glyphs: GlyphSet; overflow: boolean; start: number } {
   const n = pts.length / 2
   const cum = [0]

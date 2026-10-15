@@ -11,6 +11,7 @@
 import type { Intent } from '../color/cms'
 import { BUILTIN_BY_ID, DEFAULT_PROFILE_ID, DISPLAY_PROFILE_IDS, type DisplayProfileId } from '../color/profiles'
 import type { ColourMode, ProfileRef } from '../doc/types'
+import { Listeners } from '../lib/listeners'
 
 export interface ColourSettings {
   display: DisplayProfileId
@@ -67,15 +68,12 @@ function load(): ColourSettings {
 }
 
 let state: ColourSettings | null = null
-const listeners = new Set<() => void>()
+const changes = new Listeners()
 
 export const colourSettings = {
   get: () => (state ??= load()),
   subscribe(fn: () => void) {
-    listeners.add(fn)
-    return () => {
-      listeners.delete(fn)
-    }
+    return changes.subscribe(fn)
   },
   set(next: ColourSettings) {
     state = next
@@ -84,7 +82,7 @@ export const colourSettings = {
     } catch {
       // Kept for this tab only.
     }
-    for (const fn of listeners) fn()
+    changes.emit()
   },
 }
 

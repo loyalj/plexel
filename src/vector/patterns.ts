@@ -10,6 +10,7 @@
  * layer's pixels, as Photoshop's are, come later; a paint names its
  * pattern by id, so they slot in beside these.
  */
+import { clamp01 } from '../lib/num'
 
 export interface PatternDef {
   id: string
@@ -28,7 +29,6 @@ export const PATTERNS: PatternDef[] = [
 export const PATTERN_BY_ID = new Map(PATTERNS.map((p) => [p.id, p]))
 
 const fract = (x: number) => x - Math.floor(x)
-const clamp01 = (x: number) => Math.min(1, Math.max(0, x))
 
 /** A square wave of period 2 averaged over a footprint w: ±1 where it's sharp, towards 0 as w grows. */
 function wave(x: number, w: number): number {

@@ -72,7 +72,18 @@ for (const def of BUILTIN_PROFILES) {
   const a = cms.transform(p, lab).one(probe)
   const b = cms.transform(again, lab).one(probe)
   check(`${def.name}: survives being saved as ICC bytes and read back`, deltaE2000(a, b) < 0.01 && again.description === p.description, `${bytes.length} bytes, “${again.description}”`)
+  // As a file Plexel wrote, from another engine (another making of the profile, at another time): recognised as the built-in.
+  const elsewhere = def.build(cms)
+  const theirs = elsewhere.bytes()
+  elsewhere.close()
+  check(`${def.name}: embedded in a file, it's recognised as the built-in`, registry.builtinOf(theirs, again) === def.id)
   again.close()
+}
+{
+  // Another profile, even one under a built-in's name, isn't taken for it.
+  const other = cms.rgbProfile({ white: { x: 0.3127, y: 0.329 }, red: { x: 0.64, y: 0.33 }, green: { x: 0.3, y: 0.6 }, blue: { x: 0.15, y: 0.06 }, curve: { gamma: 2.2 }, description: 'Display P3', copyright: '' })
+  check('a different profile named like a built-in isn’t taken for it', registry.builtinOf(other.bytes(), other) === null)
+  other.close()
 }
 check('the document defaults name built-in profiles of their own mode', (['rgb', 'gray', 'cmyk'] as const).every((m) => 'builtin' in DEFAULT_PROFILES[m] && DEFAULT_PROFILES[m].builtin === DEFAULT_PROFILE_ID[m]))
 

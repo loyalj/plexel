@@ -7,7 +7,7 @@
  * A drag of a number is one step; choosing a font, a style or a feature is
  * one each.
  */
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { addFontFiles, canLoadSystemFonts, fontLibraryNow, loadSystemFonts, systemFontsLoaded } from '../app/fonts'
 import { applyChar, applyPara, shownChar, shownPara, subscribeTyping, typeTarget } from '../app/typing'
 import { addCharStyle, addParaStyle, deleteTextStyle, redefineCharStyle, redefineParaStyle, renameTextStyle } from '../app/textStyles'
@@ -16,6 +16,17 @@ import { documents } from '../app/documents'
 import { DEFAULT_CHAR, DEFAULT_PARA, locate, runAtPos, NO_STYLES, type Align, type CharProps, type ParaProps } from '../doc/text'
 import { startFonts } from '../app/text'
 import { Icon } from './Icon'
+import { NumberInput, ScrubLabel, Segmented, SliderField } from './controls'
+
+const DIRECTIONS: [ParaProps['direction'], string, string][] = [
+  ['auto', 'Auto', 'From the text'],
+  ['ltr', 'Left to right', 'Left to right'],
+  ['rtl', 'Right to left', 'Right to left'],
+]
+const COMPOSERS: [ParaProps['composer'], string][] = [
+  ['every', 'Every-line'],
+  ['single', 'Single-line'],
+]
 
 /** Re-renders on anything the panels show: the document, the editing session, the fonts, new text's settings. */
 function useTypeState() {
@@ -66,36 +77,19 @@ function toggleFeature(list: string[], f: (typeof FEATURES)[number], on: boolean
 }
 
 /** A number typed (Enter or leaving the field commits), with a unit. */
-function NumberField({ id, label, value, unit, min, max, step = 1, onChange, title }: { id: string; label: string; value: number; unit: string; min: number; max: number; step?: number; onChange(v: number): void; title?: string }) {
-  const [typed, setTyped] = useState<string | null>(null)
-  const shown = String(Math.round(value * 100) / 100)
+function NumberField({ id, label, value, unit, min, max, step = 1, onChange, title, def }: { id: string; label: string; value: number; unit: string; min: number; max: number; step?: number; onChange(v: number): void; title?: string; def?: number }) {
   return (
-    <label className="type-field" htmlFor={id} title={title}>
-      <span>{label}</span>
-      <input
-        id={id}
-        inputMode="decimal"
-        value={typed ?? shown}
-        onChange={(e) => setTyped(e.target.value)}
-        onBlur={() => {
-          const n = Number(typed)
-          if (typed !== null && typed.trim() !== '' && Number.isFinite(n)) onChange(Math.min(max, Math.max(min, n)))
-          setTyped(null)
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-            e.preventDefault()
-            onChange(Math.min(max, Math.max(min, value + (e.key === 'ArrowUp' ? step : -step) * (e.shiftKey ? 10 : 1))))
-          }
-        }}
-      />
+    <div className="type-field">
+      <ScrubLabel htmlFor={id} value={value} min={min} max={max} step={step} onChange={onChange} hint={title} defaultValue={def}>
+        {label}
+      </ScrubLabel>
+      <NumberInput id={id} value={value} min={min} max={max} step={step} format={(v) => String(Math.round(v * 100) / 100)} onChange={onChange} />
       <em>{unit}</em>
-    </label>
+    </div>
   )
 }
 
-export function CharacterPanel() {
+export const CharacterPanel = memo(function CharacterPanel() {
   useTypeState()
   const lib = fontLibraryNow()
   const c = shownChar()
@@ -111,7 +105,7 @@ export function CharacterPanel() {
   const runStyle = target.kind === 'editing' ? runAtPos(target.s.content(), target.s.range()[0] + (target.s.range()[0] < target.s.range()[1] ? 1 : 0)).run.style : target.kind === 'layer' ? target.node.props.content.paragraphs[0].runs[0].style : null
   return (
     <div className="type-panel" data-panel-body="character">
-      <p className="field-note" data-type-target={target.kind}>
+      <p className="field-meta" data-type-target={target.kind}>
         {target.kind === 'editing' ? (target.s.range()[0] === target.s.range()[1] ? 'For what’s typed next.' : 'For the selected text.') : target.kind === 'layer' ? 'For the whole text layer.' : 'For new text.'}
       </p>
       <div className="field">
@@ -168,16 +162,16 @@ export function CharacterPanel() {
       <div className="type-grid">
         <NumberField id="type-size" label="Size" unit="px" value={c.size} min={0.1} max={10000} step={1} onChange={(v) => set({ size: v }, 'size')} />
         <NumberField id="type-leading" label="Leading" unit={c.leading === null ? 'px (auto)' : 'px'} value={c.leading ?? c.size * 1.2} min={0} max={20000} onChange={(v) => set({ leading: v }, 'leading')} title="Baseline to baseline. Clear it with Auto." />
-        <NumberField id="type-tracking" label="Tracking" unit="/1000 em" value={c.tracking} min={-1000} max={10000} step={10} onChange={(v) => set({ tracking: v }, 'tracking')} />
-        <NumberField id="type-shift" label="Baseline" unit="px" value={c.baselineShift} min={-10000} max={10000} onChange={(v) => set({ baselineShift: v }, 'shift')} />
-        <NumberField id="type-hscale" label="Width" unit="%" value={c.horizontalScale} min={1} max={1000} onChange={(v) => set({ horizontalScale: v }, 'hscale')} />
-        <NumberField id="type-vscale" label="Height" unit="%" value={c.verticalScale} min={1} max={1000} onChange={(v) => set({ verticalScale: v }, 'vscale')} />
+        <NumberField def={0} id="type-tracking" label="Tracking" unit="/1000 em" value={c.tracking} min={-1000} max={10000} step={10} onChange={(v) => set({ tracking: v }, 'tracking')} />
+        <NumberField def={0} id="type-shift" label="Baseline" unit="px" value={c.baselineShift} min={-10000} max={10000} onChange={(v) => set({ baselineShift: v }, 'shift')} />
+        <NumberField def={100} id="type-hscale" label="Width" unit="%" value={c.horizontalScale} min={1} max={1000} onChange={(v) => set({ horizontalScale: v }, 'hscale')} />
+        <NumberField def={100} id="type-vscale" label="Height" unit="%" value={c.verticalScale} min={1} max={1000} onChange={(v) => set({ verticalScale: v }, 'vscale')} />
       </div>
       <div className="panel-tools">
-        <button type="button" className="options-toggle" aria-pressed={c.leading === null} onClick={() => set({ leading: null })} title="Leading of 120% of the size">
+        <button type="button" className="options-toggle" aria-pressed={c.leading === null} onClick={() => set({ leading: null })} data-tip="Leading of 120% of the size">
           Auto leading
         </button>
-        <button type="button" className="options-toggle" aria-pressed={c.kerning === 'metrics'} data-type-kerning onClick={() => set({ kerning: c.kerning === 'metrics' ? 'none' : 'metrics' })} title="The font’s own kerning">
+        <button type="button" className="options-toggle" aria-pressed={c.kerning === 'metrics'} data-type-kerning onClick={() => set({ kerning: c.kerning === 'metrics' ? 'none' : 'metrics' })} data-tip="The font’s own kerning">
           Kerning
         </button>
         <button type="button" className="options-toggle" aria-pressed={c.underline} data-type-underline onClick={() => set({ underline: !c.underline })}>
@@ -192,13 +186,7 @@ export function CharacterPanel() {
           {axes.map((a) => {
             const v = c.variations[a.tag] ?? face?.coords[a.tag] ?? a.default
             return (
-              <div className="field" key={a.tag}>
-                <label htmlFor={`type-axis-${a.tag}`}>{a.name}</label>
-                <div className="slider-row">
-                  <input id={`type-axis-${a.tag}`} type="range" min={a.min} max={a.max} step={(a.max - a.min) / 200 || 1} value={v} onChange={(e) => set({ variations: { ...c.variations, [a.tag]: Number(e.target.value) } }, `axis:${a.tag}`)} />
-                  <span className="slider-number">{Math.round(v * 10) / 10}</span>
-                </div>
-              </div>
+              <SliderField key={a.tag} id={`type-axis-${a.tag}`} label={a.name} min={a.min} max={a.max} step={Math.max(0.1, Math.round((a.max - a.min) / 20) / 10)} value={Math.round(v * 10) / 10} onChange={(x) => set({ variations: { ...c.variations, [a.tag]: x } }, `axis:${a.tag}`)} />
             )
           })}
         </div>
@@ -231,9 +219,9 @@ export function CharacterPanel() {
       />
     </div>
   )
-}
+})
 
-export function ParagraphPanel() {
+export const ParagraphPanel = memo(function ParagraphPanel() {
   useTypeState()
   const p = shownPara()
   const target = typeTarget()
@@ -252,33 +240,20 @@ export function ParagraphPanel() {
     <div className="type-panel" data-panel-body="paragraph">
       <div className="panel-tools" role="group" aria-label="Alignment">
         {ALIGN.map(([a, label]) => (
-          <button key={a} type="button" className="options-toggle" aria-pressed={p.align === a} data-type-align={a} onClick={() => set({ align: a })} title={a === 'justify' ? 'Justified, the last line aligned to the start' : undefined}>
+          <button key={a} type="button" className="options-toggle" aria-pressed={p.align === a} data-type-align={a} onClick={() => set({ align: a })} data-tip={a === 'justify' ? 'Justified, the last line aligned to the start' : undefined}>
             {label}
           </button>
         ))}
       </div>
       <div className="type-grid">
-        <NumberField id="para-indent-left" label="Indent left" unit="px" value={p.indentLeft} min={-100000} max={100000} onChange={(v) => set({ indentLeft: v }, 'il')} />
-        <NumberField id="para-indent-right" label="Indent right" unit="px" value={p.indentRight} min={-100000} max={100000} onChange={(v) => set({ indentRight: v }, 'ir')} />
-        <NumberField id="para-indent-first" label="First line" unit="px" value={p.indentFirst} min={-100000} max={100000} onChange={(v) => set({ indentFirst: v }, 'if')} />
-        <NumberField id="para-space-before" label="Space before" unit="px" value={p.spaceBefore} min={-100000} max={100000} onChange={(v) => set({ spaceBefore: v }, 'sb')} />
-        <NumberField id="para-space-after" label="Space after" unit="px" value={p.spaceAfter} min={-100000} max={100000} onChange={(v) => set({ spaceAfter: v }, 'sa')} />
+        <NumberField def={0} id="para-indent-left" label="Indent left" unit="px" value={p.indentLeft} min={-100000} max={100000} onChange={(v) => set({ indentLeft: v }, 'il')} />
+        <NumberField def={0} id="para-indent-right" label="Indent right" unit="px" value={p.indentRight} min={-100000} max={100000} onChange={(v) => set({ indentRight: v }, 'ir')} />
+        <NumberField def={0} id="para-indent-first" label="First line" unit="px" value={p.indentFirst} min={-100000} max={100000} onChange={(v) => set({ indentFirst: v }, 'if')} />
+        <NumberField def={0} id="para-space-before" label="Space before" unit="px" value={p.spaceBefore} min={-100000} max={100000} onChange={(v) => set({ spaceBefore: v }, 'sb')} />
+        <NumberField def={0} id="para-space-after" label="Space after" unit="px" value={p.spaceAfter} min={-100000} max={100000} onChange={(v) => set({ spaceAfter: v }, 'sa')} />
       </div>
-      <div className="field">
-        <label htmlFor="para-direction">Direction</label>
-        <select id="para-direction" value={p.direction} onChange={(e) => set({ direction: e.target.value as ParaProps['direction'] })}>
-          <option value="auto">From the text</option>
-          <option value="ltr">Left to right</option>
-          <option value="rtl">Right to left</option>
-        </select>
-      </div>
-      <div className="field">
-        <label htmlFor="para-composer">Composer</label>
-        <select id="para-composer" value={p.composer} onChange={(e) => set({ composer: e.target.value as ParaProps['composer'] })} title="Every-line weighs the whole paragraph for even spacing; single-line fills each line as it goes">
-          <option value="every">Every-line</option>
-          <option value="single">Single-line</option>
-        </select>
-      </div>
+      <Segmented id="para-direction" label="Direction" value={p.direction} options={DIRECTIONS} onChange={(v) => set({ direction: v })} />
+      <Segmented id="para-composer" label="Composer" hint="Every-line weighs the whole paragraph for even spacing; single-line fills each line as it goes" value={p.composer} options={COMPOSERS} onChange={(v) => set({ composer: v })} />
       <StyleList
         kind="paragraph"
         styles={styles.paragraph}
@@ -294,7 +269,7 @@ export function ParagraphPanel() {
       />
     </div>
   )
-}
+})
 
 /** Settings without those left at the defaults: what a style made from them records. */
 const stripDefaults = (c: CharProps): Partial<CharProps> => differing(c, DEFAULT_CHAR) as Partial<CharProps>
@@ -336,11 +311,11 @@ function StyleList({ kind, styles, current, onApply, onNew, onRedefine, onDelete
                 }}
               />
             ) : (
-              <button type="button" className="appearance-pick" onClick={() => onApply(s.id)} onDoubleClick={() => setNaming(s.id)} title="Click to apply; double-click to rename">
+              <button type="button" className="appearance-pick" onClick={() => onApply(s.id)} onDoubleClick={() => setNaming(s.id)} data-tip="Click to apply; double-click to rename">
                 {s.name}
               </button>
             )}
-            <button type="button" className="icon-button" aria-label={`Redefine ${s.name} from the selection`} title="Redefine from the selection" onClick={() => onRedefine(s.id)}>
+            <button type="button" className="icon-button" aria-label={`Redefine ${s.name} from the selection`} data-tip="Redefine from the selection" onClick={() => onRedefine(s.id)}>
               <Icon name="ui.reset" />
             </button>
             <button type="button" className="icon-button" aria-label={`Delete ${s.name}`} onClick={() => onDelete(s.id)}>

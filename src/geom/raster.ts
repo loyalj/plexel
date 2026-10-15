@@ -19,25 +19,25 @@
  * tile then costs that tile nothing but its rows. `rasterRegion` is the
  * reference the kernel is held to.
  */
-import { applyMat, type Box, type FillRule, type Mat, type Polyline } from './path'
+import type { Box, FillRule, Mat, Polyline } from './path'
 
 /** Closed loops (x, y pairs) as line segments: x0, y0, x1, y1 each. */
 export function loopsToSegments(loops: ArrayLike<number>[], m?: Mat, out: number[] = []): number[] {
+  // The matrix applied inline: an outline of glyphs is hundreds of thousands of points.
+  const [a, b, c, d, e, f] = m ?? [1, 0, 0, 1, 0, 0]
   for (const pts of loops) {
     const n = pts.length / 2
     if (n < 2) continue
     for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n
-      let x0 = pts[i * 2]
-      let y0 = pts[i * 2 + 1]
-      let x1 = pts[j * 2]
-      let y1 = pts[j * 2 + 1]
-      if (m) {
-        ;[x0, y0] = applyMat(m, x0, y0)
-        ;[x1, y1] = applyMat(m, x1, y1)
-      }
+      const j = i + 1 === n ? 0 : i + 1
+      const px = pts[i * 2]
+      const py = pts[i * 2 + 1]
+      const qx = pts[j * 2]
+      const qy = pts[j * 2 + 1]
+      const y0 = b * px + d * py + f
+      const y1 = b * qx + d * qy + f
       if (y0 === y1) continue
-      out.push(x0, y0, x1, y1)
+      out.push(a * px + c * py + e, y0, a * qx + c * qy + e, y1)
     }
   }
   return out
@@ -185,7 +185,7 @@ export function regionSegments(segs: ArrayLike<number>, ox: number, oy: number, 
 }
 
 /** Rows per strip: the kernel's workgroups are 16 pixels tall. */
-export const STRIP = 16
+const STRIP = 16
 
 /**
  * A region's segments sorted into strips of 16 rows, the kernel's

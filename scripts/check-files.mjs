@@ -15,7 +15,7 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { check, finish, frames, launch, open, waitForEngine, waitUntil } from './harness.mjs'
+import { check, finish, frames, launch, open, pageHelpers, waitForEngine, waitUntil } from './harness.mjs'
 import { decodePng, pixelAt } from './png.mjs'
 
 /** Pickers that save to and open from OPFS. `window.__nextOpen` names the file the next Open picks. */
@@ -30,13 +30,7 @@ await page.evaluateOnNewDocument(MOCK_PICKERS)
 await page.goto(url)
 await waitForEngine(page)
 
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
+const { press } = pageHelpers(page)
 const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => null)
 const tabs = () => page.$$eval('.tab', (els) => els.map((e) => ({ name: e.querySelector('.tab-name').textContent, dirty: e.dataset.dirty === 'true', active: e.classList.contains('active') })))
 const layerNames = () => page.$$eval('.layer-row .layer-name', (els) => els.map((e) => e.textContent))

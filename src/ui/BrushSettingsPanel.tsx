@@ -8,7 +8,7 @@
  * the bottom shows what the brush paints, drawn by the same code the GPU is
  * held to (brush/preview.ts).
  */
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { brushAssets } from '../app/brushAssets'
 import { brushes, type PaintTool } from '../app/brushes'
 import {
@@ -34,6 +34,7 @@ import { strokePreview } from '../brush/preview'
 import { BUILTIN_TEXTURES, TEXTURE_LABELS } from '../brush/textures'
 import { sampleTip, tipImage } from '../brush/tips'
 import { TOOL_BY_ID, tools } from '../tools'
+import { SliderField, roundTo } from './controls'
 
 const MODE_LABELS: Record<string, string> = {
   multiply: 'Multiply',
@@ -48,7 +49,7 @@ const MODE_LABELS: Record<string, string> = {
   height: 'Height',
 }
 
-export function BrushSettingsPanel() {
+export const BrushSettingsPanel = memo(function BrushSettingsPanel() {
   const state = useSyncExternalStore(brushes().subscribe, brushes().get)
   const toolId = useSyncExternalStore(tools().subscribe, tools().get)
   useSyncExternalStore(brushAssets().subscribe, () => brushAssets().list('tip').length + brushAssets().list('pattern').length)
@@ -60,7 +61,7 @@ export function BrushSettingsPanel() {
   const round = b.tip === 'round'
   return (
     <div className="brush-settings" data-brush-settings={tool}>
-      <p className="field-note">The {TOOL_BY_ID.get(tool)?.name ?? 'Brush'}’s brush.</p>
+      <p className="field-meta">{TOOL_BY_ID.get(tool)?.name ?? 'Brush'}</p>
 
       <Section title="Brush Tip Shape" id="tip" open>
         <TipPicker value={b.tip} onChange={(tip) => set({ tip })} id={id('tip')} />
@@ -206,7 +207,7 @@ export function BrushSettingsPanel() {
       <StrokePreview settings={b} />
     </div>
   )
-}
+})
 
 // --- parts ------------------------------------------------------------------------------------
 
@@ -225,31 +226,8 @@ function Section({ title, id, open, on, onToggle, children }: { title: string; i
   )
 }
 
-function Slider({ id, label, min, max, step, unit, value, onChange }: { id: string; label: string; min: number; max: number; step: number; unit: string; value: number; onChange(v: number): void }) {
-  const [typed, setTyped] = useState<string | null>(null)
-  const clamp = (v: number) => Math.min(max, Math.max(min, v))
-  return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <div className="slider-row">
-        <input id={id} type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(clamp(Number(e.target.value)))} />
-        <input
-          className="slider-number"
-          aria-label={`${label}${unit ? `, ${unit}` : ''}`}
-          inputMode="decimal"
-          value={typed ?? String(Math.round(value / step) * step)}
-          onChange={(e) => setTyped(e.target.value)}
-          onBlur={() => {
-            const n = Number(typed)
-            if (typed !== null && Number.isFinite(n)) onChange(clamp(n))
-            setTyped(null)
-          }}
-          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-        />
-        <span className="unit">{unit}</span>
-      </div>
-    </div>
-  )
+function Slider({ id, label, min, max, step, unit, value, onChange, hint }: { id: string; label: string; min: number; max: number; step: number; unit: string; value: number; onChange(v: number): void; hint?: string }) {
+  return <SliderField id={id} label={label} min={min} max={max} step={step} unit={unit} hint={hint} value={roundTo(value, step)} onChange={onChange} />
 }
 
 const Percent = ({ id, label, value, onChange, min = 0 }: { id: string; label: string; value: number; onChange(v: number): void; min?: number }) => (
@@ -429,7 +407,8 @@ function TipThumb({ tip }: { tip: TipId }) {
   const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
     const c = ref.current
-    const ctx = c?.getContext('2d')
+    // On the CPU, as the Brushes panel's previews: a list of GPU canvases is a composited layer each.
+    const ctx = c?.getContext('2d', { willReadFrequently: true })
     if (!c || !ctx) return
     const img = ctx.createImageData(THUMB, THUMB)
     const ink = getComputedStyle(c).color.match(/\d+/g)?.map(Number) ?? [220, 220, 220]

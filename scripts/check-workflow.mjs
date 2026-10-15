@@ -7,24 +7,15 @@
  *
  * Run with: npm run check:workflow
  */
-import { check, finish, frames, open, settle, waitUntil, waitForEngine } from './harness.mjs'
+import { check, finish, frames, open, pageHelpers, settle, waitForEngine, waitUntil } from './harness.mjs'
 
 const { page, url } = await open({ viewport: { width: 1280, height: 860 } })
 await page.goto(url)
 await waitForEngine(page)
 
 // --- helpers ---------------------------------------------------------------------------
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
-const idle = async () => {
-  await frames(page)
-  await page.evaluate(() => globalThis.plexel.engine().call('render.idle', {}))
-}
+const { press } = pageHelpers(page)
+const { idle } = pageHelpers(page)
 const doc = () => page.evaluate(() => globalThis.plexel.documents().active().history.present)
 const selected = () => page.evaluate(() => { const d = globalThis.plexel.documents().active(); return [d.selected, ...d.others] })
 const tool = () => page.evaluate(() => globalThis.plexel.tools().get())

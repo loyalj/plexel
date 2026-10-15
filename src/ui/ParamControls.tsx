@@ -2,9 +2,10 @@
  * Controls for parameters (doc/params.ts), generated from a registry
  * entry's list: what Properties shows for an adjustment or a live filter,
  * and what the Filter and Layer Style dialogs show. Numbers get a slider
- * and a typed field, switches a checkbox, choices a dropdown, colours a
- * swatch that takes the foreground colour; Curves, Levels and gradients
- * get editors of their own.
+ * bar (ui/controls.tsx), switches a checkbox, a few short choices buttons
+ * side by side and longer lists a dropdown, colours a chip; Curves, Levels
+ * and gradients get editors of their own. A parameter's hint is an ⓘ by its
+ * label.
  *
  * `onChange` gets the whole set of values and the key of the control
  * that changed, so the caller can fold a drag of one control into one
@@ -12,17 +13,18 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { curveFn, gradientAt, levelsFn } from '../adjust/defs'
-import { swatchIn } from '../app/colour'
 import { CHANNELS, type CurvePoints, type GradientStop, type LevelsValue, type ParamColour, type ParamDef } from '../doc/params'
 import type { Doc } from '../doc/types'
 import { engine } from '../engine/EngineHost'
+import { DocColourChip } from './ColourChip'
 import { Icon } from './Icon'
 import { notify } from '../app/notices'
+import { Hint, Label, Segmented, SliderField } from './controls'
 
 type Mode = 'rgb' | 'gray' | 'cmyk'
 
 interface Props {
-  defs: ParamDef[]
+  defs: readonly ParamDef[]
   values: Record<string, unknown>
   doc: Doc
   /** The document's key, for its histogram. */
@@ -44,15 +46,20 @@ export function ParamControls({ defs, values, doc, docKey, onChange, idPrefix }:
             return <NumberParam key={d.key} id={id} def={d} value={values[d.key] as number} onChange={(v) => set(d.key, v)} />
           case 'bool':
             return (
-              <label key={d.key} className="check" title={d.hint}>
+              <label key={d.key} className="check">
                 <input id={id} type="checkbox" checked={!!values[d.key]} onChange={(e) => set(d.key, e.target.checked)} />
                 {d.label}
+                <Hint text={d.hint} />
               </label>
             )
           case 'choice':
+            // A few short ones side by side; a longer list in a menu.
+            if (d.options.length <= 3 && d.options.every(([, l]) => l.length <= 12)) return <Segmented key={d.key} id={id} label={d.label} hint={d.hint} value={values[d.key] as string} options={d.options} onChange={(v) => set(d.key, v)} defaultValue={d.default} />
             return (
-              <div key={d.key} className="field" title={d.hint}>
-                <label htmlFor={id}>{d.label}</label>
+              <div key={d.key} className="field">
+                <Label htmlFor={id} hint={d.hint}>
+                  {d.label}
+                </Label>
                 <select id={id} value={values[d.key] as string} onChange={(e) => set(d.key, e.target.value)}>
                   {d.options.map(([v, label]) => (
                     <option key={v} value={v}>
@@ -72,8 +79,10 @@ export function ParamControls({ defs, values, doc, docKey, onChange, idPrefix }:
             return <GradientEditor key={d.key} id={id} doc={doc} value={values[d.key] as GradientStop[]} onChange={(v) => set(d.key, v)} />
           case 'pattern':
             return (
-              <div key={d.key} className="field" title={d.hint}>
-                <label htmlFor={id}>{d.label}</label>
+              <div key={d.key} className="field">
+                <Label htmlFor={id} hint={d.hint}>
+                  {d.label}
+                </Label>
                 {doc.patterns?.length ? (
                   <select id={id} value={(values[d.key] as string | null) ?? ''} onChange={(e) => set(d.key, e.target.value || null)}>
                     <option value="">None</option>
@@ -84,7 +93,9 @@ export function ParamControls({ defs, values, doc, docKey, onChange, idPrefix }:
                     ))}
                   </select>
                 ) : (
-                  <span className="field-note">No patterns yet: Edit → Define Pattern makes one from a selection.</span>
+                  <span className="field-empty">
+                    No patterns yet <Hint text="Edit → Define Pattern makes one from a selection." />
+                  </span>
                 )}
               </div>
             )
@@ -102,10 +113,10 @@ export function ParamControls({ defs, values, doc, docKey, onChange, idPrefix }:
 function FileParam({ id, def, value, onChange }: { id: string; def: Extract<ParamDef, { kind: 'file' }>; value: unknown; onChange(v: unknown): void }) {
   const input = useRef<HTMLInputElement>(null)
   return (
-    <div className="field" title={def.hint}>
+    <div className="field" data-tip={def.hint}>
       <label htmlFor={id}>{def.label}</label>
       <div className="slider-row">
-        <span className="field-note" data-file-name>
+        <span className="field-meta" data-file-name>
           {def.describe(value)}
         </span>
         <button type="button" className="button small" id={id} onClick={() => input.current?.click()}>
@@ -145,8 +156,10 @@ function WheelParam({ id, label, hint, value, onChange }: { id: string; label: s
   const a = (hue * Math.PI) / 180
   const d = (amount / 100) * 50
   return (
-    <div className="field wheel-field" title={hint}>
-      <label htmlFor={id}>{label}</label>
+    <div className="field wheel-field">
+      <Label htmlFor={id} hint={hint}>
+        {label}
+      </Label>
       <div className="slider-row">
         <div
           ref={ref}
@@ -175,31 +188,7 @@ function WheelParam({ id, label, hint, value, onChange }: { id: string; label: s
 }
 
 export function NumberParam({ id, def, value, onChange }: { id: string; def: Extract<ParamDef, { kind: 'number' }>; value: number; onChange(v: number): void }) {
-  const [typed, setTyped] = useState<string | null>(null)
-  const clamp = (v: number) => Math.min(def.max, Math.max(def.min, v))
-  const shown = String(Math.round(value / def.step) * def.step).replace(/(\.\d{3})\d+$/, '$1')
-  return (
-    <div className="field" title={def.hint}>
-      <label htmlFor={id}>{def.label}</label>
-      <div className="slider-row">
-        <input id={id} type="range" min={def.min} max={def.max} step={def.step} value={value} onChange={(e) => onChange(clamp(Number(e.target.value)))} />
-        <input
-          className="slider-number"
-          aria-label={`${def.label}${def.unit ? `, ${def.unit}` : ''}`}
-          inputMode="decimal"
-          value={typed ?? shown}
-          onChange={(e) => setTyped(e.target.value)}
-          onBlur={() => {
-            const n = Number(typed)
-            if (typed !== null && Number.isFinite(n)) onChange(clamp(n))
-            setTyped(null)
-          }}
-          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-        />
-        <span className="unit">{def.unit}</span>
-      </div>
-    </div>
-  )
+  return <SliderField id={id} label={def.label} hint={def.hint} min={def.min} max={def.max} step={def.step} unit={def.unit} value={value} onChange={onChange} defaultValue={Number.isFinite(def.default) ? def.default : undefined} />
 }
 
 /** A colour in a document's terms, roughly as the screen shows it, for a swatch. */
@@ -210,27 +199,13 @@ export function swatchCss(c: ParamColour, mode: Mode): string {
   return `rgb(${to(c[0])}, ${to(c[1])}, ${to(c[2])})`
 }
 
-/** The foreground colour in a document's own terms (CMYK as ink), 0..1 per channel. */
-export const foregroundIn = (doc: Doc): ParamColour | null => swatchIn(doc, 'fg')
-
+/** A colour setting: its chip, which opens the colour picker (ui/ColourChip.tsx). */
 export function ColourParam({ id, label, value, doc, onChange }: { id: string; label: string; value: ParamColour; doc: Doc; onChange(v: ParamColour): void }) {
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>
       <div className="slider-row">
-        <span className="param-swatch" style={{ background: swatchCss(value, doc.mode) }} data-param-colour={id} />
-        <button
-          id={id}
-          type="button"
-          className="button small"
-          title="Take the foreground colour"
-          onClick={() => {
-            const c = foregroundIn(doc)
-            if (c) onChange(c)
-          }}
-        >
-          Use Foreground
-        </button>
+        <DocColourChip id={id} value={value} doc={doc} label={label} onChange={onChange} data={{ 'param-colour': id }} />
       </div>
     </div>
   )
@@ -403,7 +378,7 @@ function LevelsEditor({ id, mode, docKey, value, onChange }: { id: string; mode:
   )
 }
 
-/** A gradient: its bar, and its stops, each set to the foreground colour, moved, or taken away. */
+/** A gradient: its bar, and its stops, each given a colour (its chip), moved, or taken away. */
 function GradientEditor({ id, doc, value, onChange }: { id: string; doc: Doc; value: GradientStop[]; onChange(v: GradientStop[]): void }) {
   const css = `linear-gradient(to right, ${Array.from({ length: 11 }, (_, i) => `${swatchCss(gradientAt(value, i / 10), doc.mode)} ${i * 10}%`).join(', ')})`
   return (
@@ -412,7 +387,7 @@ function GradientEditor({ id, doc, value, onChange }: { id: string; doc: Doc; va
       <div className="gradient-bar" style={{ background: css }} />
       {value.map((s, i) => (
         <div className="gradient-stop" key={i}>
-          <span className="param-swatch" style={{ background: swatchCss(s.colour, doc.mode) }} />
+          <DocColourChip value={s.colour} doc={doc} label={`Stop ${i + 1} colour`} onChange={(c) => onChange(value.map((x, j) => (j === i ? { ...x, colour: c } : x)))} />
           <input
             id={`${id}-${i}`}
             type="number"
@@ -426,16 +401,6 @@ function GradientEditor({ id, doc, value, onChange }: { id: string; doc: Doc; va
               onChange(value.map((x, j) => (j === i ? { ...x, at: Math.min(100, Math.max(0, n)) / 100 } : x)).sort((a, b) => a.at - b.at))
             }}
           />
-          <button
-            type="button"
-            className="button small"
-            onClick={() => {
-              const c = foregroundIn(doc)
-              if (c) onChange(value.map((x, j) => (j === i ? { ...x, colour: c } : x)))
-            }}
-          >
-            Use Foreground
-          </button>
           <button type="button" className="button small" disabled={value.length <= 2} aria-label={`Remove stop ${i + 1}`} onClick={() => onChange(value.filter((_, j) => j !== i))}>
             <Icon name="ui.close" />
           </button>

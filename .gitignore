@@ -6,8 +6,11 @@ dist
 .dev.vars.*
 .env*.local
 
-# Unfiltered ideas, kept local. Not a plan and not a queue.
+# Unfiltered ideas, kept local. Not a plan and not a queue. Both spellings:
+# the file is brainstorm.md, and a case-sensitive checkout wouldn't match one
+# for the other.
 BRAINSTORM.md
+brainstorm.md
 
 # Scratch worktrees made by Claude Code
 .claude/worktrees/

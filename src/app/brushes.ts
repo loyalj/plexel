@@ -6,6 +6,7 @@
  * App-wide and remembered by the browser, like the colours.
  */
 import { BRUSH_PRESETS, DEFAULT_BRUSH, DEFAULT_MIXER, DEFAULT_SMUDGE, presetSettings, readBrush, readMixer, readSmudge, type BrushSettings, type MixerSettings, type SmudgeSettings } from '../brush/defs'
+import { Listeners } from '../lib/listeners'
 
 export type PaintTool = 'brush' | 'eraser' | 'mixer' | 'smudge' | 'clone' | 'heal' | 'spot'
 export const PAINT_TOOLS: PaintTool[] = ['brush', 'eraser', 'mixer', 'smudge', 'clone', 'heal', 'spot']
@@ -88,17 +89,14 @@ function load(): BrushState {
 
 class BrushStore {
   private state = load()
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   /** Load or Clean, asked for in the options bar: what the Mixer's next stroke starts with, once. */
   private nextReservoir: 'load' | 'clean' | null = null
 
   get = () => this.state
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
 
   private set(next: BrushState) {
@@ -108,7 +106,7 @@ class BrushStore {
     } catch {
       // Kept for this tab only.
     }
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   /** Changes one tool's brush; it no longer matches its preset. */
@@ -142,7 +140,7 @@ class BrushStore {
   /** The Mixer's Load or Clean button: the next stroke starts loaded with the foreground, or clean. */
   setNextReservoir(what: 'load' | 'clean') {
     this.nextReservoir = what
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 
   /** What the Mixer's next stroke starts with: loaded, clean, or as the last one left it. Taken once. */
@@ -209,7 +207,7 @@ function loadPen(): PenSettings {
 }
 
 let pen: PenSettings | null = null
-const penListeners = new Set<() => void>()
+const penChanges = new Listeners()
 export const penSettings = {
   get: () => (pen ??= loadPen()),
   set(next: PenSettings) {
@@ -219,13 +217,10 @@ export const penSettings = {
     } catch {
       // Kept for this tab only.
     }
-    for (const fn of penListeners) fn()
+    penChanges.emit()
   },
   subscribe(fn: () => void) {
-    penListeners.add(fn)
-    return () => {
-      penListeners.delete(fn)
-    }
+    return penChanges.subscribe(fn)
   },
 }
 

@@ -19,7 +19,6 @@ import { liquifySettings } from './app/liquify'
 import { proofing } from './app/proofing'
 import { convertDocument, convertMode } from './app/convert'
 import { openFile } from './app/files'
-import { pdfOf, psdOf, svgOf } from './app/exports'
 import { brushes } from './app/brushes'
 import { importBrushes } from './app/brushImport'
 import { tools } from './tools'
@@ -28,6 +27,9 @@ import { fillTools } from './app/fillTools'
 import { guidePrefs } from './app/guidePrefs'
 import { origins } from './app/viewAids'
 import { moveTool } from './app/moveTool'
+import { channels } from './app/channels'
+import { widthPointsOf, widthSelection } from './app/widthTool'
+import { preloadDialogs } from './ui/lazyDialogs'
 
 // Before the first render, not during it: React would paint one frame in
 // the default palette before an effect could repaint it, and a flash of
@@ -42,7 +44,15 @@ installInputGuard()
 
 // A handle for the browser checks and the bench, which probe the engine
 // and read the document store directly. Nothing in the app uses it.
-;(globalThis as { plexel?: unknown }).plexel = { engine, documents, views, doc: { createDoc, insertNode, makeNode, setFx }, text: { layoutOf, startFonts }, colours, proofing, convert: { convertMode, convertDocument }, files: { openFile }, exports: { psdOf, svgOf, pdfOf }, brushes, importBrushes, tools, selectTools, fillTools, interfacePrefs, guidePrefs, origins, moveTool, retouch, transformUi, liquifySettings }
+// The exporters load when first called, as they do in the app (app/files.ts),
+// so the handle doesn't put them back into the app's first download.
+const exporters = () => import('./app/exports')
+const lazyExports = {
+  psdOf: async (...a: Parameters<Awaited<ReturnType<typeof exporters>>['psdOf']>) => (await exporters()).psdOf(...a),
+  svgOf: async (...a: Parameters<Awaited<ReturnType<typeof exporters>>['svgOf']>) => (await exporters()).svgOf(...a),
+  pdfOf: async (...a: Parameters<Awaited<ReturnType<typeof exporters>>['pdfOf']>) => (await exporters()).pdfOf(...a),
+}
+;(globalThis as { plexel?: unknown }).plexel = { engine, documents, views, doc: { createDoc, insertNode, makeNode, setFx }, text: { layoutOf, startFonts }, colours, proofing, convert: { convertMode, convertDocument }, files: { openFile }, exports: lazyExports, brushes, importBrushes, tools, selectTools, fillTools, interfacePrefs, guidePrefs, origins, moveTool, retouch, transformUi, liquifySettings, channels, width: { pointsOf: widthPointsOf, selection: widthSelection }, dialogsLoaded: preloadDialogs }
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

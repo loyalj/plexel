@@ -30,6 +30,7 @@ import { swatchIn } from './colour'
 import { documents, type OpenDoc } from './documents'
 import { placeForNew } from './effects'
 import { fillTools, presetStops } from './fillTools'
+import { channelTarget, planesTarget } from './channels'
 import { newFillLayer, paintTarget } from './fills'
 import { notify } from './notices'
 import { hold } from './pixels'
@@ -79,8 +80,10 @@ function gradientGesture(d: OpenDoc, raw0: Pointer): Gesture {
   const p0 = snapped(snap, raw0)
   const doc = d.history.present
   const node = d.selected ? (doc.nodes[d.selected] ?? null) : null
-  const live = liveGradient(doc, node)
-  const g = fillTools().get().gradient
+  // A channel targeted (or some colour channels) is painted on: no fill layer, no live gradient.
+  const onPixels = !!channelTarget(d) || !!planesTarget(d)
+  const live = onPixels ? null : liveGradient(doc, node)
+  const g = { ...fillTools().get().gradient, ...(onPixels ? { makes: 'pixels' as const } : {}) }
   let end: [number, number] = [p0.x, p0.y]
   let moved = false
   const lineIn = (t: Affine): [number, number, number, number] => {
@@ -160,7 +163,9 @@ async function bucketAt(d: OpenDoc, x: number, y: number) {
   const b = fillTools().get().bucket
   try {
     const node = b.sampleAll ? null : (d.selected ?? null)
-    const area = await engine().call('select.wand', { key: d.key, x, y, tolerance: b.tolerance, contiguous: b.contiguous, node, antialias: b.antialias, op: 'replace', current: null })
+    // On an alpha or spot channel, the channel's own values decide what's filled.
+    const ch = channelTarget(d)
+    const area = await engine().call('select.wand', { key: d.key, x, y, tolerance: b.tolerance, contiguous: b.contiguous, node, antialias: b.antialias, op: 'replace', current: null, ...(ch ? { channel: ch.id } : {}) })
     if (!area) return
     const release = hold([area])
     // Only inside the selection, when there is one.
@@ -280,11 +285,21 @@ registerHover('quick', (p) => {
 
 // --- the Magnetic Lasso --------------------------------------------------------------------------------
 
+/**
+ * The Magnetic Lasso's session: the wire follows the strongest edge from
+ * the last anchor to the pointer, anchors dropping as it holds still. As
+ * in Photoshop, a click drops one, Alt-click a straight side to the point
+ * clicked, and Backspace or Delete takes the last anchor back.
+ */
 function magneticSession(d: OpenDoc, p0: Pointer): Session {
   const o = selectTools().get().lasso
   const op = opFor(p0, selectTools().get().op)
   const node = d.selected ?? null
   const fixed: [number, number][] = [[p0.x, p0.y]]
+  /** How long `fixed` was at each anchor dropped after the first, for Backspace. */
+  const anchors: number[] = []
+  /** Counts anchors placed and taken back: a wire worked out from an anchor since changed is thrown away. */
+  let epoch = 0
   let anchor: [number, number] = [p0.x, p0.y]
   let wire: [number, number][] = []
   let prev: [number, number][] | undefined
@@ -308,14 +323,16 @@ function magneticSession(d: OpenDoc, p0: Pointer): Session {
     if (busy || !want || over) return
     busy = true
     const to = want
+    const from = epoch
     want = null
     try {
       const path = await engine().call('select.wire', { key: d.key, node, from: anchor, to, width: o.width, contrast: o.contrast })
-      if (over) return
+      if (over || from !== epoch) return
       wire = path
       // An anchor drops where the wire has held still long enough.
       const k = stableAnchor(path, o.frequency, prev)
       if (k > 0) {
+        anchors.push(fixed.length)
         fixed.push(...path.slice(1, k + 1))
         anchor = path[k]
         wire = path.slice(k)
@@ -343,9 +360,12 @@ function magneticSession(d: OpenDoc, p0: Pointer): Session {
         return null
       }
       lastClick = now
-      // A click fixes the wire as it is and drops an anchor at its end.
-      if (wire.length > 1) fixed.push(...wire.slice(1))
+      anchors.push(fixed.length)
+      // Alt: a straight side to the point clicked; otherwise the wire fixed as it is, an anchor at its end.
+      if (p.altKey) fixed.push(nearestCopy(d.history.present, [p.x, p.y], anchor))
+      else if (wire.length > 1) fixed.push(...wire.slice(1))
       anchor = fixed[fixed.length - 1]
+      epoch++
       wire = []
       prev = undefined
       show()
@@ -356,6 +376,21 @@ function magneticSession(d: OpenDoc, p0: Pointer): Session {
       want = nearestCopy(d.history.present, [p.x, p.y], anchor)
       void pull()
     },
+    takeKey(e, down) {
+      if (!down || (e.key !== 'Backspace' && e.key !== 'Delete')) return false
+      const at = anchors.pop()
+      if (at === undefined) {
+        sessions().end(true)
+        return true
+      }
+      fixed.length = at
+      anchor = fixed[fixed.length - 1]
+      epoch++
+      wire = []
+      prev = undefined
+      show()
+      return true
+    },
     commit() {
       over = true
       const pts = [...fixed, ...wire.slice(1)]
@@ -364,7 +399,7 @@ function magneticSession(d: OpenDoc, p0: Pointer): Session {
     cancel() {
       over = true
     },
-    readout: () => 'Trace the edge; click to drop a point. Click the start, double-click or press Enter to close; Esc cancels.',
+    readout: () => 'Trace the edge; click to drop a point, Alt-click for a straight side, Backspace to take one back. Click the start, double-click or press Enter to close; Esc cancels.',
   }
   return s
 }

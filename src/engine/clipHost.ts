@@ -20,7 +20,7 @@ import { CoverReader, alphaBounds, coverForTile, exactBounds } from '../tiles/co
 import { TILE, TILE_PIXELS, newSamples, planesOf, type Samples, type TileFormat } from '../tiles/format'
 import type { TileId } from '../tiles/store'
 import { colour } from './colourHost'
-import { pinSet, store, unpinSet } from './tileHost'
+import { held, store } from './tileHost'
 
 /** Where copied pixels come from. */
 export type ClipSource =
@@ -60,18 +60,8 @@ export interface ClipCalls {
 }
 
 /** The largest image put on the system clipboard: past this, other apps get nothing and Plexel keeps its own copy. */
-export const PNG_MAX_PIXELS = 64 * 1024 * 1024
-/** New sets are held this long for the page, as selection results are. */
-const HOLD_MS = 60_000
-
+const PNG_MAX_PIXELS = 64 * 1024 * 1024
 const IDENTITY: Affine = [1, 0, 0, 1, 0, 0]
-
-function held(set: string | null): string | null {
-  if (!set) return null
-  pinSet(set)
-  setTimeout(() => unpinSet(set), HOLD_MS)
-  return set
-}
 
 /** A rectangle through an affine transform: the box around its corners. */
 function transformRect(t: Affine, r: Rect): Rect {

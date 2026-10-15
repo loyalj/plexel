@@ -10,6 +10,9 @@
  *   spot colours    fills and strokes linked to a spot swatch use a
  *                   Separation colour space named for it, its process
  *                   equivalent as the alternate, so a RIP makes a plate
+ *   spot channels   each an image in its ink's Separation space (shared
+ *                   with a spot swatch of the same name), over everything
+ *                   and overprinting, so it's a plate of its own
  *   text            outlines, exact (live text comes later)
  *   opacity, blend  ExtGState: constant alpha and the blend mode
  *   groups          transparency groups (isolated unless pass-through)
@@ -19,6 +22,8 @@
  *   CMYK            a PDF/X-4 output intent of the document's profile
  */
 import { geometryPath, type AppearanceItem, type Paint } from '../../doc/vector'
+import { brushAsPaths, strokeAsPath } from '../../vector/outline'
+import { strokeNeedsOutline } from '../../doc/vector'
 import { glyphsToPath } from '../../geom/glyphs'
 import { transformPath, type PathData } from '../../geom/path'
 import { docPathOf } from '../../vector/shape'
@@ -39,6 +44,8 @@ export interface PdfHost {
   profileName: string
   /** A spot swatch's full-strength colour in the document's terms. */
   spotColour(s: DocSwatch): ParamColour
+  /** The document's spot channels: each one's ink (its name, its full strength in the document's terms) and its plane over the canvas, a byte a pixel, 255 full ink. */
+  spotChannels?(): Promise<{ name: string; full: ParamColour; width: number; height: number; data: Uint8Array }[]>
   deflate(b: Uint8Array): Promise<Uint8Array>
   /** For the file's ID and dates. */
   now: Date
@@ -150,19 +157,19 @@ export async function docToPdf(doc: Doc, host: PdfHost): Promise<{ bytes: Uint8A
     res.ExtGState.set(name, `<< /Type /ExtGState /ca ${f(ca)} /CA ${f(CA)} /BM /${PDF_BLEND[blend] ?? 'Normal'} >> %${key}`)
     return name
   }
-  // Spot colours, one Separation space each.
+  // Spot colours, one Separation space each, by the ink's name: a spot swatch and a spot channel of the same name are one ink.
   const spots = new Map<string, string>()
-  const spotSpace = (s: DocSwatch) => {
-    let name = spots.get(s.id)
+  const separation = (inkName: string, full: ParamColour) => {
+    let name = spots.get(inkName)
     if (name) return name
     name = `CS${res.ColorSpace.size}`
     const white = doc.mode === 'cmyk' ? [0, 0, 0, 0] : doc.mode === 'gray' ? [1] : [1, 1, 1]
     // PDF's CMYK is ink, like Plexel's; RGB and Gray are light.
-    const full = host.spotColour(s)
-    res.ColorSpace.set(name, `[/Separation ${pdfName(s.name)} ${csRef} 0 R << /FunctionType 2 /Domain [0 1] /C0 [${white.map(f).join(' ')}] /C1 [${full.map(f).join(' ')}] /N 1 >>]`)
-    spots.set(s.id, name)
+    res.ColorSpace.set(name, `[/Separation ${pdfName(inkName)} ${csRef} 0 R << /FunctionType 2 /Domain [0 1] /C0 [${white.map(f).join(' ')}] /C1 [${full.map(f).join(' ')}] /N 1 >>]`)
+    spots.set(inkName, name)
     return name
   }
+  const spotSpace = (s: DocSwatch) => separation(s.name, host.spotColour(s))
   const swatches = new Map((doc.swatches ?? []).map((s) => [s.id, s]))
 
   // --- paint operators -------------------------------------------------------------------------------
@@ -256,6 +263,26 @@ export async function docToPdf(doc: Doc, host: PdfHost): Promise<{ bytes: Uint8A
             : it.align === 'outside'
               ? `${f(pb[0] - pad)} ${f(pb[1] - pad)} ${f(pb[2] - pb[0] + 2 * pad)} ${f(pb[3] - pb[1] + 2 * pad)} re\n${pathOps(path)}W* n\n`
               : ''
+        if (it.brush) {
+          // A brush stroke: its artwork's parts, each filled in its paint (gradients as shadings), under the stroke's opacity.
+          for (const p of brushAsPaths(path, it, doc.mode)) {
+            const ev = p.path.fillRule === 'evenodd' ? '*' : ''
+            if (p.paint.kind === 'gradient') o += `q\n${g}${pathOps(p.path)}W${ev} n\n/${shading(p.paint, box)} sh\nQ\n`
+            else o += `q\n${g}${colourOp(p.paint.colour, false)}\n${pathOps(p.path)}f${ev}\nQ\n`
+          }
+          continue
+        }
+        if (strokeNeedsOutline(it)) {
+          // A profile, arrowheads or dashes fitted to corners: the outline the stroke paints, filled.
+          const outline = strokeAsPath(path, it)
+          if (it.paint.kind === 'gradient') o += `q\n${g}${cut}${pathOps(outline)}W n\n/${shading(it.paint, box)} sh\nQ\n`
+          else {
+            const colour = it.paint.kind === 'solid' ? it.paint.colour : it.paint.colour
+            const set = linked?.kind === 'spot' ? `/${spotSpace(linked)} cs ${f(it.paint.kind === 'solid' ? (it.paint.tint ?? 1) : 1)} scn` : colourOp(colour, false)
+            o += `q\n${g}${cut}${set}\n${pathOps(outline)}f\nQ\n`
+          }
+          continue
+        }
         const st = `${f(it.align === 'centre' ? it.width : it.width * 2)} w ${it.cap === 'round' ? 1 : it.cap === 'square' ? 2 : 0} J ${it.join === 'round' ? 1 : it.join === 'bevel' ? 2 : 0} j ${f(it.miter)} M [${it.dash.map(f).join(' ')}] ${f(it.dashOffset)} d\n`
         if (it.paint.kind === 'gradient') {
           warn('Gradient strokes are drawn in their first colour in the PDF')
@@ -354,6 +381,16 @@ export async function docToPdf(doc: Doc, host: PdfHost): Promise<{ bytes: Uint8A
     content += await imageOps(await host.flattened(flat))
   }
   for (const c of kids.slice(flat)) content += await nodeOps(c)
+  // Spot channels over everything, overprinting: each ink on its own plate, the others left as they are.
+  const spotPlanes = (await host.spotChannels?.()) ?? []
+  if (spotPlanes.length) res.ExtGState.set('GOP', '<< /Type /ExtGState /OP true /op true /OPM 1 >> %overprint')
+  for (const sp of spotPlanes) {
+    const cs = res.ColorSpace.get(separation(sp.name, sp.full))
+    const ref = objs.stream(`/Type /XObject /Subtype /Image /Width ${sp.width} /Height ${sp.height} /ColorSpace ${cs} /BitsPerComponent 8 /Filter /FlateDecode`, await host.deflate(sp.data))
+    const name = `Im${res.XObject.size}`
+    res.XObject.set(name, ref)
+    content += `q\n/GOP gs\n${f(sp.width)} 0 0 ${f(-sp.height)} 0 ${f(sp.height)} cm\n/${name} Do\nQ\n`
+  }
   content += 'Q\n'
 
   const resources = () =>

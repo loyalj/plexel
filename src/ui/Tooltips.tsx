@@ -21,7 +21,7 @@
  * is what lets a disabled menu item say why.
  */
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { TOOL_BY_ID, type ToolId } from '../tools'
+import { TOOL_BY_ID, toolsInGroup, type ToolId } from '../tools'
 import { formatShortcut, parseShortcut } from '../input/shortcuts'
 import { toolKeys } from '../commands'
 import { interfacePrefs } from './interface'
@@ -151,6 +151,11 @@ function tipContent(el: HTMLElement, rich: boolean) {
         </div>
         {rich && <p>{tool.hint}</p>}
         {rich && tool.keys.length > 0 && <KeyList keys={tool.keys} />}
+        {rich && tool.group && el.hasAttribute('data-tool-slot') && (
+          <p className="tip-group">
+            Also here: {toolsInGroup(tool.group).filter((t) => t.id !== tool.id).map((t) => t.name).join(', ')}. Right-click or hold for them.
+          </p>
+        )}
       </div>
     )
   }

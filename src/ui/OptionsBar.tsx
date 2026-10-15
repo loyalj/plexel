@@ -6,7 +6,9 @@
  * Number fields take typing, and their labels scrub: drag a label left or
  * right to change the value, as in Photoshop.
  */
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { freehand } from '../app/freehand'
+import { brushChoices } from '../app/vectorBrushes'
+import { useSyncExternalStore } from 'react'
 import { brushes, type PaintTool } from '../app/brushes'
 import { sessions } from '../app/canvasTools'
 import { selectTools } from '../app/selectTools'
@@ -31,7 +33,11 @@ import { moveTool } from '../app/moveTool'
 import { retouch } from '../app/retouch'
 import { NO_WARP, transformUi, type TransformMode } from '../app/freeTransform'
 import { LIQUIFY_TOOLS, liquifySettings } from '../app/liquify'
+import { subscribeToolOverlay, toolOverlayVersion } from '../app/overlay'
 import { WARP_STYLES } from '../geom/warp'
+import { NumberInput, ScrubLabel } from './controls'
+import { ARTBOARD_PRESETS, artboardRect, isArtboard, setArtboardRect, type ArtboardNode } from '../doc/artboards'
+import { commitArtboards, newArtboard } from '../app/artboards'
 
 /** A blend mode, as the Gradient tool and the Paint Bucket take one. */
 function BlendOption({ id, value, onChange }: { id: string; value: BlendModeId; onChange(v: BlendModeId): void }) {
@@ -76,7 +82,8 @@ export function OptionsBar() {
   // Re-read while a session runs: its readout changes with every drag.
   useSyncExternalStore(selectTools().subscribe, selectTools().get)
   useSyncExternalStore(shapeTools().subscribe, shapeTools().get)
-  useSyncExternalStore(anchorSelection.subscribe, () => anchorSelection.refs)
+  useSyncExternalStore(freehand().subscribe, freehand().get)
+  useSyncExternalStore(anchorSelection.subscribe, () => anchorSelection.version)
   useSyncExternalStore(typeSettings().subscribe, typeSettings().get)
   useSyncExternalStore(subscribeTyping, () => shownChar().font + shownChar().style + shownChar().size)
   const tool = TOOL_BY_ID.get(toolId)!
@@ -168,7 +175,7 @@ function Option({ o, paints, state }: { o: ToolOption; paints?: PaintTool; state
           className="options-toggle"
           aria-pressed={on}
           data-pressure={o.target}
-          title={`Let pen pressure set the ${o.target}`}
+          data-tip={`Let pen pressure set the ${o.target}`}
           onClick={() => brushes().update(paints, { dynamics: withPressure(b, o.target, !on).dynamics })}
         >
           {o.label}
@@ -221,10 +228,10 @@ function Option({ o, paints, state }: { o: ToolOption; paints?: PaintTool; state
       return (
         <>
           <NumberOption o={{ label: 'Size', min: 1, max: 2000, unit: 'px', hint: 'The brush’s diameter in document pixels. [ and ] make it smaller and larger.' }} value={q.size} onChange={(v) => selectTools().update('quick', { size: v })} id="opt-quick-size" />
-          <button type="button" className="options-toggle" aria-pressed={q.sampleAll} data-quick="sample-all" title="Look at the whole image, not just the selected layer" onClick={() => selectTools().update('quick', { sampleAll: !q.sampleAll })}>
+          <button type="button" className="options-toggle" aria-pressed={q.sampleAll} data-quick="sample-all" data-tip="Look at the whole image, not just the selected layer" onClick={() => selectTools().update('quick', { sampleAll: !q.sampleAll })}>
             Sample all layers
           </button>
-          <button type="button" className="options-toggle" aria-pressed={q.autoEnhance} data-quick="auto-enhance" title="A smoother, softer edge" onClick={() => selectTools().update('quick', { autoEnhance: !q.autoEnhance })}>
+          <button type="button" className="options-toggle" aria-pressed={q.autoEnhance} data-quick="auto-enhance" data-tip="A smoother, softer edge" onClick={() => selectTools().update('quick', { autoEnhance: !q.autoEnhance })}>
             Auto-Enhance
           </button>
         </>
@@ -255,10 +262,10 @@ function Option({ o, paints, state }: { o: ToolOption; paints?: PaintTool; state
             Reverse
           </button>
           <span className="options-field" role="group" aria-label="Makes">
-            <button type="button" className="options-toggle" aria-pressed={g.makes === 'layer'} data-gradient-makes="layer" title="A gradient fill layer, which stays editable" onClick={() => fillTools().update('gradient', { makes: 'layer' })}>
+            <button type="button" className="options-toggle" aria-pressed={g.makes === 'layer'} data-gradient-makes="layer" data-tip="A gradient fill layer, which stays editable" onClick={() => fillTools().update('gradient', { makes: 'layer' })}>
               Fill layer
             </button>
-            <button type="button" className="options-toggle" aria-pressed={g.makes === 'pixels'} data-gradient-makes="pixels" title="Laid into the selected layer’s pixels (or its mask)" onClick={() => fillTools().update('gradient', { makes: 'pixels' })}>
+            <button type="button" className="options-toggle" aria-pressed={g.makes === 'pixels'} data-gradient-makes="pixels" data-tip="Laid into the selected layer’s pixels (or its mask)" onClick={() => fillTools().update('gradient', { makes: 'pixels' })}>
               Pixels
             </button>
           </span>
@@ -304,10 +311,10 @@ function Option({ o, paints, state }: { o: ToolOption; paints?: PaintTool; state
             onChange={(v) => selectTools().update('wand', { tolerance: v })}
             id="opt-wand-tolerance"
           />
-          <button type="button" className="options-toggle" aria-pressed={w.contiguous} data-wand="contiguous" title="Only pixels joined to the one clicked" onClick={() => selectTools().update('wand', { contiguous: !w.contiguous })}>
+          <button type="button" className="options-toggle" aria-pressed={w.contiguous} data-wand="contiguous" data-tip="Only pixels joined to the one clicked" onClick={() => selectTools().update('wand', { contiguous: !w.contiguous })}>
             Contiguous
           </button>
-          <button type="button" className="options-toggle" aria-pressed={w.sampleAll} data-wand="sample-all" title="Compare the whole image, not just the selected layer" onClick={() => selectTools().update('wand', { sampleAll: !w.sampleAll })}>
+          <button type="button" className="options-toggle" aria-pressed={w.sampleAll} data-wand="sample-all" data-tip="Compare the whole image, not just the selected layer" onClick={() => selectTools().update('wand', { sampleAll: !w.sampleAll })}>
             Sample all layers
           </button>
         </>
@@ -353,14 +360,22 @@ function Option({ o, paints, state }: { o: ToolOption; paints?: PaintTool; state
         )
       return null
     }
+    case 'pen-smart': {
+      const s = shapeTools().get()
+      return (
+        <button type="button" className="options-toggle" aria-pressed={s.smart} data-pen-smart data-tip="Smart, as Affinity's Pen has it: a click places a smooth point, the curve through it worked out from its neighbours (Alt-click for a corner; a drag still pulls the handles out)" onClick={() => shapeTools().update({ smart: !s.smart })}>
+          Smart
+        </button>
+      )
+    }
     case 'shape-paint': {
       const s = shapeTools().get()
       return (
         <>
-          <button type="button" className="options-toggle" aria-pressed={s.fill} data-shape-paint="fill" title="Fill new shapes with the foreground colour" onClick={() => shapeTools().update({ fill: !s.fill })}>
+          <button type="button" className="options-toggle" aria-pressed={s.fill} data-shape-paint="fill" data-tip="Fill new shapes with the foreground colour" onClick={() => shapeTools().update({ fill: !s.fill })}>
             Fill
           </button>
-          <button type="button" className="options-toggle" aria-pressed={s.stroke} data-shape-paint="stroke" title="Stroke new shapes: with the background colour when they’re filled too, otherwise the foreground. Lines are always stroked." onClick={() => shapeTools().update({ stroke: !s.stroke })}>
+          <button type="button" className="options-toggle" aria-pressed={s.stroke} data-shape-paint="stroke" data-tip="Stroke new shapes: with the background colour when they’re filled too, otherwise the foreground. Lines are always stroked." onClick={() => shapeTools().update({ stroke: !s.stroke })}>
             Stroke
           </button>
           <NumberOption o={{ label: 'Width', min: 0.1, max: 1000, unit: 'px', hint: 'How wide new shapes’ strokes (and lines) are.' }} value={s.strokeWidth} onChange={(v) => shapeTools().update({ strokeWidth: v })} id="opt-shape-width" />
@@ -373,6 +388,8 @@ function Option({ o, paints, state }: { o: ToolOption; paints?: PaintTool; state
       return <AlignOptions />
     case 'auto-select':
       return <AutoSelectOption />
+    case 'artboard':
+      return <ArtboardOptions />
     case 'smudge':
       return <SmudgeOptions />
     case 'source':
@@ -412,6 +429,8 @@ function Option({ o, paints, state }: { o: ToolOption; paints?: PaintTool; state
         </>
       )
     }
+    case 'freehand':
+      return <FreehandOptions tool={o.tool} />
     case 'anchors': {
       const n = selectedAnchorCount()
       return (
@@ -447,7 +466,7 @@ function SelectOp() {
   return (
     <span className="options-field" role="group" aria-label="Selection">
       {OPS.map((o) => (
-        <button key={o.op} type="button" className="options-toggle" aria-pressed={op === o.op} data-op={o.op} title={o.key ? `${o.label} (hold ${o.key} for one drag)` : 'A new selection'} onClick={() => selectTools().update('op', o.op)}>
+        <button key={o.op} type="button" className="options-toggle" aria-pressed={op === o.op} data-op={o.op} data-tip={o.key ? `${o.label} (hold ${o.key} for one drag)` : 'A new selection'} onClick={() => selectTools().update('op', o.op)}>
           {o.label}
         </button>
       ))}
@@ -470,7 +489,7 @@ function FeatherOption({ tool }: { tool: 'marquee' | 'lasso' }) {
 function AntialiasOption({ tool }: { tool: 'marquee' | 'lasso' | 'wand' }) {
   const on = selectTools().get()[tool].antialias
   return (
-    <button type="button" className="options-toggle" aria-pressed={on} data-antialias={tool} title="Smooth the selection’s edge rather than leave it stepped" onClick={() => selectTools().update(tool, { antialias: !on })}>
+    <button type="button" className="options-toggle" aria-pressed={on} data-antialias={tool} data-tip="Smooth the selection’s edge rather than leave it stepped" onClick={() => selectTools().update(tool, { antialias: !on })}>
       Anti-alias
     </button>
   )
@@ -486,14 +505,15 @@ const TRANSFORM_MODES: [TransformMode, string, string][] = [
 /** Free Transform's modes, and in Warp its style, settings and grid. */
 function TransformOptions() {
   const ui = useSyncExternalStore(transformUi().subscribe, transformUi().get)
-  if (!ui.warps) return null
+  if (!ui.warps) return <ScaleStrokesOption />
   const w = ui.warp
   const styled = w.style !== 'none' && w.style !== 'custom'
   return (
     <>
+      <ScaleStrokesOption />
       <span className="options-group" role="radiogroup" aria-label="Transform mode">
         {TRANSFORM_MODES.map(([m, label, hint]) => (
-          <button key={m} type="button" role="radio" className="options-toggle" aria-checked={ui.mode === m} aria-pressed={ui.mode === m} data-transform-mode={m} title={hint} onClick={() => transformUi().set({ mode: m })}>
+          <button key={m} type="button" role="radio" className="options-toggle" aria-checked={ui.mode === m} aria-pressed={ui.mode === m} data-transform-mode={m} data-tip={hint} onClick={() => transformUi().set({ mode: m })}>
             {label}
           </button>
         ))}
@@ -512,7 +532,7 @@ function TransformOptions() {
           </label>
           {styled && (
             <>
-              <button type="button" className="options-toggle" aria-pressed={w.orient === 'vertical'} data-warp-vertical title="Bend up and down the layer rather than across it." onClick={() => transformUi().setWarp({ orient: w.orient === 'vertical' ? 'horizontal' : 'vertical' })}>
+              <button type="button" className="options-toggle" aria-pressed={w.orient === 'vertical'} data-warp-vertical data-tip="Bend up and down the layer rather than across it." onClick={() => transformUi().setWarp({ orient: w.orient === 'vertical' ? 'horizontal' : 'vertical' })}>
                 Vertical
               </button>
               <NumberOption o={{ label: 'Bend', min: -100, max: 100, unit: '%', hint: 'How far the style bends, either way.' }} value={w.bend} onChange={(v) => transformUi().setWarp({ bend: v })} id="opt-warp-bend" />
@@ -521,7 +541,7 @@ function TransformOptions() {
             </>
           )}
           {!styled && (
-            <label className="options-field" title="How many patches the mesh has a side: more to bend parts of the layer on their own.">
+            <label className="options-field" data-tip="How many patches the mesh has a side: more to bend parts of the layer on their own.">
               <span>Grid</span>
               <select id="opt-warp-grid" value={w.grid} onChange={(e) => transformUi().setWarp({ grid: Number(e.target.value) })}>
                 {[1, 2, 3, 4, 5].map((g) => (
@@ -532,7 +552,7 @@ function TransformOptions() {
               </select>
             </label>
           )}
-          <button type="button" className="options-toggle" data-warp-reset title="Take the warp off: the mesh flat again." onClick={() => transformUi().setWarp({ ...NO_WARP, grid: w.grid })}>
+          <button type="button" className="options-toggle" data-warp-reset data-tip="Take the warp off: the mesh flat again." onClick={() => transformUi().setWarp({ ...NO_WARP, grid: w.grid })}>
             Reset
           </button>
         </>
@@ -548,7 +568,7 @@ function LiquifyOptions() {
     <>
       <label className="options-field">
         <span>Tool</span>
-        <select id="opt-liquify-tool" value={s.tool} title={LIQUIFY_TOOLS.find((t) => t[0] === s.tool)?.[2]} onChange={(e) => liquifySettings().set({ tool: e.target.value as typeof s.tool })}>
+        <select id="opt-liquify-tool" value={s.tool} data-tip={LIQUIFY_TOOLS.find((t) => t[0] === s.tool)?.[2]} onChange={(e) => liquifySettings().set({ tool: e.target.value as typeof s.tool })}>
           {LIQUIFY_TOOLS.map(([id, label]) => (
             <option key={id} value={id}>
               {label}
@@ -558,7 +578,7 @@ function LiquifyOptions() {
       </label>
       <NumberOption o={{ label: 'Size', min: 4, max: 2000, unit: 'px', hint: 'The brush’s diameter, in document pixels.' }} value={s.size} onChange={(v) => liquifySettings().set({ size: v })} id="opt-liquify-size" />
       <NumberOption o={{ label: 'Pressure', min: 1, max: 100, unit: '%', hint: 'How strongly the brush acts.' }} value={s.pressure} onChange={(v) => liquifySettings().set({ pressure: v })} id="opt-liquify-pressure" />
-      <button type="button" className="options-toggle" data-liquify-restore title="Takes the whole warp back off." onClick={() => liquifySettings().restore?.()}>
+      <button type="button" className="options-toggle" data-liquify-restore data-tip="Takes the whole warp back off." onClick={() => liquifySettings().restore?.()}>
         Restore All
       </button>
     </>
@@ -568,13 +588,8 @@ function LiquifyOptions() {
 /** What a Free Transform, Crop or Polygonal Lasso in progress is doing, with Commit and Cancel. */
 function SessionReadout() {
   const session = useSyncExternalStore(sessions().subscribe, sessions().get)
-  // The readout follows the drag: the overlay changes with it, and so does this.
-  const [, tick] = useState(0)
-  useEffect(() => {
-    if (!session) return
-    const t = setInterval(() => tick((n) => n + 1), 150)
-    return () => clearInterval(t)
-  }, [session])
+  // The readout follows the session's drawing: each change to the overlay draws it again.
+  useSyncExternalStore(subscribeToolOverlay, toolOverlayVersion)
   if (!session) return null
   return (
     <>
@@ -603,16 +618,16 @@ function MixerOptions() {
   return (
     <>
       <span className="options-field" role="group" aria-label="Brush paint">
-        <button type="button" className="options-toggle" data-mixer-load title="Load the brush with the foreground colour for the next stroke" onClick={() => brushes().setNextReservoir('load')}>
+        <button type="button" className="options-toggle" data-mixer-load data-tip="Load the brush with the foreground colour for the next stroke" onClick={() => brushes().setNextReservoir('load')}>
           Load
         </button>
-        <button type="button" className="options-toggle" data-mixer-clean title="Clean the brush: the next stroke starts with no paint of its own" onClick={() => brushes().setNextReservoir('clean')}>
+        <button type="button" className="options-toggle" data-mixer-clean data-tip="Clean the brush: the next stroke starts with no paint of its own" onClick={() => brushes().setNextReservoir('clean')}>
           Clean
         </button>
-        <button type="button" className="options-toggle" aria-pressed={m.loadEach} data-mixer-load-each title="Load the brush after each stroke" onClick={() => brushes().updateMixer({ loadEach: !m.loadEach })}>
+        <button type="button" className="options-toggle" aria-pressed={m.loadEach} data-mixer-load-each data-tip="Load the brush after each stroke" onClick={() => brushes().updateMixer({ loadEach: !m.loadEach })}>
           Load each
         </button>
-        <button type="button" className="options-toggle" aria-pressed={m.cleanEach} data-mixer-clean-each title="Clean the brush after each stroke" onClick={() => brushes().updateMixer({ cleanEach: !m.cleanEach })}>
+        <button type="button" className="options-toggle" aria-pressed={m.cleanEach} data-mixer-clean-each data-tip="Clean the brush after each stroke" onClick={() => brushes().updateMixer({ cleanEach: !m.cleanEach })}>
           Clean each
         </button>
       </span>
@@ -637,7 +652,7 @@ function MixerOptions() {
       <Percent label="Wet" value={m.wet} onChange={(v) => brushes().updateMixer({ wet: v })} id="opt-mixer-wet" hint="How much paint the brush picks up from the canvas." />
       <Percent label="Load" min={1} value={m.load} onChange={(v) => brushes().updateMixer({ load: Math.max(0.01, v) })} id="opt-mixer-load" hint="How much paint the brush holds: with a light load the stroke dries out quickly." />
       <Percent label="Mix" value={m.mix} onChange={(v) => brushes().updateMixer({ mix: v })} id="opt-mixer-mix" hint="How much of the paint put down is the canvas’s rather than the brush’s." />
-      <button type="button" className="options-toggle" aria-pressed={m.sampleAll} id="opt-mixer-sample-all" title="Pick paint up from the whole image, not just the selected layer" onClick={() => brushes().updateMixer({ sampleAll: !m.sampleAll })}>
+      <button type="button" className="options-toggle" aria-pressed={m.sampleAll} id="opt-mixer-sample-all" data-tip="Pick paint up from the whole image, not just the selected layer" onClick={() => brushes().updateMixer({ sampleAll: !m.sampleAll })}>
         Sample all layers
       </button>
     </>
@@ -649,10 +664,10 @@ function SourceOptions({ tool }: { tool: 'clone' | 'heal' }) {
   const s = useSyncExternalStore(retouch().subscribe, () => retouch().get()[tool])
   return (
     <>
-      <button type="button" className="options-toggle" aria-pressed={s.aligned} id={`opt-${tool}-aligned`} title="Every stroke carries on copying the same picture, rather than starting from the source again" onClick={() => retouch().update(tool, { aligned: !s.aligned })}>
+      <button type="button" className="options-toggle" aria-pressed={s.aligned} id={`opt-${tool}-aligned`} data-tip="Every stroke carries on copying the same picture, rather than starting from the source again" onClick={() => retouch().update(tool, { aligned: !s.aligned })}>
         Aligned
       </button>
-      <button type="button" className="options-toggle" aria-pressed={s.sampleAll} id={`opt-${tool}-sample-all`} title="Copy what the whole image shows, not just the selected layer" onClick={() => retouch().update(tool, { sampleAll: !s.sampleAll })}>
+      <button type="button" className="options-toggle" aria-pressed={s.sampleAll} id={`opt-${tool}-sample-all`} data-tip="Copy what the whole image shows, not just the selected layer" onClick={() => retouch().update(tool, { sampleAll: !s.sampleAll })}>
         Sample all layers
       </button>
     </>
@@ -665,10 +680,10 @@ function SmudgeOptions() {
   return (
     <>
       <Percent label="Strength" value={m.strength} onChange={(v) => brushes().updateSmudge({ strength: v })} id="opt-smudge-strength" hint="How far the paint is pushed along before it runs out." />
-      <button type="button" className="options-toggle" aria-pressed={m.sampleAll} id="opt-smudge-sample-all" title="Smudge what the whole image shows, not just the selected layer" onClick={() => brushes().updateSmudge({ sampleAll: !m.sampleAll })}>
+      <button type="button" className="options-toggle" aria-pressed={m.sampleAll} id="opt-smudge-sample-all" data-tip="Smudge what the whole image shows, not just the selected layer" onClick={() => brushes().updateSmudge({ sampleAll: !m.sampleAll })}>
         Sample all layers
       </button>
-      <button type="button" className="options-toggle" aria-pressed={m.fingerPainting} id="opt-smudge-finger" title="Start each stroke with the foreground colour on the finger" onClick={() => brushes().updateSmudge({ fingerPainting: !m.fingerPainting })}>
+      <button type="button" className="options-toggle" aria-pressed={m.fingerPainting} id="opt-smudge-finger" data-tip="Start each stroke with the foreground colour on the finger" onClick={() => brushes().updateSmudge({ fingerPainting: !m.fingerPainting })}>
         Finger painting
       </button>
     </>
@@ -676,50 +691,67 @@ function SmudgeOptions() {
 }
 
 function NumberOption({ o, value, onChange, id }: { o: { label: string; min: number; max: number; unit: string; hint: string }; value: number; onChange(v: number): void; id: string }) {
-  const [typed, setTyped] = useState<string | null>(null)
-  const scrub = useRef<{ x: number; v: number } | null>(null)
-  const clamp = (v: number) => Math.min(o.max, Math.max(o.min, Math.round(v)))
-  const shown = String(Math.round(value))
   return (
-    <span className="options-field" title={o.hint}>
-      <label
-        htmlFor={id}
-        className="options-scrub"
-        onPointerDown={(e) => {
-          scrub.current = { x: e.clientX, v: value }
-          ;(e.target as Element).setPointerCapture(e.pointerId)
-        }}
-        onPointerMove={(e) => {
-          if (!scrub.current) return
-          // A pixel a unit for small ranges; faster for sizes.
-          const per = o.max > 200 ? Math.max(1, value / 50) : 1
-          onChange(clamp(scrub.current.v + (e.clientX - scrub.current.x) * per))
-        }}
-        onPointerUp={() => (scrub.current = null)}
-      >
+    <span className="options-field" data-tip={o.hint}>
+      <ScrubLabel htmlFor={id} className="options-scrub" value={Math.round(value)} min={o.min} max={o.max} step={1} onChange={onChange}>
         {o.label}
-      </label>
-      <input
-        id={id}
-        className="options-number"
-        inputMode="numeric"
-        value={typed ?? shown}
-        onChange={(e) => setTyped(e.target.value)}
-        onBlur={() => {
-          const n = Number(typed)
-          if (typed !== null && Number.isFinite(n)) onChange(clamp(n))
-          setTyped(null)
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-          if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-            e.preventDefault()
-            onChange(clamp(value + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1)))
-          }
-        }}
-      />
+      </ScrubLabel>
+      <NumberInput id={id} className="options-number" value={Math.round(value)} min={o.min} max={o.max} step={1} onChange={(v) => onChange(Math.round(v))} />
       <span className="unit">{o.unit}</span>
     </span>
+  )
+}
+
+/**
+ * The Artboard tool's options: the selected artboard's size, by preset or
+ * by number, and Add Artboard, which puts a new one (the preset's size, or
+ * the last one's) to the right of the others. With no artboards yet, Add
+ * makes the canvas Artboard 1.
+ */
+function ArtboardOptions() {
+  const d = useSyncExternalStore(documents().subscribe, () => documents().active())
+  const doc = d?.history.present
+  const sel = d && doc && d.selected && isArtboard(doc.nodes[d.selected]) ? (doc.nodes[d.selected] as ArtboardNode) : null
+  const r = sel ? artboardRect(sel) : null
+  const preset = sel ? ARTBOARD_PRESETS.find((p) => p.width === sel.props.artboard.width && p.height === sel.props.artboard.height) : null
+  const resize = (w: number, h: number) => {
+    if (!d || !sel || !r) return
+    commitArtboards(d, (x) => setArtboardRect(x, sel.id, [r[0], r[1], r[0] + Math.max(1, Math.round(w)), r[1] + Math.max(1, Math.round(h))], false), 'Resize Artboard')
+  }
+  return (
+    <>
+      <span className="options-field">
+        <label htmlFor="opt-artboard-preset" className="options-scrub">
+          Size
+        </label>
+        <select
+          id="opt-artboard-preset"
+          value={preset?.id ?? 'custom'}
+          disabled={!sel}
+          data-why="Select an artboard (click it with this tool)"
+          onChange={(e) => {
+            const p = ARTBOARD_PRESETS.find((x) => x.id === e.target.value)
+            if (p) resize(p.width, p.height)
+          }}
+        >
+          <option value="custom">{sel ? 'Custom' : 'No artboard selected'}</option>
+          {ARTBOARD_PRESETS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} ({p.width} × {p.height})
+            </option>
+          ))}
+        </select>
+      </span>
+      {sel && r && (
+        <>
+          <NumberOption o={{ label: 'W', min: 1, max: 30000, unit: 'px', hint: 'The artboard’s width; its layers stay where they are' }} value={r[2] - r[0]} onChange={(w) => resize(w, r[3] - r[1])} id="opt-artboard-w" />
+          <NumberOption o={{ label: 'H', min: 1, max: 30000, unit: 'px', hint: 'The artboard’s height' }} value={r[3] - r[1]} onChange={(h) => resize(r[2] - r[0], h)} id="opt-artboard-h" />
+        </>
+      )}
+      <button type="button" className="options-toggle" data-artboard-add data-tip="A new artboard to the right of the others, the size of the selected one" onClick={() => newArtboard(sel ? { width: sel.props.artboard.width, height: sel.props.artboard.height } : undefined)}>
+        Add Artboard
+      </button>
+    </>
   )
 }
 
@@ -786,6 +818,69 @@ function AutoSelectOption() {
         <option value="layer">Layer</option>
         <option value="group">Group</option>
       </select>
+      <ScaleStrokesOption />
     </span>
+  )
+}
+
+/** Scale Strokes, shown with the Move tool and while Free Transform is open. */
+function ScaleStrokesOption() {
+  const o = useSyncExternalStore(moveTool().subscribe, moveTool().get)
+  return (
+    <label className="check" data-tip="Whether scaling a shape scales its strokes with it, as Illustrator's Scale Strokes & Effects. Off, the strokes keep their widths.">
+      <input type="checkbox" id="opt-scale-strokes" checked={o.scaleStrokes} onChange={(e) => moveTool().update({ scaleStrokes: e.target.checked })} />
+      Scale Strokes
+    </label>
+  )
+}
+
+/**
+ * The freehand tools' settings: how smooth (Fidelity), and for the Pencil
+ * and Paintbrush the width, Fill, Close and the two selection switches;
+ * the Paintbrush's brush; the Blob Brush's size and Merge only with
+ * selection.
+ */
+function FreehandOptions({ tool }: { tool: 'pencil' | 'vbrush' | 'blob' }) {
+  const s = useSyncExternalStore(freehand().subscribe, freehand().get)
+  const doc = useSyncExternalStore(documents().subscribe, () => documents().active()?.history.present ?? null)
+  const set = (p: Parameters<ReturnType<typeof freehand>['update']>[0]) => freehand().update(p)
+  const toggle = (k: 'fillNew' | 'close' | 'editSelected' | 'keepSelected' | 'mergeSelected', label: string, hint: string) => (
+    <button type="button" className="options-toggle" aria-pressed={s[k]} data-freehand={k} data-tip={hint} onClick={() => set({ [k]: !s[k] })}>
+      {label}
+    </button>
+  )
+  return (
+    <>
+      {tool === 'vbrush' && (
+        <label className="options-field" data-tip="The vector brush the Paintbrush paints with">
+          <span>Brush</span>
+          <select id="opt-freehand-brush" value={s.brush ?? 'none'} onChange={(e) => set({ brush: e.target.value === 'none' ? null : e.target.value })}>
+            <option value="none">Basic (no brush)</option>
+            {doc &&
+              brushChoices(doc).map((c) => (
+                <option key={c.brush.id} value={c.brush.id}>
+                  {c.brush.name}
+                </option>
+              ))}
+          </select>
+        </label>
+      )}
+      {tool === 'blob' ? (
+        <NumberOption o={{ label: 'Size', min: 1, max: 2000, unit: 'px', hint: 'The Blob Brush’s diameter. [ and ] make it smaller and larger.' }} value={s.blobSize} onChange={(v) => set({ blobSize: v })} id="opt-freehand-size" />
+      ) : (
+        <NumberOption o={{ label: 'Width', min: 0.1, max: 1000, unit: 'px', hint: 'How wide new strokes are (with a brush: how tall its artwork is).' }} value={s.width} onChange={(v) => set({ width: v })} id="opt-freehand-width" />
+      )}
+      <NumberOption o={{ label: 'Fidelity', min: 0.5, max: 20, unit: 'px', hint: 'How smooth: how far the curve may stray from your hand, in screen pixels. Small follows every wobble; large is smooth.' }} value={s.fidelity} onChange={(v) => set({ fidelity: v })} id="opt-freehand-fidelity" />
+      {tool === 'blob' ? (
+        toggle('mergeSelected', 'Merge only with selection', 'Join only the selected shapes, not every shape of the colour it touches')
+      ) : (
+        <>
+          {toggle('fillNew', 'Fill', 'Fill new paths with the background colour')}
+          {tool === 'pencil' && toggle('close', 'Close when near', 'A stroke ending near where it began closes the path')}
+          {toggle('editSelected', 'Edit selected', 'A stroke starting on the selected path redraws that part of it, or carries it on from an end')}
+          {toggle('keepSelected', 'Keep selected', 'The new path stays selected, so the next stroke near it redraws it')}
+        </>
+      )}
+    </>
   )
 }

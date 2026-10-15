@@ -24,17 +24,17 @@ import { apply, invert, type Matrix } from './view'
 
 export type OverlayShape =
   /** A line through points: `ants` dashes black and white and crawls; `line` is white edged with black; `thin` is one accent-coloured pixel; `smart` one pixel in the smart guides' colour. */
-  | { kind: 'path'; points: [number, number][]; closed: boolean; style: 'ants' | 'line' | 'thin' | 'smart' }
+  | { kind: 'path'; points: [number, number][]; closed: boolean; style: 'ants' | 'line' | 'thin' | 'smart' | 'frame' }
   /** A guide being dragged: across the whole canvas, in the guides' colour. */
   | { kind: 'guide'; axis: 'x' | 'y'; at: number }
   /** Square handles, a few device pixels across whatever the zoom. */
   | { kind: 'handles'; points: [number, number][] }
-  /** A path's anchors: small accent squares, filled when selected, hollow when not. */
-  | { kind: 'anchors'; points: [number, number][]; selected: boolean[] }
+  /** A path's anchors: small accent squares (rounds for smooth points, as Affinity draws them), filled when selected, hollow when not. */
+  | { kind: 'anchors'; points: [number, number][]; selected: boolean[]; smooth?: boolean[] }
   /** The ends of a path's handles: small accent diamonds. */
   | { kind: 'dots'; points: [number, number][] }
-  /** Filled quadrilaterals, four corners each: a text selection's highlight, see-through. */
-  | { kind: 'quads'; points: [number, number][] }
+  /** Filled quadrilaterals, four corners each: a text selection's highlight, see-through; or, as `pasteboard`, the canvas outside a document's artboards, shaded. */
+  | { kind: 'quads'; points: [number, number][]; ink?: 'selection' | 'pasteboard' }
 
 export interface Overlay {
   shapes: OverlayShape[]
@@ -48,6 +48,22 @@ export interface Overlay {
   view?: OverlayView | null
   /** View → Tiled View: a tiled document's copies shown round it; absent is on. */
   tiledView?: boolean
+  /** Alpha and spot channels shown (the Channels panel's eyes), in order, at most four. */
+  channels?: ShownChannel[]
+  /** Every colour channel hidden: the canvas shows paper under the channels shown (an alpha channel as gray). */
+  colourHidden?: boolean
+}
+
+/** An alpha or spot channel on the canvas, found by id in the document. */
+export interface ShownChannel {
+  id: string
+  kind: 'alpha' | 'spot'
+  /** An alpha's tint, a spot's ink: sRGB. */
+  colour: Rgb
+  /** An alpha's tint opacity, a spot's solidity. */
+  opacity: number
+  /** What an alpha's tint marks. */
+  marks: 'masked' | 'selected'
 }
 
 export type Rgb = [number, number, number]
@@ -66,14 +82,14 @@ export interface OverlayView {
 }
 
 /** The pixel grid shows from this zoom (CSS pixels per document pixel) up, as Photoshop's does past 500%. */
-export const PIXEL_GRID_ZOOM = 6
+const PIXEL_GRID_ZOOM = 6
 /** Grid lines closer than this many CSS pixels on screen are left out. */
 const GRID_MIN_GAP = 6
 
 export const NO_OVERLAY: Overlay = { shapes: [], shade: null, quickMask: false }
 
 /** Colours a vertex can have, as the overlay shader numbers them. */
-export const INK = { ants: 0, black: 1, white: 2, accent: 3, selection: 4, guide: 5, smart: 6, grid: 7, gridSub: 8, pixelGrid: 9 } as const
+export const INK = { ants: 0, black: 1, white: 2, accent: 3, selection: 4, guide: 5, smart: 6, grid: 7, gridSub: 8, pixelGrid: 9, pasteboard: 10 } as const
 
 /** Floats per vertex: x, y in device pixels, distance along the line, ink. */
 export const VERTEX_FLOATS = 4
@@ -194,14 +210,30 @@ export function tessellate(shapes: OverlayShape[], vm: Matrix, dpr: number, size
     if (s.kind === 'anchors') {
       const outer = 3.5 * px
       const inner = 2.5 * px
+      // A round: a fan of sixteen triangles.
+      const disc = (x: number, y: number, r: number, ink: number) => {
+        for (let k = 0; k < 16; k++) {
+          const a = (k / 16) * 2 * Math.PI
+          const b = ((k + 1) / 16) * 2 * Math.PI
+          const pa: [number, number] = [x + r * Math.cos(a), y + r * Math.sin(a)]
+          const pb: [number, number] = [x + r * Math.cos(b), y + r * Math.sin(b)]
+          quad([x, y], pa, pb, pb, ink)
+        }
+      }
       pts.forEach(([x, y], i) => {
+        if (s.smooth?.[i]) {
+          disc(x, y, outer + 0.5 * px, INK.accent)
+          if (!s.selected[i]) disc(x, y, inner + 0.5 * px, INK.white)
+          return
+        }
         quad([x - outer, y - outer], [x + outer, y - outer], [x + outer, y + outer], [x - outer, y + outer], INK.accent)
         if (!s.selected[i]) quad([x - inner, y - inner], [x + inner, y - inner], [x + inner, y + inner], [x - inner, y + inner], INK.white)
       })
       continue
     }
     if (s.kind === 'quads') {
-      for (let i = 0; i + 3 < pts.length; i += 4) quad(pts[i], pts[i + 1], pts[i + 2], pts[i + 3], INK.selection)
+      const ink = s.ink === 'pasteboard' ? INK.pasteboard : INK.selection
+      for (let i = 0; i + 3 < pts.length; i += 4) quad(pts[i], pts[i + 1], pts[i + 2], pts[i + 3], ink)
       continue
     }
     if (s.kind === 'dots') {
@@ -211,7 +243,22 @@ export function tessellate(shapes: OverlayShape[], vm: Matrix, dpr: number, size
     }
     const n = s.closed ? pts.length : pts.length - 1
     const passes: [number, number][] =
-      s.style === 'ants' ? [[0.5 * px, INK.ants]] : s.style === 'thin' ? [[0.5 * px, INK.accent]] : s.style === 'smart' ? [[0.5 * px, INK.smart]] : [[1.5 * px, INK.black], [0.5 * px, INK.white]]
+      s.style === 'ants'
+        ? [[0.5 * px, INK.ants]]
+        : s.style === 'thin'
+          ? [[0.5 * px, INK.accent]]
+          : s.style === 'smart'
+            ? [[0.5 * px, INK.smart]]
+            : // A tiled document's own frame among its copies: a light band of the accent, a hair of dark either side to read on anything.
+              s.style === 'frame'
+              ? [
+                  [1.5 * px, INK.black],
+                  [1.1 * px, INK.accent],
+                ]
+              : [
+                  [1.5 * px, INK.black],
+                  [0.5 * px, INK.white],
+                ]
     for (const [half, ink] of passes) {
       let d = 0
       for (let i = 0; i < n; i++) d += segment(pts[i], pts[(i + 1) % pts.length], half, ink, d)

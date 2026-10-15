@@ -19,7 +19,7 @@ import { rng } from './rng'
 /** The built-in sampled tips' size, a side. */
 export const BUILTIN_TIP_SIZE = 256
 /** The largest a tip is kept, a side: bigger images are scaled down to it. */
-export const MAX_TIP_SIZE = 1024
+const MAX_TIP_SIZE = 1024
 
 export interface TipImage {
   width: number

@@ -17,6 +17,7 @@ import type { ColourMode } from '../doc/types'
 import type { GradientLine, GradientType, Paint } from '../doc/vector'
 import type { Box, Mat } from '../geom/path'
 import { PATTERN_BY_ID, patternValue } from './patterns'
+import { compose as mul } from '../geom/affine'
 
 /** Kinds as the kernel numbers them. */
 export const PAINT_KIND = { solid: 0, linear: 1, radial: 2, angular: 3, diamond: 4, pattern: 5, reflected: 6, image: 7 } as const
@@ -107,7 +108,7 @@ function levelSample(l: PatternLevel, fu: number, fv: number, out: number[], k: 
  * repeats), drawn with a footprint of `fw` pattern pixels to a pixel:
  * premultiplied colour (four channels) and alpha.
  */
-export function patternSample(img: { w: number; h: number; levels: PatternLevel[] }, u: number, v: number, fw: number): { c: number[]; a: number } {
+function patternSample(img: { w: number; h: number; levels: PatternLevel[] }, u: number, v: number, fw: number): { c: number[]; a: number } {
   const n = img.levels.length
   const out = [0, 0, 0, 0, 0]
   if (!n) return { c: [0, 0, 0, 0], a: 0 }
@@ -167,19 +168,11 @@ export function wrapPoint(w: [number, number, number, number] | undefined, x: nu
 }
 
 /** A colour in the document's terms to the working space the kernels blend in: CMYK as light. */
-export const working = (mode: ColourMode, c: number[]) => {
+const working = (mode: ColourMode, c: number[]) => {
   const v = mode === 'cmyk' ? c.map((x) => 1 - x) : c
   return [...v, 0, 0, 0, 0].slice(0, 4)
 }
 
-const mul = (a: Mat, b: Mat): number[] => [
-  a[0] * b[0] + a[2] * b[1],
-  a[1] * b[0] + a[3] * b[1],
-  a[0] * b[2] + a[2] * b[3],
-  a[1] * b[2] + a[3] * b[3],
-  a[0] * b[4] + a[2] * b[5] + a[4],
-  a[1] * b[4] + a[3] * b[5] + a[5],
-]
 
 /**
  * A paint (its colours already in the document's mode) for a tile: `toNode`
@@ -267,7 +260,7 @@ function gradientParams(p: Paint & { kind: 'gradient' }, mode: ColourMode): Pain
  * and diamond centre on the start, turned so the line points along +x,
  * with the end at 1.
  */
-export function lineMatrix(type: GradientType, line: GradientLine): number[] {
+function lineMatrix(type: GradientType, line: GradientLine): number[] {
   const [x0, y0, x1, y1] = line
   const dx = x1 - x0
   const dy = y1 - y0
@@ -282,7 +275,7 @@ export function lineMatrix(type: GradientType, line: GradientLine): number[] {
 }
 
 /** A gradient's colour and alpha at t, from its stops (as the kernel reads them). */
-export function stopsAt(stops: Float32Array, t: number): { c: number[]; a: number } {
+function stopsAt(stops: Float32Array, t: number): { c: number[]; a: number } {
   const n = stops.length / 6
   const at = (i: number) => stops[i * 6]
   if (t <= at(0)) return { c: Array.from(stops.subarray(1, 5)), a: stops[5] }

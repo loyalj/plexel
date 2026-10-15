@@ -13,8 +13,8 @@ import { IDENTITY, type DocNode, type NodeId } from '../doc/types'
 import { fillItem, geometryPath, type AppearanceItem } from '../doc/vector'
 import { divide, regionAt } from '../geom/regions'
 import { booleanPaths } from '../geom/boolean'
-import { pathBounds, transformPath, unionBox, type Box, type Mat, type PathData } from '../geom/path'
-import { appearanceReach } from './outline'
+import { EMPTY_PATH as EMPTY, pathBounds, transformPath, unionBox, type Box, type Mat, type PathData } from '../geom/path'
+import { appearanceReach, longestLine, needsLength } from './outline'
 
 export type Lookup = (id: NodeId) => DocNode | undefined
 
@@ -81,7 +81,8 @@ export function shapeOf(get: Lookup, n: DocNode, cache?: BoolCache, versionOf?: 
  */
 export function vectorBounds(get: Lookup, n: DocNode): Box | null {
   if (n.kind === 'vector' || n.kind === 'text') {
-    const r = appearanceReach(n.props.appearance)
+    const items = n.props.appearance
+    const r = appearanceReach(items, needsLength(items) ? longestLine(n.kind === 'text' ? (n.props.layout ? glyphsToPath(n.props.layout) : EMPTY) : geometryPath(n.props.geometry)) : 0)
     let b = n.kind === 'text' ? (n.props.layout ? glyphsBounds(n.props.layout) : null) : n.props.geometry ? pathBounds(geometryPath(n.props.geometry)) : null
     if (!b) return null
     // Path effects on a fill or stroke can take it past the shape (moved, offset, roughened).
@@ -113,7 +114,8 @@ export function vectorBounds(get: Lookup, n: DocNode): Box | null {
       const path = docPathOf(get, n)
       if (path) for (const it of items) if (it.enabled && hasPathEffects(it.effects)) b = unionBox(b, itemBounds(path, it.effects, 'rgb', 0.25))
     }
-    const r = appearanceReach(items) + Math.max(0, ...items.map((it) => (it.enabled ? pixelReach(it.effects, 'rgb') : 0)))
+    const longest = needsLength(items) ? longestLine(docPathOf(get, n) ?? EMPTY) : 0
+    const r = appearanceReach(items, longest) + Math.max(0, ...items.map((it) => (it.enabled ? pixelReach(it.effects, 'rgb') : 0)))
     return [b![0] - r, b![1] - r, b![2] + r, b![3] + r]
   }
   return null

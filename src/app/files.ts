@@ -12,9 +12,10 @@
  * tiles at a time. Opening a big file reads only the document and each
  * layer's tile index; tiles are read from the file when they're first drawn.
  */
-import { isSvg, openSvg } from './svg'
-import { pdfOf, psdOf, svgOf } from './exports'
-import { isPsd, openPsd } from './psd'
+import { isPsd, isSvg } from '../io/sniff'
+// PSD, SVG and PDF are read and written by modules loaded when they're first
+// needed (import() where they're used), not with the app: they're a large
+// part of it that most visits never touch.
 import { addDocumentFonts } from './fonts'
 import { fontsToCarry } from './fontEmbed'
 import { DEFAULT_PROFILES, createDoc, dropLostSets, insertNode, tileSetsOf, type NewDocOptions } from '../doc/edit'
@@ -45,12 +46,18 @@ import { documents, isDirty, newId } from './documents'
 import { notify } from './notices'
 import { fillSet, hold, paper } from './pixels'
 import { saveToParent } from './effects'
+import { formatOf, type WebOptions } from '../io/webOptions'
+import { addArtboard, fitCanvasToArtboards, makeArtboard, whiteIn } from '../doc/artboards'
+import type { ParamColour } from '../doc/params'
+import { colourEngineNow } from './colour'
+import { artboardDocs, selectedArtboard } from './artboards'
+import { ZipWriter, memorySink } from '../io/zip'
 
 /** What a new document starts with, as Photoshop offers it. */
 export type Background = 'white' | 'black' | 'background' | 'transparent'
 
 /** Files bigger than this open with their tiles left in the file until drawn. */
-export const LAZY_BYTES = 64 * 1024 * 1024
+const LAZY_BYTES = 64 * 1024 * 1024
 /** The threshold in use: check-canvas lowers it to exercise reading on demand with small files. */
 const lazyBytes = () => (globalThis as { plexelLazyBytes?: number }).plexelLazyBytes ?? LAZY_BYTES
 
@@ -59,8 +66,30 @@ const lazyBytes = () => (globalThis as { plexelLazyBytes?: number }).plexelLazyB
  * pixel layer filled with the chosen colour, converted to the document's
  * own space.
  */
-export async function newDocument(o: NewDocOptions, background: Background = 'white') {
+export async function newDocument(o: NewDocOptions, background: Background = 'white', artboard = false) {
   let doc = createDoc(o, newId('n'))
+  if (artboard) {
+    // An artboard the size asked for, its background the one chosen, an empty layer on it; the canvas round it is the pasteboard.
+    const id = newId('ab')
+    const black: ParamColour = doc.mode === 'cmyk' ? [0, 0, 0, 1] : doc.mode === 'gray' ? [0] : [0, 0, 0]
+    const conv = colourEngineNow()?.converter
+    const bg: ParamColour | null =
+      background === 'transparent'
+        ? null
+        : background === 'white'
+          ? whiteIn(doc.mode)
+          : background === 'black'
+            ? black
+            : conv
+              ? (conv.convert(colours().get().bg, { space: doc.mode, profile: doc.profile }, colourSettings.get().intent, colourSettings.get().blackPointCompensation).c as ParamColour)
+              : whiteIn(doc.mode)
+    const a = makeArtboard(id, 'Artboard 1', 0, 0, doc.width, doc.height, doc.mode)
+    a.props.artboard.background = bg
+    doc = addArtboard(doc, a)
+    doc = insertNode(doc, makeNode('pixel', newId('n'), 'Layer 1'), id, 0)
+    doc = fitCanvasToArtboards(doc)
+    return documents().add({ doc, file: null, saved: false, label: 'New Document' })
+  }
   if (background !== 'transparent') {
     const colour = background === 'background' ? colours().get().bg : paper(doc, background)
     const { id } = await fillSet(doc, colour)
@@ -138,8 +167,8 @@ export async function openFile(file: File, handle: FileSystemFileHandle | null):
     }
   }
   const head = new Uint8Array(await file.slice(0, 512).arrayBuffer())
-  if (isPsd(head)) return openPsd(file)
-  if (isSvg(head, file.name)) return openSvg(file)
+  if (isPsd(head)) return (await import('./psd')).openPsd(file)
+  if (isSvg(head, file.name)) return (await import('./svg')).openSvg(file)
   if (sniff(head, file.name) || (isImageName(file.name) && !file.name.toLowerCase().endsWith('.pxll'))) return openImage(file)
 
   const lazy = file.size > lazyBytes()
@@ -344,49 +373,130 @@ export async function saveAs(key = documents().getState().active): Promise<boole
 export const EXPORT_FORMATS = {
   png: { label: 'PNG', description: 'PNG image', mime: 'image/png', extensions: ['.png'] },
   jpeg: { label: 'JPEG', description: 'JPEG image', mime: 'image/jpeg', extensions: ['.jpg', '.jpeg'] },
+  webp: { label: 'WebP', description: 'WebP image', mime: 'image/webp', extensions: ['.webp'] },
   psd: { label: 'Photoshop (PSD)', description: 'Photoshop document', mime: 'image/vnd.adobe.photoshop', extensions: ['.psd'] },
   psb: { label: 'Photoshop Large Document (PSB)', description: 'Photoshop large document', mime: 'image/vnd.adobe.photoshop', extensions: ['.psb'] },
   svg: { label: 'SVG', description: 'SVG image', mime: 'image/svg+xml', extensions: ['.svg'] },
   pdf: { label: 'PDF', description: 'PDF document', mime: 'application/pdf', extensions: ['.pdf'] },
+  eps: { label: 'EPS', description: 'Encapsulated PostScript', mime: 'application/postscript', extensions: ['.eps'] },
 } as const
 export type ExportFormat = keyof typeof EXPORT_FORMATS
 
 /**
- * Export: the document flattened into a PNG or JPEG, with its profile
+ * Export: the document flattened into a PNG, JPEG or WebP, with its profile
  * embedded, or with its layers as a Photoshop document, an SVG or a PDF
  * (app/exports.ts).
  * Asks where to save where the browser can, otherwise downloads.
  */
-export async function exportDoc(format: ExportFormat, quality: number, key = documents().getState().active, o: { textAsOutlines?: boolean } = {}): Promise<boolean> {
+export async function exportDoc(format: ExportFormat, quality: number, key = documents().getState().active, o: { textAsOutlines?: boolean; lossless?: boolean; scope?: ExportScope } = {}): Promise<boolean> {
   const d = key ? documents().get(key) : null
   if (!d) return false
   const doc = d.history.present
   const t = EXPORT_FORMATS[format]
-  const name = `${d.file ? withoutExtension(d.file.name) : doc.name}${t.extensions[0]}`
+  const base = d.file ? withoutExtension(d.file.name) : doc.name
+  // Each artboard (or the selected one) as a file of its own: the document cropped to it.
+  const boards = o.scope && o.scope !== 'canvas' ? artboardDocs(d, o.scope === 'artboard' ? (selectedArtboard(d) ?? undefined) : undefined) : null
+  if (boards && !boards.length) {
+    notify('info', o.scope === 'artboard' ? 'Select an artboard, or a layer on one, to export it.' : 'The document has no artboards.')
+    return false
+  }
+  const many = !!boards && boards.length > 1
+  const safe = (n: string) => n.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'Artboard'
+  const name = many ? `${base} artboards.zip` : boards ? `${base} - ${safe(boards[0].name)}${t.extensions[0]}` : `${base}${t.extensions[0]}`
   try {
-    const handle = await pickExportFile(name, t)
+    const handle = await pickExportFile(name, many ? { description: 'Zip of the artboards', mime: 'application/zip', extensions: ['.zip'] } : t)
     if (handle === 'cancelled') return false
     const release = hold(tileSetsOf(doc))
+    let blob: Blob
+    const warnings: string[] = []
+    try {
+      if (!boards) {
+        const r = await exportBytes(doc, d.key, format, quality, o)
+        warnings.push(...r.warnings)
+        blob = new Blob([r.bytes as BlobPart], { type: r.mime })
+      } else {
+        const files: { name: string; bytes: Uint8Array; mime: string }[] = []
+        for (const one of boards) {
+          // Each artboard in a scene of its own while it's written.
+          const tmp = newId('artboard')
+          engine().setScene(tmp, one.doc)
+          try {
+            const r = await exportBytes(one.doc, tmp, format, quality, o)
+            warnings.push(...r.warnings)
+            files.push({ name: `${safe(one.name)}${t.extensions[0]}`, bytes: r.bytes, mime: r.mime })
+          } finally {
+            engine().closeDoc(tmp)
+          }
+        }
+        if (files.length === 1) blob = new Blob([files[0].bytes as BlobPart], { type: files[0].mime })
+        else {
+          const { sink, blob: zipped } = memorySink()
+          const zip = new ZipWriter(sink)
+          const used = new Set<string>()
+          for (const f of files) {
+            let n = f.name
+            for (let i = 2; used.has(n); i++) n = f.name.replace(/(\.[^.]+)$/, ` ${i}$1`)
+            used.add(n)
+            await zip.add(n, f.bytes, { compress: !['image/png', 'image/jpeg', 'image/webp'].includes(f.mime) })
+          }
+          await zip.finish()
+          blob = zipped()
+        }
+      }
+    } finally {
+      release()
+    }
+    if (handle) await writeToHandle(handle, blob)
+    else downloadAs(blob, name)
+    const unique = [...new Set(warnings)]
+    notify(unique.length ? 'warning' : 'info', many ? `Exported ${boards!.length} artboards to “${handle ? handle.name : name}”.` : `Exported “${handle ? handle.name : name}”.`, unique)
+    return true
+  } catch (e) {
+    notify('error', `“${name}” couldn’t be exported.`, [e instanceof Error ? e.message : String(e)])
+    return false
+  }
+}
+
+/** What to export: the whole canvas, every artboard (each a file), or the selected artboard. */
+export type ExportScope = 'canvas' | 'artboards' | 'artboard'
+
+/** A document's bytes in a format, from the scene `key` holds it in. */
+async function exportBytes(doc: Doc, key: string, format: ExportFormat, quality: number, o: { textAsOutlines?: boolean; lossless?: boolean }): Promise<{ bytes: Uint8Array; mime: string; warnings: string[] }> {
+  const exporters = format === 'psd' || format === 'psb' || format === 'svg' || format === 'pdf' || format === 'eps' ? await import('./exports') : null
+  if (format === 'psd' || format === 'psb') return exporters!.psdOf(doc, key, format === 'psb')
+  if (format === 'svg') return exporters!.svgOf(doc, !!o.textAsOutlines)
+  if (format === 'pdf') return exporters!.pdfOf(doc)
+  if (format === 'eps') return exporters!.epsOf(doc)
+  return engine().call('image.export', { key, format, quality, lossless: !!o.lossless })
+}
+
+/**
+ * Save for Web's Save: the file its chosen settings make (engine
+ * `image.optimize`), named after the document, where the browser lets you
+ * choose, otherwise downloaded.
+ */
+export async function saveForWeb(o: WebOptions, key = documents().getState().active): Promise<boolean> {
+  const d = key ? documents().get(key) : null
+  if (!d) return false
+  const f = formatOf(o.format)
+  const name = `${d.file ? withoutExtension(d.file.name) : d.history.present.name}${f.ext}`
+  try {
+    const handle = await pickExportFile(name, { description: `${f.label} image`, mime: f.mime, extensions: [f.ext] })
+    if (handle === 'cancelled') return false
+    const release = hold(tileSetsOf(d.history.present))
     let r: { bytes: Uint8Array; mime: string; warnings: string[] }
     try {
-      r =
-        format === 'psd' || format === 'psb'
-          ? await psdOf(doc, d.key, format === 'psb')
-          : format === 'svg'
-            ? await svgOf(doc, !!o.textAsOutlines)
-            : format === 'pdf'
-              ? await pdfOf(doc)
-              : await engine().call('image.export', { key: d.key, format, quality })
+      r = await engine().call('image.optimize', { key: d.key, o })
     } finally {
       release()
     }
     const blob = new Blob([r.bytes as BlobPart], { type: r.mime })
     if (handle) await writeToHandle(handle, blob)
     else downloadAs(blob, name)
-    notify(r.warnings.length ? 'warning' : 'info', `Exported “${handle ? handle.name : name}”.`, r.warnings)
+    notify(r.warnings.length ? 'warning' : 'info', `Saved “${handle ? handle.name : name}” for the web.`, r.warnings)
     return true
   } catch (e) {
-    notify('error', `“${name}” couldn’t be exported.`, [e instanceof Error ? e.message : String(e)])
+    notify('error', `“${name}” couldn’t be saved.`, [e instanceof Error ? e.message : String(e)])
     return false
   }
 }

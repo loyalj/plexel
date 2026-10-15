@@ -27,7 +27,7 @@ import { fillItem, solid } from '../doc/vector'
 import type { ClipSource } from '../engine/clipHost'
 import { engine } from '../engine/EngineHost'
 import { assets } from '../io/assets'
-import { pathD } from '../io/svg/write'
+import { pathD } from '../io/svg/pathData'
 import { pathBounds, type PathData } from '../geom/path'
 import { viewQuad } from '../render/view'
 import { colourEngine, swatchIn } from './colour'
@@ -36,11 +36,13 @@ import { swatchColourIn } from './docSwatches'
 import { documents, newId, type OpenDoc } from './documents'
 import { notify } from './notices'
 import { openImage } from './files'
-import { readSvg } from './svg'
+// SVG is read by a module loaded when something is first pasted as SVG (app/files.ts says why).
+const readSvg = async (text: string, name: string) => (await import('./svg')).readSvg(text, name)
 import { formatOf, hold, keepAlive } from './pixels'
 import { pixelMaskOf } from './selection'
 import { typeSettings } from './typeSettings'
 import { views } from './views'
+import { Listeners } from '../lib/listeners'
 
 /** This page's own name for its copies: another tab's marker is someone else's. */
 const SESSION = newId('s')
@@ -77,20 +79,17 @@ let pathClip: PathClip | null = null
 /** The layer style clipboard, kept apart, as Photoshop keeps it. */
 let styleClip: { fx: LayerFx[]; doc: Doc } | null = null
 
-const listeners = new Set<() => void>()
+const changes = new Listeners()
 let version = 0
 const changed = () => {
   version++
-  listeners.forEach((fn) => fn())
+  changes.emit()
 }
 /** Changes whenever something is copied, for React to notice. */
 export const clipVersion = () => version
 /** For the menus: whether there's anything to paste changes as copies are made. */
 export const subscribeClipboard = (fn: () => void) => {
-  listeners.add(fn)
-  return () => {
-    listeners.delete(fn)
-  }
+  return changes.subscribe(fn)
 }
 
 keepAlive(() => (current?.data ? tileSetsOf(current.data.frag) : []))

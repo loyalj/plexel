@@ -8,7 +8,7 @@
  * Run with: npm run check:pixels
  */
 import { join } from 'node:path'
-import { check, finish, frames, open, waitForEngine, waitUntil } from './harness.mjs'
+import { check, dialogShown, finish, frames, open, pageHelpers, waitForEngine, waitUntil } from './harness.mjs'
 
 const MOCK_PICKERS = () => {
   const dir = () => navigator.storage.getDirectory().then((d) => d.getDirectoryHandle('picked', { create: true }))
@@ -21,13 +21,7 @@ await page.evaluateOnNewDocument(MOCK_PICKERS)
 await page.goto(url)
 await waitForEngine(page)
 
-const press = async (combo) => {
-  const keys = combo.split('+')
-  for (const k of keys.slice(0, -1)) await page.keyboard.down(k)
-  await page.keyboard.press(keys[keys.length - 1])
-  for (const k of keys.slice(0, -1).reverse()) await page.keyboard.up(k)
-  await frames(page)
-}
+const { press } = pageHelpers(page)
 const text = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => null)
 const clickMenu = async (menu, command) => {
   await page.evaluate((m) => [...document.querySelectorAll('.menu-title')].find((b) => b.textContent === m).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })), menu)
@@ -183,7 +177,7 @@ await page.keyboard.press('KeyD')
 // --- colour settings -------------------------------------------------------------------------
 console.log('\ncolour settings')
 await press('Control+Shift+KeyK')
-check('Ctrl+Shift+K opens Colour Settings', !!(await page.$('[data-dialog="colourSettings"]')))
+check('Ctrl+Shift+K opens Colour Settings', await dialogShown(page, 'colourSettings'))
 await page.select('#cs-display', 'display-p3')
 await page.click('[data-dialog="colourSettings"] .dialog-foot .primary')
 await frames(page)
@@ -202,6 +196,7 @@ await page.evaluate(() => document.querySelector('.layers').dispatchEvent(new Po
 await frames(page)
 check('a click in the empty part of the Layers panel deselects, and Properties shows the document', !!(await page.$('[data-props="document"]')))
 await clickMenu('Document', 'doc.assign-profile')
+await dialogShown(page, 'assignProfile')
 const options = await page.$$eval('#assign-profile option', (os) => os.map((o) => o.textContent))
 check('an RGB document is offered RGB profiles only', options.includes('Display P3') && !options.some((o) => /CMYK|Gray/.test(o)), options.join(', '))
 const chooser = page.waitForFileChooser()

@@ -16,6 +16,8 @@
  */
 import { isObject, type Warn } from './read'
 import type { Doc } from './types'
+import { deepEqual } from '../lib/equal'
+import { clamp } from '../lib/num'
 
 export interface CharProps {
   /** The font's family and style, as the font menu names them ("Inter Variable", "Bold"). */
@@ -131,7 +133,6 @@ export const leadingOf = (c: CharProps) => c.leading ?? c.size * 1.2
 // --- reading ---------------------------------------------------------------------------------
 
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 const ALIGNS: Align[] = ['left', 'centre', 'right', 'justify', 'justify-all']
 const TAG = /^[A-Za-z0-9 ]{4}$/
 const FEATURE = /^[-+]?[A-Za-z0-9]{4}(\[[0-9:]*\])?(=[0-9a-z]+)?$/
@@ -250,29 +251,45 @@ export const paragraphText = (p: Paragraph) => p.runs.map((r) => r.text).join(''
 /** The whole text, paragraphs joined by line feeds: the space positions count in. */
 export const plainText = (c: TextContent) => c.paragraphs.map(paragraphText).join('\n')
 
-export const textLength = (c: TextContent) => c.paragraphs.reduce((n, p, i) => n + paragraphText(p).length + (i ? 1 : 0), 0)
+const lengths = new WeakMap<Paragraph, number>()
+/**
+ * A paragraph's length in characters, kept by the paragraph (an edit makes
+ * new ones): the caret's positions are worked out from these on every move,
+ * and joining a long story's runs each time cost every keystroke.
+ */
+function paragraphLength(p: Paragraph): number {
+  let n = lengths.get(p)
+  if (n === undefined) {
+    n = 0
+    for (const r of p.runs) n += r.text.length
+    lengths.set(p, n)
+  }
+  return n
+}
+
+export const textLength = (c: TextContent) => c.paragraphs.reduce((n, p, i) => n + paragraphLength(p) + (i ? 1 : 0), 0)
 
 /** A position as (paragraph, offset in it). */
 export function locate(c: TextContent, pos: number): { para: number; offset: number } {
   let at = 0
   for (let i = 0; i < c.paragraphs.length; i++) {
-    const len = paragraphText(c.paragraphs[i]).length
+    const len = paragraphLength(c.paragraphs[i])
     if (pos <= at + len) return { para: i, offset: Math.max(0, pos - at) }
     at += len + 1
   }
   const last = c.paragraphs.length - 1
-  return { para: last, offset: paragraphText(c.paragraphs[last]).length }
+  return { para: last, offset: paragraphLength(c.paragraphs[last]) }
 }
 
 /** Where a paragraph starts in the whole text. */
 export function paragraphStart(c: TextContent, para: number): number {
   let at = 0
-  for (let i = 0; i < para; i++) at += paragraphText(c.paragraphs[i]).length + 1
+  for (let i = 0; i < para; i++) at += paragraphLength(c.paragraphs[i]) + 1
   return at
 }
 
 /** Runs next to each other with the same style and settings become one; empty ones go, but a paragraph keeps one. */
-export function normalize(p: Paragraph): Paragraph {
+function normalize(p: Paragraph): Paragraph {
   const runs: Run[] = []
   for (const r of p.runs) {
     const last = runs[runs.length - 1]
@@ -284,8 +301,7 @@ export function normalize(p: Paragraph): Paragraph {
   return { ...p, runs: runs.length ? runs : [{ text: '', style: null, props: {} }] }
 }
 
-const sameProps = (a: Partial<CharProps>, b: Partial<CharProps>) => JSON.stringify(sortKeys(a)) === JSON.stringify(sortKeys(b))
-const sortKeys = (o: object) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : 1)))
+const sameProps = (a: Partial<CharProps>, b: Partial<CharProps>) => deepEqual(a, b)
 
 /** A paragraph's runs cut at an offset, so a range's runs can be changed alone. */
 function splitAt(p: Paragraph, offset: number): Run[] {
@@ -302,7 +318,7 @@ function splitAt(p: Paragraph, offset: number): Run[] {
 }
 
 /** The run a character typed at `offset` takes its style from: the one before it, or the first. */
-export function runAt(p: Paragraph, offset: number): Run {
+function runAt(p: Paragraph, offset: number): Run {
   let at = 0
   for (const r of p.runs) {
     const end = at + r.text.length

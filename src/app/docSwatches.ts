@@ -46,11 +46,11 @@ export function newDocSwatch(kind: SwatchKind, name?: string): string | null {
   return id
 }
 
-export function editDocSwatch(id: string, patch: Partial<Omit<DocSwatch, 'id'>>, label = 'Swatch Options') {
+export function editDocSwatch(id: string, patch: Partial<Omit<DocSwatch, 'id'>>, label = 'Swatch Options', coalesce?: string) {
   const d = documents().active()
   const colourOf = d && swatchColourIn(d.history.present)
   if (!d || !colourOf) return
-  documents().commit((x) => updateSwatch(x, id, patch, swatchColourIn(x) ?? colourOf), { key: d.key, label })
+  documents().commit((x) => updateSwatch(x, id, patch, swatchColourIn(x) ?? colourOf), { key: d.key, label, coalesce })
 }
 
 export function deleteDocSwatch(id: string) {

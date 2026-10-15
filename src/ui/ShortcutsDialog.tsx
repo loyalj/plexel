@@ -8,6 +8,10 @@
  * browser keeps, the clipboard's) says so and waits for another; a key
  * another command has says whose it is and asks before taking it. The rules
  * are input/keymap.ts's; this only asks.
+ *
+ * The set menu starts the draft from Photoshop's, Affinity's or
+ * Illustrator's keys (input/keySets.ts), and says which set the draft is,
+ * or that it's one changed further.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { defaultShortcutsOf, type CommandDef } from '../commands'
@@ -15,6 +19,7 @@ import { matchText } from '../commands/search'
 import { assignKey, clashes, isChanged, keyProblem, keysOf, ownerOf, removeKey, resetKeys, shortcutFromEvent, shortcutText, type KeyChanges } from '../input/keymap'
 import { formatShortcut, parseShortcut } from '../input/shortcuts'
 import { Dialog } from './Dialog'
+import { KEY_SETS, isKeySet, keySetById, keySetChanges, keySetOf, type KeySet } from '../input/keySets'
 import { Icon } from './Icon'
 
 const shown = (text: string) => {
@@ -46,6 +51,9 @@ export function ShortcutsDialog({ defs, changes, onSave, onClose }: { defs: Comm
   const categories = [...new Set(rows.map((c) => c.category))]
   const clashed = useMemo(() => new Set([...clashes(defs, draft).values()].flat().map((c) => c.id)), [defs, draft])
   const changedCount = defs.filter((c) => isChanged(draft, c.id)).length
+  // The set chosen, while the draft is still its keys; else whichever set the draft is, if any.
+  const [picked, setPicked] = useState<KeySet | null>(null)
+  const setNow = picked && isKeySet(defs, draft, picked) ? picked.id : keySetOf(defs, draft)
 
   useEffect(() => {
     if (rec && !rec.taking) listener.current?.focus()
@@ -107,6 +115,26 @@ export function ShortcutsDialog({ defs, changes, onSave, onClose }: { defs: Comm
     >
       <div className="keys-top">
         <input type="search" className="keys-search" placeholder="Find a command or a key" aria-label="Find a command or a key" value={query} onChange={(e) => setQuery(e.target.value)} data-keys-search />
+        <label className="keys-set" data-tip={KEY_SETS.map((s) => `${s.name}: ${s.about}`).join('. ')}>
+          <span>Set</span>
+          <select
+            data-keys-set
+            value={setNow ?? 'mine'}
+            onChange={(e) => {
+              const s = keySetById(e.target.value)
+              if (!s) return
+              setPicked(s)
+              setDraft(keySetChanges(defs, s))
+            }}
+          >
+            {KEY_SETS.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+            {setNow === null && <option value="mine">Your own</option>}
+          </select>
+        </label>
         <span className="keys-count" data-keys-changed={changedCount}>
           {changedCount ? `${changedCount} changed` : 'As Plexel ships them'}
         </span>

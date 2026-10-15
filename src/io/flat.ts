@@ -17,12 +17,12 @@ import type { Doc, DocNode, NodeId } from '../doc/types'
 import type { AppearanceItem } from '../doc/vector'
 
 /** Blend modes SVG (CSS mix-blend-mode) and PDF both have. */
-export const FLAT_BLENDS = new Set(['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'])
+const FLAT_BLENDS = new Set(['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'])
 
 const blendOk = (b: string) => b === 'pass-through' || FLAT_BLENDS.has(b)
 
 /** Whether a node, or anything in it, needs the layers below flattened with it. */
-export function needsFlatten(doc: Doc, id: NodeId): boolean {
+function needsFlatten(doc: Doc, id: NodeId): boolean {
   const n = doc.nodes[id]
   if (!n || !n.visible) return false
   // An adjustment or a filter layer changes what's below it, so that's drawn as one image with it.

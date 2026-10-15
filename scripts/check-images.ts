@@ -13,7 +13,7 @@
  * Run with: npm run check:images
  */
 import { deflateSync, inflateSync } from 'node:zlib'
-import { decodePng, encodePng } from '../src/io/png'
+import { decodePng, encodePng, encodePngIndexed } from '../src/io/png'
 import { decodeTiff, lzwDecode, packBitsDecode } from '../src/io/tiff'
 import { readJpegInfo, withIcc } from '../src/io/jpeg'
 import { decodeImage, rasterToSet, sniff, type Raster } from '../src/io/raster'
@@ -21,6 +21,8 @@ import { crc32 } from '../src/io/zip'
 import { TileStore } from '../src/tiles/store'
 import { memorySpill } from '../src/tiles/spill'
 import { TILE, TILE_PIXELS } from '../src/tiles/format'
+import { isWebp, webpChunks, webpInfo, withWebpIcc } from '../src/io/webp'
+import { quantize } from '../src/io/quantize'
 
 let failures = 0
 const check = (name: string, ok: boolean, detail = '') => {
@@ -445,7 +447,7 @@ console.log('\nJPEG')
   check('JFIF stays first, and the image data follows untouched', with2[2] === 0xff && with2[3] === 0xe0 && same(with2.subarray(with2.length - 5), jpeg.subarray(jpeg.length - 5)))
   check('files are told apart by their first bytes', sniff(jpeg) === 'jpeg' && sniff(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])) === 'png' && sniff(new Uint8Array([0x4d, 0x4d, 0, 42])) === 'tiff' && sniff(new Uint8Array(8)) === null)
   check('a name is the fallback', sniff(new Uint8Array(4), 'photo.TIF') === 'tiff')
-  check('anything else is refused, saying what is opened', /PNG, JPEG and TIFF/.test(String(await decodeImage(new Uint8Array(8), 'x.bin', noJpeg).catch((e) => e.message))))
+  check('anything else is refused, saying what is opened', /PNG, JPEG, WebP and TIFF/.test(String(await decodeImage(new Uint8Array(8), 'x.bin', { jpeg: noJpeg, webp: noJpeg }).catch((e) => e.message))))
 }
 
 // --- into tiles ----------------------------------------------------------------------------
@@ -477,6 +479,84 @@ console.log('\ninto tiles')
   })
   const tg = await store.samples(store.tileAt(grayDoc, 0, 0)!)
   check('with a conversion, colours go through it (here RGB to gray, red kept)', tg[1] === data[4] && tg[TILE_PIXELS + 1] === 255)
+}
+
+// --- WebP's container: a profile put in ---------------------------------------------------------
+{
+  console.log('\nWebP')
+  /** A WebP file of the given chunks. */
+  const riff = (chunks: [string, number[]][]) => {
+    const body: number[] = [...'WEBP'].map((c) => c.charCodeAt(0))
+    for (const [tag, data] of chunks) {
+      body.push(...[...tag].map((c) => c.charCodeAt(0)), data.length & 255, (data.length >> 8) & 255, 0, 0, ...data)
+      if (data.length & 1) body.push(0)
+    }
+    return new Uint8Array([...[...'RIFF'].map((c) => c.charCodeAt(0)), body.length & 255, (body.length >> 8) & 255, 0, 0, ...body])
+  }
+  // A lossless image 300 × 200 that uses its alpha: width-1 in 14 bits, height-1 in the next 14, then the alpha bit.
+  const word = (299 | (199 << 14) | (1 << 28)) >>> 0
+  const vp8l = [0x2f, word & 255, (word >>> 8) & 255, (word >>> 16) & 255, (word >>> 24) & 255, 7, 7, 7]
+  const icc = [1, 2, 3, 4, 5]
+  const out = withWebpIcc(riff([['VP8L', vp8l]]), new Uint8Array(icc), 300, 200)
+  const info = webpInfo(out)
+  const tags = webpChunks(out).map((c) => c.tag)
+  check('a simple WebP becomes an extended one: VP8X, then the profile, then the image', tags.join() === 'VP8X,ICCP,VP8L', tags.join())
+  check('saying its size, transparency and profile', info.width === 300 && info.height === 200 && info.alpha && info.lossless && [...(info.icc ?? [])].join() === icc.join(), JSON.stringify({ ...info, icc: [...(info.icc ?? [])] }))
+  check('the odd-sized profile padded, the file’s size right', out.length === 8 + (out[4] | (out[5] << 8)) && out.length % 2 === 0)
+  // An extended one already, with alpha and an old profile: the flag set, the profile replaced, straight after VP8X.
+  const x = [0x10, 0, 0, 0, 99, 0, 0, 49, 0, 0]
+  const ext = withWebpIcc(riff([['VP8X', x], ['ICCP', [9, 9]], ['ALPH', [1, 2]], ['VP8 ', [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]]), new Uint8Array(icc), 100, 50)
+  const extTags = webpChunks(ext).map((c) => c.tag)
+  check('an extended one keeps its chunks, the profile replaced and flagged', extTags.join() === 'VP8X,ICCP,ALPH,VP8 ' && webpInfo(ext).alpha && [...(webpInfo(ext).icc ?? [])].join() === icc.join() && (webpChunks(ext)[0].data[0] & 0x20) !== 0, extTags.join())
+  check('WebP files are told apart by their first bytes', isWebp(out) && !isWebp(new Uint8Array(16)) && sniff(out, 'x.bin') === 'webp')
+}
+
+// --- PNG-8: colours cut to a palette, written indexed -------------------------------------------
+{
+  console.log('\nPNG-8')
+  // Four colours in quarters, the bottom right quarter clear.
+  const w = 16
+  const h = 16
+  const four = new Uint8Array(w * h * 4)
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const c = x < 8 ? (y < 8 ? [255, 0, 0, 255] : [0, 0, 255, 255]) : y < 8 ? [0, 200, 0, 255] : [10, 20, 30, 0]
+      four.set(c, (y * w + x) * 4)
+    }
+  const q = quantize(four, w, h, { colours: 256, dither: false, transparency: true, matte: null })
+  check('a few colours are kept exactly, a clear entry first', q.alpha.length === 4 && q.alpha[0] === 0 && [0, 1, 2].map((e) => [...q.palette.subarray(3 + e * 3, 6 + e * 3)].join()).sort().join(' ') === '0,0,255 0,200,0 255,0,0', [...q.palette].join())
+  check('clear pixels are the clear entry', q.indices[15 * w + 15] === 0 && q.indices[0] !== 0)
+  const flat = quantize(four, w, h, { colours: 256, dither: false, transparency: false, matte: [255, 255, 255] })
+  check('without transparency, clear pixels are laid on the matte', !flat.alpha.some((a) => a < 255) && [...flat.palette.subarray(flat.indices[15 * w + 15] * 3, flat.indices[15 * w + 15] * 3 + 3)].join() === '255,255,255')
+  // A smooth gradient of many colours, cut to sixteen.
+  const gw = 256
+  const grad = new Uint8Array(gw * 4 * 4)
+  for (let y = 0; y < 4; y++) for (let x = 0; x < gw; x++) grad.set([x, 255 - x, (x * 3) & 255, 255], (y * gw + x) * 4)
+  const g16 = quantize(grad, gw, 4, { colours: 16, dither: false, transparency: true, matte: null })
+  check('many colours cut to no more than asked', g16.alpha.length <= 16 && g16.alpha.length >= 12, String(g16.alpha.length))
+  const err = (qq: typeof g16) => {
+    let e = 0
+    for (let i = 0; i < gw * 4; i++) for (let c = 0; c < 3; c++) e += Math.abs(grad[i * 4 + c] - qq.palette[qq.indices[i] * 3 + c])
+    return e / (gw * 4 * 3)
+  }
+  check('each pixel its nearest colour: close on average', err(g16) < 24, err(g16).toFixed(1))
+  const d16 = quantize(grad, gw, 4, { colours: 16, dither: true, transparency: true, matte: null })
+  // Dithered, the average colour of a stretch stays truer than the nearest colours alone.
+  const mean = (qq: typeof g16, x0: number, x1: number) => {
+    let t = 0
+    for (let y = 0; y < 4; y++) for (let x = x0; x < x1; x++) t += qq.palette[qq.indices[y * gw + x] * 3]
+    return t / (4 * (x1 - x0))
+  }
+  const truth = (x0: number, x1: number) => (x0 + x1 - 1) / 2
+  const off = (qq: typeof g16) => [0, 32, 64, 96, 128, 160, 192, 224].reduce((t, x0) => t + Math.abs(mean(qq, x0, x0 + 32) - truth(x0, x0 + 32)), 0)
+  check('dithering keeps a stretch’s average colour truer', off(d16) <= off(g16), `${off(d16).toFixed(1)} ≤ ${off(g16).toFixed(1)}`)
+  // Written indexed, read back the same.
+  const blob = await encodePngIndexed({ width: w, height: h, palette: q.palette, alpha: q.alpha, icc: new Uint8Array([1, 2, 3]), iccName: 'x' }, q.indices)
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  check('written as a palette PNG, with a tRNS chunk', bytes[25] === 3 && new TextDecoder('latin1').decode(bytes).includes('tRNS') && new TextDecoder('latin1').decode(bytes).includes('PLTE'))
+  const back = await decodePng(bytes)
+  const same = [0, 9 * w + 3, 3 * w + 12, 15 * w + 15].every((i) => back.data[i * 4 + 3] === four[i * 4 + 3] && (four[i * 4 + 3] === 0 || [0, 1, 2].every((c) => back.data[i * 4 + c] === four[i * 4 + c])))
+  check('and read back pixel for pixel, the clear ones clear', back.width === w && same && !!back.icc)
 }
 
 console.log(`\n${failures === 0 ? 'all clear' : `${failures} failure(s)`}`)

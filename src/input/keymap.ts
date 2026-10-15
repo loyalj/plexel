@@ -21,6 +21,7 @@
  * foot is pure, so check-commands runs it in Node.
  */
 import { formatShortcut, isMac, keyAt, parseShortcut, shortcutKey, type Shortcut } from './shortcuts'
+import { Listeners } from '../lib/listeners'
 
 /** Commands whose keys you've set, by id: each list replaces the registry's. */
 export type KeyChanges = Record<string, string[]>
@@ -189,7 +190,7 @@ export function shortcutFromEvent(e: Pick<KeyboardEvent, 'key' | 'code' | 'ctrlK
 const KEY = 'plexel.keys.v1'
 let current: KeyChanges = {}
 let loaded = false
-const listeners = new Set<() => void>()
+const changes = new Listeners()
 
 function load(): KeyChanges {
   try {
@@ -219,10 +220,9 @@ export function setKeyChanges(next: KeyChanges) {
   } catch {
     // Not worth troubling anyone over: the keys just won't be remembered.
   }
-  for (const l of listeners) l()
+  changes.emit()
 }
 
 export function subscribeKeys(l: () => void) {
-  listeners.add(l)
-  return () => void listeners.delete(l)
+  return changes.subscribe(l)
 }

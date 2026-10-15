@@ -67,12 +67,12 @@ const mul = (m: number[][], v: number[]) => m.map((r) => r[0] * v[0] + r[1] * v[
 const labF = (t: number) => (t > 216 / 24389 ? Math.cbrt(t) : (24389 / 27 * t + 16) / 116)
 const labFInv = (t: number) => (t ** 3 > 216 / 24389 ? t ** 3 : (116 * t - 16) / (24389 / 27))
 
-export function xyzToLab(xyz: number[]): number[] {
+function xyzToLab(xyz: number[]): number[] {
   const [fx, fy, fz] = xyz.map((v, i) => labF(v / D50[i]))
   return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
 }
 
-export function labToXyz([L, a, b]: number[]): number[] {
+function labToXyz([L, a, b]: number[]): number[] {
   const fy = (L + 16) / 116
   return [labFInv(fy + a / 500) * D50[0], labFInv(fy) * D50[1], labFInv(fy - b / 200) * D50[2]]
 }

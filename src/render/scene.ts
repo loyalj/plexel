@@ -10,7 +10,7 @@
  *
  * Nothing here touches the GPU, so the checks can run it in Node.
  */
-import type { ColourMode, Depth, Doc, DocNode, NodeId, ProfileRef, Tiling } from '../doc/types'
+import type { Affine, ColourMode, Depth, Doc, DocNode, NodeId, ProfileRef, Tiling } from '../doc/types'
 import { TILE } from '../tiles/format'
 import { FILTER_BY_ID, MAX_REACH, filterValues, warpOf, type Warp } from '../filters/defs'
 import { FX_BY_KIND, activeFx, fxValues, type FxKind } from '../fx/defs'
@@ -60,6 +60,8 @@ export interface SceneDoc {
   patterns?: { id: string; tiles: string; width: number; height: number }[]
   /** Whether the document is a seamless tile; absent is off. */
   tiled?: Tiling
+  /** Alpha and spot channels: for the canvas to show them, and for strokes on them. They never change the composite. */
+  channels?: SceneChannel[]
 }
 
 export interface SceneUpdate {
@@ -98,11 +100,21 @@ const ownKey = (n: DocNode) => {
   return JSON.stringify(rest)
 }
 
+/** An alpha or spot channel as the engine needs it: its coverage and where that lies. */
+export interface SceneChannel {
+  id: string
+  tiles: string | null
+  transform: Affine
+}
+
+/** A document's channels as the engine needs them; absent when it has none. */
+export const sceneChannels = (doc: Doc): SceneChannel[] | undefined => (doc.channels?.length ? doc.channels.map((c) => ({ id: c.id, tiles: c.tiles, transform: c.transform })) : undefined)
+
 /** A document's patterns as the engine needs them: without their names. */
 export const scenePatterns = (doc: Doc): SceneDoc['patterns'] => (doc.patterns ?? []).map((p) => ({ id: p.id, tiles: p.tiles, width: p.width, height: p.height }))
 
 /** What it is about the document itself that changed, if anything. */
-export function docChange(a: SceneDoc | null, b: SceneDoc): 'none' | 'colour' | 'all' {
+function docChange(a: SceneDoc | null, b: SceneDoc): 'none' | 'colour' | 'all' {
   if (!a) return 'all'
   if (a.width !== b.width || a.height !== b.height || a.root !== b.root) return 'all'
   // Tiling changes what's read across the edges, and what the view shows round the canvas.

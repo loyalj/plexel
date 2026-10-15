@@ -12,12 +12,14 @@ import type { DocLook } from '../color/proof'
 import type { BrushCursor, BrushImage, EngineCalls, FromEngine, GpuInfo, Rgb, ToEngine } from './protocol'
 import type { Doc, DocNode } from '../doc/types'
 import type { DisplayProfileId } from '../color/profiles'
-import { scenePatterns, type SceneDoc } from '../render/scene'
+import { sceneChannels, scenePatterns, type SceneDoc } from '../render/scene'
 import type { Overlay } from '../render/overlay'
 import { paneCanvas, paneRects, type Canvas, type Pane, type View } from '../render/view'
 import type { StrokeStart } from '../render/strokes'
 import type { PenSample } from '../brush/stroke'
 import { RingWriter, createRing, type Ring } from '../input/penRing'
+import { Listeners } from '../lib/listeners'
+import { expandDoc } from '../doc/expand'
 
 /** A version per node object: every edit replaces the nodes it touches, so a new object is a new version. */
 const versions = new WeakMap<DocNode, number>()
@@ -62,6 +64,16 @@ export interface EngineState {
   pending: number
 }
 
+/**
+ * The part of the state that changes rarely: whether there's an engine, its
+ * GPU, and what went wrong. The rest changes every frame, so whatever only
+ * needs this (the app itself) subscribes to it alone and isn't drawn again
+ * each frame.
+ */
+export type EngineHealth = Pick<EngineState, 'status' | 'gpu' | 'reason' | 'error'>
+
+const healthOf = ({ status, gpu, reason, error }: EngineState): EngineHealth => ({ status, gpu, reason, error })
+
 const INITIAL: EngineState = {
   status: 'idle',
   gpu: null,
@@ -74,12 +86,14 @@ const INITIAL: EngineState = {
   pending: 0,
 }
 
-export class EngineHost {
+class EngineHost {
   private worker: Worker | null = null
   private canvas: HTMLCanvasElement | null = null
   private observer: ResizeObserver | null = null
   private state: EngineState = INITIAL
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
+  private health: EngineHealth = healthOf(INITIAL)
+  private healthChanges = new Listeners()
   private pasteboard: Rgb | null = null
   private nextCall = 1
   private calls = new Map<number, { resolve(v: unknown): void; reject(e: Error): void }>()
@@ -103,16 +117,20 @@ export class EngineHost {
   private ring: Ring | null = createRing()
   private ringWriter = this.ring ? new RingWriter(this.ring) : null
   private refusedListeners = new Set<(id: number, reason: string) => void>()
-  private sizeListeners = new Set<() => void>()
+  private sizeChanges = new Listeners()
 
   /** For useSyncExternalStore: the state is replaced, never mutated, so this is stable between changes. */
   getState = () => this.state
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
+  }
+
+  /** For useSyncExternalStore: replaced only when the status, GPU, reason or error change, not every frame. */
+  getHealth = () => this.health
+
+  subscribeHealth = (fn: () => void) => {
+    return this.healthChanges.subscribe(fn)
   }
 
   attach(canvas: HTMLCanvasElement) {
@@ -125,6 +143,9 @@ export class EngineHost {
     worker.onmessage = (e: MessageEvent<FromEngine>) => this.receive(e.data)
     worker.onerror = (e) => {
       this.set({ status: 'lost', reason: `The engine stopped: ${e.message || 'an error in the worker'}` })
+      // Nothing will answer the calls waiting on it.
+      for (const c of this.calls.values()) c.reject(new Error('The engine stopped before it answered'))
+      this.calls.clear()
     }
 
     const { width, height } = devicePixels(canvas)
@@ -203,18 +224,18 @@ export class EngineHost {
    * holding a Uint8Array are copied before they are sent, so the caller's
    * array stays usable.
    */
-  call<M extends keyof EngineCalls>(method: M, args: EngineCalls[M]['args']): Promise<EngineCalls[M]['result']> {
+  /**
+   * Calls the engine. `give` is buffers the caller hands over: moved to the
+   * worker as they are, no copy made, and unusable here afterwards (a whole
+   * file just read, say). Otherwise the arguments are copied on their way,
+   * as any message is, and the caller keeps its own.
+   */
+  call<M extends keyof EngineCalls>(method: M, args: EngineCalls[M]['args'], give?: Transferable[]): Promise<EngineCalls[M]['result']> {
     const id = this.nextCall++
-    const transfer: Transferable[] = []
-    let sent: unknown = args
-    if (args && typeof args === 'object' && 'bytes' in args && (args as { bytes: unknown }).bytes instanceof Uint8Array) {
-      const copy = (args as { bytes: Uint8Array }).bytes.slice()
-      sent = { ...args, bytes: copy }
-      transfer.push(copy.buffer)
-    }
+    const transfer: Transferable[] = give ? [...give] : []
     return new Promise((resolve, reject) => {
       this.calls.set(id, { resolve: resolve as (v: unknown) => void, reject })
-      const m: ToEngine = { type: 'call', id, method, args: sent }
+      const m = { type: 'call', id, method, args } as ToEngine
       if (this.worker) this.worker.postMessage(m, transfer)
       else this.queued.push(m)
     })
@@ -243,8 +264,10 @@ export class EngineHost {
   }
 
   setScene(key: string, doc: Doc) {
+    // Artboards and symbol instances, as the plain layers they're drawn as (doc/expand.ts).
+    doc = expandDoc(doc)
     this.scenes.set(key, doc)
-    const fields: SceneDoc = { width: doc.width, height: doc.height, mode: doc.mode, depth: doc.depth, profile: doc.profile, root: doc.root, selection: doc.selection?.tiles ?? null, patterns: scenePatterns(doc), ...(doc.tiled ? { tiled: doc.tiled } : {}) }
+    const fields: SceneDoc = { width: doc.width, height: doc.height, mode: doc.mode, depth: doc.depth, profile: doc.profile, root: doc.root, selection: doc.selection?.tiles ?? null, patterns: scenePatterns(doc), ...(doc.tiled ? { tiled: doc.tiled } : {}), ...(doc.channels?.length ? { channels: sceneChannels(doc) } : {}) }
     const fieldKey = JSON.stringify(fields)
     const prev = this.sent.get(key)
     if (prev && prev.nodes === doc.nodes && prev.fields === fieldKey && prev.epoch === this.decorEpoch) return
@@ -388,14 +411,11 @@ export class EngineHost {
   }
 
   onCanvasSize = (fn: () => void) => {
-    this.sizeListeners.add(fn)
-    return () => {
-      this.sizeListeners.delete(fn)
-    }
+    return this.sizeChanges.subscribe(fn)
   }
 
   private emitSize() {
-    for (const fn of this.sizeListeners) fn()
+    this.sizeChanges.emit()
   }
 
   private detach() {
@@ -436,15 +456,39 @@ export class EngineHost {
       case 'stroke.refused':
         for (const fn of this.refusedListeners) fn(m.id, m.reason)
         break
+      case 'progress':
+        this.progressListeners.get(m.job)?.(m.fraction)
+        break
       case 'reply': {
         const c = this.calls.get(m.id)
         this.calls.delete(m.id)
         if (!c) break
         if (m.ok) c.resolve(m.value)
-        else c.reject(new Error(m.error))
+        else {
+          // The worker's error, by name: a DOMException doesn't survive the trip as one, but its name does.
+          const e = new Error(m.error)
+          e.name = m.name
+          c.reject(e)
+        }
         break
       }
     }
+  }
+
+  private progressListeners = new Map<string, (fraction: number | null) => void>()
+
+  /** A long job's progress as the engine reports it (app/jobs.ts); the function returned stops listening. */
+  onProgress(job: string, fn: (fraction: number | null) => void) {
+    this.progressListeners.set(job, fn)
+    return () => {
+      this.progressListeners.delete(job)
+    }
+  }
+
+  /** Calls a long job off: the engine stops it where it can (engine/jobs.ts). */
+  cancelJob(job: string) {
+    const m = { type: 'job.cancel', job } as ToEngine
+    if (this.worker) this.worker.postMessage(m)
   }
 
   private frameListeners = new Set<(m: Extract<FromEngine, { type: 'frame' }>) => void>()
@@ -457,9 +501,36 @@ export class EngineHost {
     }
   }
 
+  /**
+   * Resolves once the canvas has drawn what it had to and has nothing left:
+   * at the first frame with nothing pending after one that had work (tiles
+   * rendered or waiting). Not at once on the last frame's word: just after
+   * a change, frames still report the canvas as it was, with nothing to do.
+   * For work that can wait for the canvas (thumbnails), so it doesn't hold
+   * back the picture a document has just been opened to. If the canvas
+   * never has work, it never resolves: callers race it with a timeout.
+   */
+  whenDrawn(): Promise<void> {
+    return new Promise((resolve) => {
+      let worked = false
+      const off = this.onFrame((m) => {
+        if (m.rendered > 0 || m.pending > 0) worked = true
+        if (!worked || m.pending > 0) return
+        off()
+        resolve()
+      })
+    })
+  }
+
   private set(patch: Partial<EngineState>) {
     this.state = { ...this.state, ...patch }
-    for (const fn of this.listeners) fn()
+    const h = this.health
+    const s = this.state
+    if (s.status !== h.status || s.gpu !== h.gpu || s.reason !== h.reason || s.error !== h.error) {
+      this.health = healthOf(s)
+      this.healthChanges.emit()
+    }
+    this.changes.emit()
   }
 }
 
@@ -469,7 +540,7 @@ function devicePixels(canvas: HTMLCanvasElement) {
 }
 
 /** `#rgb` or `#rrggbb` to 0..1 components; anything else is null. */
-export function parseHex(css: string): Rgb | null {
+function parseHex(css: string): Rgb | null {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(css.trim())
   if (!m) return null
   const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1]

@@ -13,7 +13,7 @@
  * sessions, open until Enter commits or Esc cancels (or the document moves
  * on underneath them), and the options bar shows what they're doing.
  */
-import { carried, crop, moveBy, rebaseWarps, setTiles, setTransform, transformNode } from '../doc/edit'
+import { carried, crop, moveBy, moveNode, rebaseWarps, setTiles, setTransform, transformNode } from '../doc/edit'
 import type { Affine, Doc, DocNode, NodeId } from '../doc/types'
 import { engine } from '../engine/EngineHost'
 import type { SelectShape } from '../engine/selectHost'
@@ -21,7 +21,7 @@ import { clearToolOverlay, setToolOverlay } from './overlay'
 import { apply, viewMatrix } from '../render/view'
 import { ellipsePoints } from '../tiles/coverage'
 import { geometryPath } from '../doc/vector'
-import { subtree } from '../doc/tree'
+import { placeOf, subtree } from '../doc/tree'
 import { pathBounds } from '../geom/path'
 import { docPathOf } from '../vector/shape'
 import { layoutOf } from './text'
@@ -33,7 +33,7 @@ import { guidePrefs } from './guidePrefs'
 import { lengthText, readout } from './readout'
 import { startSnap, type Snapper } from './snapping'
 import { holdGuide, origins } from './viewAids'
-import { sendOverlay } from './overlay'
+import { sendOverlay, setOverlayDoc } from './overlay'
 import { boxOf, type Box } from '../geom/snap'
 import { layersAt, topGroupOf } from './pick'
 import { moveTool } from './moveTool'
@@ -42,11 +42,13 @@ import { notify } from './notices'
 import { hold } from './pixels'
 import { deselect, modifySelection, selectShape, wandAt } from './selection'
 import { opFor, selectTools } from './selectTools'
+import type { CombineOp } from '../tiles/coverage'
 import { views } from './views'
 import { nearestCopy } from './tiling'
-import { patchPress } from './retouch'
-import { rotateAbout } from './freeTransform'
-export { beginFreeTransform, beginTransformSelection } from './freeTransform'
+import { rotateAbout } from '../geom/affine'
+import { Listeners } from '../lib/listeners'
+import { artboardAt, hasArtboards, isArtboard } from '../doc/artboards'
+import { commitArtboards } from './artboards'
 
 /** A pointer, in document pixels and the canvas's device pixels, with its keys. */
 export interface Pointer {
@@ -118,11 +120,33 @@ export interface Session {
    * change ends the session.
    */
   accepts?(doc: Doc): boolean
+  /**
+   * A key pressed (`down`) or let go while the session is open, before the
+   * shortcuts see it: true when the session took it (Backspace taking the
+   * Polygonal Lasso's last corner back, Alt let go finishing a lasso).
+   */
+  takeKey?(e: KeyboardEvent, down: boolean): boolean
+}
+
+/** Keys go to the open session first, unless they're for a field being typed in. */
+function sessionKey(e: KeyboardEvent, down: boolean) {
+  const s = sessions().get()
+  if (!s?.takeKey || s.key !== documents().getState().active) return
+  const t = e.target
+  if (t instanceof HTMLElement && (t.isContentEditable || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement)) return
+  if (s.takeKey(e, down)) {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+  }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', (e) => sessionKey(e, true), true)
+  window.addEventListener('keyup', (e) => sessionKey(e, false), true)
 }
 
 class Sessions {
   current: Session | null = null
-  private listeners = new Set<() => void>()
+  private changes = new Listeners()
   /** The document a session started from: if it changes underneath, the session ends. */
   private base: Doc | null = null
 
@@ -140,10 +164,7 @@ class Sessions {
   }
 
   subscribe = (fn: () => void) => {
-    this.listeners.add(fn)
-    return () => {
-      this.listeners.delete(fn)
-    }
+    return this.changes.subscribe(fn)
   }
   get = () => this.current
 
@@ -176,7 +197,7 @@ class Sessions {
   }
 
   emit() {
-    for (const fn of this.listeners) fn()
+    this.changes.emit()
   }
 }
 
@@ -314,6 +335,9 @@ async function movePress(d: OpenDoc, p0: Pointer): Promise<Gesture | null> {
   const doc = d.history.present
   const g = guideAt(d, p0)
   if (g >= 0) return guideGesture(d, doc.guides[g].axis, g, p0, offCanvas)
+  // On the transform controls' handles, or just outside a corner: a transform, not a move.
+  const t = moveControls?.press(d, p0)
+  if (t) return t
   const o = moveTool().get()
   if (o.autoSelect !== p0.ctrlKey) {
     let hits = await layersAt(doc, p0.x, p0.y, docPx(GRAB))
@@ -327,13 +351,42 @@ async function movePress(d: OpenDoc, p0: Pointer): Promise<Gesture | null> {
     }
   }
   const now = documents().get(d.key)
-  return now ? moveGesture(now, p0) : null
+  const m = now ? moveGesture(now, p0) : null
+  return m && moveControls ? moveControls.during(m) : m
+}
+
+/**
+ * The Move tool's transform controls (app/transformControls.ts), which
+ * register here: a press they take (a handle, a turn), and a move wrapped
+ * so the box hides while the layers move.
+ */
+export interface MoveControls {
+  press(d: OpenDoc, p: Pointer): Promise<Gesture | null> | null
+  during(g: Gesture): Gesture
+}
+let moveControls: MoveControls | null = null
+export function registerMoveControls(c: MoveControls) {
+  moveControls = c
+}
+
+/** The cursor the Move tool wants where the pointer is (over a transform handle, say), or null for its own. */
+let moveCursorNow: string | null = null
+const moveCursorChanges = new Listeners()
+export const moveCursor = {
+  get: () => moveCursorNow,
+  set(c: string | null) {
+    if (c === moveCursorNow) return
+    moveCursorNow = c
+    moveCursorChanges.emit()
+  },
+  subscribe: (fn: () => void) => moveCursorChanges.subscribe(fn),
 }
 
 function moveGesture(d: OpenDoc, p0: Pointer): Gesture | null {
   const doc = d.history.present
   const ids = movable(d)
   if (!ids.length) return null
+  const boards = ids.some((id) => isArtboard(doc.nodes[id]))
   // Whether a whole-pixel move is wanted: anything with pixels in it stays on the pixel grid.
   const whole = ids.some((id) => ['pixel', 'embedded', 'group', 'fill'].includes(doc.nodes[id].kind))
   const snap = startSnap(d, { moving: ids })
@@ -362,20 +415,51 @@ function moveGesture(d: OpenDoc, p0: Pointer): Gesture | null {
       dx = rx + sx
       dy = ry + sy
       readout().set({ text: `ΔX ${lengthText(dx)}  ΔY ${lengthText(dy)}`, x: p.dx, y: p.dy })
-      preview(d.key, moveAll(doc, ids, dx, dy))
+      const moved = moveAll(doc, ids, dx, dy)
+      preview(d.key, moved)
+      if (boards) setOverlayDoc(d.key, moved)
     },
     up() {
       snap.end()
       readout().set(null)
+      if (boards) setOverlayDoc(d.key, null)
       if (!dx && !dy) return unpreview(d.key)
-      documents().commit((x) => moveAll(x, ids, dx, dy), { key: d.key, label: 'Move' })
+      // Artboards moved: the canvas grows round them. Layers moved onto another artboard (or off one) go into it, as in Photoshop.
+      if (boards) return commitArtboards(d, (x) => moveAll(x, ids, dx, dy), 'Move')
+      const centre = box0 ? ([(box0[0] + box0[2]) / 2 + dx, (box0[1] + box0[3]) / 2 + dy] as [number, number]) : null
+      documents().commit((x) => intoArtboardAt(moveAll(x, ids, dx, dy), ids, centre), { key: d.key, label: 'Move' })
     },
     cancel() {
       snap.end()
       readout().set(null)
+      if (boards) setOverlayDoc(d.key, null)
       unpreview(d.key)
     },
   }
+}
+
+/**
+ * Layers moved so the middle of the box round them lands on another
+ * artboard than the one they're on (or off every artboard) go into it, at
+ * its top (or out at the document's top level), as Photoshop moves them.
+ * Only layers sitting directly in an artboard or at the top level go:
+ * one inside a group stays in its group.
+ */
+function intoArtboardAt(doc: Doc, ids: NodeId[], centre: [number, number] | null): Doc {
+  if (!centre || !hasArtboards(doc)) return doc
+  const target = artboardAt(doc, centre[0], centre[1])
+  let out = doc
+  for (const id of ids) {
+    const place = placeOf(out, id)
+    if (!place || place.slot !== 'children') continue
+    const parent = out.nodes[place.parent]
+    const direct = place.parent === out.root || isArtboard(parent)
+    if (!direct || isArtboard(out.nodes[id])) continue
+    const into = target?.id ?? out.root
+    if (into === place.parent) continue
+    out = moveNode(out, id, into, out.nodes[into].children?.length ?? 0)
+  }
+  return out
 }
 
 /** The arrow keys: the selected layer, or with a selection tool the selection, a pixel (Shift: ten) at a time. */
@@ -461,7 +545,7 @@ function marqueeShape(p0: Pointer, p: Pointer, from: { shift: boolean; alt: bool
  * A press with a selection tool, over the selection with no keys held,
  * drags the outline; otherwise it starts the tool's own gesture.
  */
-export async function selectionPress(d: OpenDoc, p0: Pointer, make: () => Gesture | null): Promise<Gesture | null> {
+async function selectionPress(d: OpenDoc, p0: Pointer, make: () => Gesture | null): Promise<Gesture | null> {
   const sel = d.history.present.selection?.tiles
   if (sel && !p0.shiftKey && !p0.altKey && selectTools().get().op === 'replace') {
     const inside = (await engine().call('select.at', { set: sel, x: p0.x, y: p0.y })) >= 0.5
@@ -518,6 +602,13 @@ function modifyNone(d: OpenDoc) {
   if (documents().getState().active === d.key) deselect()
 }
 
+/**
+ * The Lasso, drawn freehand while the button is down. As in Photoshop, let
+ * go of the button with Alt held and it carries on in straight lines: each
+ * click a corner, a drag without Alt freehand again, Backspace taking the
+ * last piece back; letting go of Alt (or Enter, or the first point) closes
+ * it.
+ */
 export function lassoGesture(d: OpenDoc, p0: Pointer): Gesture {
   const op = opFor(p0, selectTools().get().op)
   const pts: [number, number][] = [[p0.x, p0.y]]
@@ -530,7 +621,12 @@ export function lassoGesture(d: OpenDoc, p0: Pointer): Gesture {
       pts.push([p.x, p.y])
       setToolOverlay(d.key, { shapes: [{ kind: 'path', points: pts, closed: false, style: 'ants' }] })
     },
-    up() {
+    up(p) {
+      // Alt held as the button comes up: straight lines from here on.
+      if (p.altKey && pts.length >= 2) {
+        sessions().start(polygonSession(d, p0, { seed: pts, op, mixed: true }))
+        return
+      }
       clearToolOverlay(d.key)
       const o = selectTools().get().lasso
       if (pts.length < 3) {
@@ -543,14 +639,35 @@ export function lassoGesture(d: OpenDoc, p0: Pointer): Gesture {
   }
 }
 
-/** The Polygonal Lasso: a click for each corner; a click on the first, a double-click or Enter closes it. */
-function polygonSession(d: OpenDoc, p0: Pointer): Session {
-  const op = opFor(p0, selectTools().get().op)
-  const pts: [number, number][] = [[p0.x, p0.y]]
-  let hover: [number, number] = [p0.x, p0.y]
+/** The point `p` would be from `from` with Shift: on the nearest 45° line, as far out. */
+function at45(from: [number, number], p: [number, number]): [number, number] {
+  const dx = p[0] - from[0]
+  const dy = p[1] - from[1]
+  const a = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4)
+  const r = Math.hypot(dx, dy)
+  return [from[0] + Math.cos(a) * r, from[1] + Math.sin(a) * r]
+}
+
+/**
+ * The Polygonal Lasso: a click for each corner (Shift keeps the side to
+ * 45°); Alt-drag draws freehand; Backspace or Delete takes the last corner
+ * (or freehand piece) back; a click on the first, a double-click or Enter
+ * closes it. `mixed` is the Lasso carried on with Alt held (lassoGesture):
+ * there a drag is freehand without Alt, a press let go without Alt closes
+ * it, and so does letting go of Alt between presses.
+ */
+function polygonSession(d: OpenDoc, p0: Pointer, o: { seed?: [number, number][]; op?: CombineOp; mixed?: boolean } = {}): Session {
+  const op = o.op ?? opFor(p0, selectTools().get().op)
+  const pts: [number, number][] = o.seed ? [...o.seed] : [[p0.x, p0.y]]
+  /** Where each piece (a corner, or a freehand run) starts, for Backspace. */
+  const pieces: number[] = o.seed ? [1] : []
+  let hover: [number, number] = pts[pts.length - 1]
   let lastClick = 0
-  const show = () => setToolOverlay(d.key, { shapes: [{ kind: 'path', points: [...pts, hover], closed: false, style: 'ants' }] })
+  let pressed = false
+  const label = o.mixed ? 'Lasso' : 'Polygonal Lasso'
+  const show = () => setToolOverlay(d.key, { shapes: [{ kind: 'path', points: pressed ? pts : [...pts, hover], closed: false, style: 'ants' }] })
   const close = () => sessions().commit()
+  const last = () => pts[pts.length - 1]
   show()
   const s: Session = {
     kind: 'polygon',
@@ -568,19 +685,75 @@ function polygonSession(d: OpenDoc, p0: Pointer): Session {
       const q = snapped(snap, p)
       snap.end()
       // In a tiled document, the copy nearest the last corner: the shape stays whole over a seam.
-      pts.push(nearestCopy(d.history.present, [q.x, q.y], pts[pts.length - 1]))
+      const near = nearestCopy(d.history.present, [q.x, q.y], last())
+      pieces.push(pts.length)
+      pts.push(p.shiftKey ? at45(last(), near) : near)
+      pressed = true
       show()
-      return { move: (q) => s.hover!(q), up: () => {}, cancel: () => {} }
+      let free = false
+      let lastDevice: [number, number] = [p.dx, p.dy]
+      return {
+        move(q) {
+          // Freehand: in the Polygonal Lasso with Alt, in the Lasso carried on without it.
+          const freehand = o.mixed ? !q.altKey : q.altKey
+          if (freehand && (free || dist([q.dx, q.dy], [p.dx, p.dy]) >= CLICK)) {
+            free = true
+            if (dist([q.dx, q.dy], lastDevice) < 1) return
+            lastDevice = [q.dx, q.dy]
+            pts.push([q.x, q.y])
+            show()
+            return
+          }
+          if (!free) {
+            // A corner being placed follows the pointer until it's let go.
+            const at = nearestCopy(d.history.present, [q.x, q.y], pts[pts.length - 2] ?? last())
+            pts[pts.length - 1] = q.shiftKey && pts.length >= 2 ? at45(pts[pts.length - 2], at) : at
+            show()
+          }
+        },
+        up(q) {
+          pressed = false
+          hover = last()
+          show()
+          if (o.mixed && !q.altKey) close()
+        },
+        cancel() {
+          pressed = false
+        },
+      }
     },
     hover(p) {
-      hover = nearestCopy(d.history.present, [p.x, p.y], pts[pts.length - 1])
+      const at = nearestCopy(d.history.present, [p.x, p.y], last())
+      hover = p.shiftKey ? at45(last(), at) : at
       show()
     },
+    takeKey(e, down) {
+      if (down && (e.key === 'Backspace' || e.key === 'Delete')) {
+        // The last corner or freehand piece back; nothing left to take, and it's cancelled.
+        const from = pieces.pop()
+        if (from === undefined || from < 1) {
+          sessions().end(true)
+          return true
+        }
+        pts.length = from
+        show()
+        return true
+      }
+      // The Lasso carried on with Alt: letting go of Alt between presses closes it.
+      if (!down && o.mixed && e.key === 'Alt' && !pressed) {
+        close()
+        return true
+      }
+      return false
+    },
     commit() {
-      if (pts.length > 2) selectShape({ kind: 'polygon', points: pts }, op, selectTools().get().lasso, 'Polygonal Lasso')
+      if (pts.length > 2) selectShape({ kind: 'polygon', points: pts }, op, selectTools().get().lasso, label)
     },
     cancel() {},
-    readout: () => `${pts.length} ${pts.length === 1 ? 'corner' : 'corners'}. Click the first corner, double-click or press Enter to close; Esc cancels.`,
+    readout: () =>
+      o.mixed
+        ? 'Click for straight sides, drag for freehand; let go of Alt, press Enter or click the start to close. Backspace takes the last piece back; Esc cancels.'
+        : `${pts.length} ${pts.length === 1 ? 'corner' : 'corners'}. Click the first corner, double-click or press Enter to close; Shift keeps 45°, Alt-drag draws freehand, Backspace takes a corner back; Esc cancels.`,
   }
   return s
 }
@@ -598,8 +771,12 @@ export async function transformBox(doc: Doc, node: DocNode): Promise<{ frame: Af
     const box = await engine().call('tiles.alphaBounds', { set: node.props.tiles })
     return box ? { frame: [...node.transform] as Affine, box } : null
   }
-  // A smart object's box is its contents' canvas, in its own frame.
+  // A smart object's box is its contents' canvas, in its own frame; a symbol instance's, its symbol's.
   if (node.kind === 'embedded') return node.props.content ? { frame: [...node.transform] as Affine, box: [0, 0, node.props.content.width, node.props.content.height] } : null
+  if (node.kind === 'symbol') {
+    const s = doc.symbols?.find((x) => x.id === node.props.symbol)
+    return s ? { frame: [...node.transform] as Affine, box: [0, 0, s.content.width, s.content.height] } : null
+  }
   // A shape's is its path's, in its own frame; a compound's, its outline's.
   if (node.kind === 'vector') {
     const b = node.props.geometry ? pathBounds(geometryPath(node.props.geometry)) : null
@@ -668,15 +845,15 @@ export async function rasterize() {
   const d = documents().active()
   if (!d) return
   const node = d.selected ? d.history.present.nodes[d.selected] : null
-  if (!node || !['pixel', 'embedded', 'vector', 'boolean', 'text', 'fill'].includes(node.kind)) return notify('info', 'Rasterize works on a pixel layer, a smart object, a shape, text or a fill layer.')
+  if (!node || !['pixel', 'embedded', 'vector', 'boolean', 'text', 'fill', 'symbol'].includes(node.kind)) return notify('info', 'Rasterize works on a pixel layer, a smart object, a symbol instance, a shape, text or a fill layer.')
   if (node.kind === 'pixel' && node.transform.every((v, i) => v === [1, 0, 0, 1, 0, 0][i])) return notify('info', `“${node.name}” has no transform to bake in.`)
   try {
     const set = await engine().call('render.rasterize', { key: d.key, node: node.id })
     const release = set ? hold([set]) : () => {}
-    if (node.kind === 'embedded' || node.kind === 'vector' || node.kind === 'boolean' || node.kind === 'text' || node.kind === 'fill') {
+    if (node.kind === 'embedded' || node.kind === 'vector' || node.kind === 'boolean' || node.kind === 'text' || node.kind === 'fill' || node.kind === 'symbol') {
       // The same layer, its kind changed: its masks, effects, style and clipped layers stay. A compound's shapes go.
       const operands = node.kind === 'boolean' ? (node.children ?? []).flatMap((c) => subtree(d.history.present, c)) : []
-      const pixel = { ...node, kind: 'pixel', transform: [1, 0, 0, 1, 0, 0], props: { tiles: set, resample: 'bicubic' }, ...(operands.length ? { children: [] } : {}) } as unknown as DocNode
+      const pixel = { ...node, kind: 'pixel', transform: [1, 0, 0, 1, 0, 0], props: { tiles: set, resample: 'bicubic' }, ...(operands.length || node.kind === 'symbol' ? { children: [] } : {}) } as unknown as DocNode
       documents().commit(
         (x) => {
           const nodes = { ...x.nodes, [node.id]: pixel }
@@ -815,7 +992,7 @@ function cropSession(d: OpenDoc, start: CropBox): Session {
 }
 
 /** The Crop tool chosen: a box round the whole canvas to start from. */
-export function startCrop() {
+function startCrop() {
   const d = documents().active()
   if (!d) return
   const s = sessions().get()
@@ -852,46 +1029,52 @@ export async function pressTool(tool: ToolId, p: Pointer): Promise<Gesture | nul
     // The Polygonal Lasso's session takes its own clicks; the Type tool's lets a press outside its text go on to the tool.
     if (s.kind === 'type' ? sessions().get() === s : s.kind !== 'polygon' || sessions().get() !== s) return null
   }
-  switch (tool) {
-    case 'move':
-      return movePress(d, p)
-    case 'marquee':
-      return selectionPress(d, p, () => marqueeGesture(d, p))
-    case 'lasso':
-      if (selectTools().get().lasso.mode === 'magnetic' && magnetic) {
-        const start = magnetic
-        return selectionPress(d, p, () => {
-          start(d, p)
-          return null
-        })
-      }
-      if (selectTools().get().lasso.mode === 'polygonal') {
-        return selectionPress(d, p, () => {
-          sessions().start(polygonSession(d, p))
-          return null
-        })
-      }
-      return selectionPress(d, p, () => lassoGesture(d, p))
-    case 'wand':
-      return selectionPress(d, p, () => {
-        wandAt(p.x, p.y, opFor(p, selectTools().get().op))
-        return null
-      })
-    case 'crop':
-      startCrop()
-      return sessions().get()?.down(p) ?? null
-    case 'patch':
-      return patchPress(d, p)
-    default:
-      return PRESSES.get(tool)?.(d, p) ?? null
-  }
+  return PRESSES.get(tool)?.(d, p) ?? null
 }
 
-/** Tools whose presses are handled elsewhere (app/vectors.ts, app/toolGestures.ts), registered when those load. */
-const PRESSES = new Map<ToolId, (d: OpenDoc, p: Pointer) => Gesture | null>()
-export function registerTool(tool: ToolId, press: (d: OpenDoc, p: Pointer) => Gesture | null) {
+/**
+ * Each tool's press, the one place they're found: the selection tools,
+ * Move and Crop register below; the rest where they're made
+ * (app/vectors.ts, app/toolGestures.ts, app/typing.ts, app/construct.ts,
+ * app/retouch.ts).
+ */
+const PRESSES = new Map<ToolId, (d: OpenDoc, p: Pointer) => Gesture | null | Promise<Gesture | null>>()
+export function registerTool(tool: ToolId, press: (d: OpenDoc, p: Pointer) => Gesture | null | Promise<Gesture | null>) {
   PRESSES.set(tool, press)
 }
+
+/** Whether a tool's presses on the canvas are gestures (not painting, panning or zooming): whether it's registered. */
+export const isGestureTool = (tool: ToolId) => PRESSES.has(tool)
+
+registerTool('move', (d, p) => movePress(d, p))
+registerTool('marquee', (d, p) => selectionPress(d, p, () => marqueeGesture(d, p)))
+registerTool('lasso', (d, p) => {
+  if (selectTools().get().lasso.mode === 'magnetic' && magnetic) {
+    const start = magnetic
+    return selectionPress(d, p, () => {
+      start(d, p)
+      return null
+    })
+  }
+  if (selectTools().get().lasso.mode === 'polygonal') {
+    return selectionPress(d, p, () => {
+      sessions().start(polygonSession(d, p))
+      return null
+    })
+  }
+  return selectionPress(d, p, () => lassoGesture(d, p))
+})
+registerTool('wand', (d, p) =>
+  selectionPress(d, p, () => {
+    wandAt(p.x, p.y, opFor(p, selectTools().get().op))
+    return null
+  }),
+)
+registerTool('crop', (_d, p) => {
+  startCrop()
+  return sessions().get()?.down(p) ?? null
+})
+// Patch registers itself (app/retouch.ts), as the vector and type tools do.
 
 /**
  * A floating dialog's hold on the canvas (Colour Range's eyedropper, Select

@@ -21,14 +21,14 @@
  * patterns, filters in a layer's effects) is in the layer's pixels and
  * said.
  */
-import { geometryPath, type AppearanceItem, type Paint } from '../../doc/vector'
+import { geometryPath, strokeNeedsOutline, type AppearanceItem, type Paint } from '../../doc/vector'
 import { transformPath, type PathData } from '../../geom/path'
 import { docPathOf } from '../../vector/shape'
 import { readParamValues, type CurvePoints, type GradientStop, type LevelsValue, type ParamColour } from '../../doc/params'
 import { ADJUSTMENT_BY_ID } from '../../adjust/defs'
 import { FX_BY_KIND } from '../../fx/defs'
 import { resolveChar, resolvePara, type CharProps, type ParaProps } from '../../doc/text'
-import type { Doc, DocNode, NodeId } from '../../doc/types'
+import { ALPHA_TINT, channelKind, channelOpacity, type Doc, type DocNode, type NodeId } from '../../doc/types'
 import { Writer } from './bin'
 import { D, desc, writeDescriptor, type Descriptor, type DValue } from './descriptor'
 import { writeEngineData, type EValue } from './engineData'
@@ -1063,6 +1063,8 @@ export async function docToPlan(doc: Doc, key: string, host: PsdOutHost, o: { ps
         const stroke = items.find((a) => a.kind === 'stroke') as Extract<AppearanceItem, { kind: 'stroke' }> | undefined
         if (items.filter((a) => a.kind === 'fill').length > 1 || items.filter((a) => a.kind === 'stroke').length > 1)
           warn('Shapes with more than one fill or stroke keep their first of each live; the rest are in their pixels')
+        if (stroke?.brush) warn(`A stroke drawn with the brush “${stroke.brush.name}” is in the layer’s pixels; Photoshop has no vector brushes, so its live stroke is plain`)
+        else if (stroke && strokeNeedsOutline(stroke)) warn('A stroke’s width profile, arrowheads or dashes fitted to corners are in the layer’s pixels; its live stroke in Photoshop is plain')
         const fb = fill ? fillBlock(fill.paint) : null
         if (path && (fb || stroke)) {
           blocks.push(fb ?? { key: 'SoCo', data: descData(desc('null', [['Clr ', colourDesc(mode === 'cmyk' ? [0, 0, 0, 0] : mode === 'gray' ? [1] : [1, 1, 1])]])) })
@@ -1153,6 +1155,37 @@ export async function docToPlan(doc: Doc, key: string, host: PsdOutHost, o: { ps
     })
   }
 
+  // Alpha and spot channels: their names (Unicode and Pascal) and how each shows, as Photoshop reads them.
+  const docChannels = doc.channels ?? []
+  if (docChannels.length) {
+    resources.push({ id: 1045, name: '', data: bytesOf((w) => docChannels.forEach((c) => w.unicode(c.name))) })
+    resources.push({
+      id: 1006,
+      name: '',
+      data: bytesOf((w) => {
+        for (const c of docChannels) {
+          const name = c.name.replace(/[^\x20-\xff]/g, '?').slice(0, 255)
+          w.u8(name.length)
+          for (let i = 0; i < name.length; i++) w.u8(name.charCodeAt(i))
+        }
+      }),
+    })
+    resources.push({
+      id: 1077,
+      name: '',
+      data: bytesOf((w) => {
+        w.u32(1)
+        for (const c of docChannels) {
+          const { space, values } = colourStruct(channelKind(c) === 'spot' && c.ink ? c.ink : { space: 'rgb', c: c.tint ?? ALPHA_TINT })
+          w.u16(space)
+          for (const v of values) w.u16(v)
+          w.u16(Math.round(channelOpacity(c) * 100))
+          w.u8(channelKind(c) === 'spot' ? 2 : c.marks === 'selected' ? 0 : 1)
+        }
+      }),
+    })
+  }
+
   const plan: PsdPlan = {
     key,
     psb: !!o.psb || doc.width > 30000 || doc.height > 30000,
@@ -1163,8 +1196,25 @@ export async function docToPlan(doc: Doc, key: string, host: PsdOutHost, o: { ps
     resources,
     layers,
     blocks: globalBlocks,
+    ...(docChannels.length ? { channels: docChannels.map((c) => ({ id: c.id, spot: channelKind(c) === 'spot' })) } : {}),
   }
   return { plan, warnings: [...warnings] }
+}
+
+/** A colour as Photoshop's colour structure: a space id and four 16-bit values. */
+function colourStruct(v: { space: string; c: number[] }): { space: number; values: number[] } {
+  const u = (x: number, k: number) => Math.round(Math.min(1, Math.max(0, x)) * k)
+  const s16 = (x: number) => (Math.round(x * 100) + 65536) % 65536
+  switch (v.space) {
+    case 'cmyk':
+      return { space: 2, values: v.c.map((x) => 65535 - u(x, 65535)) }
+    case 'gray':
+      return { space: 8, values: [10000 - u(v.c[0], 10000), 0, 0, 0] }
+    case 'lab':
+      return { space: 7, values: [Math.round(Math.min(100, Math.max(0, v.c[0])) * 100), s16(v.c[1]), s16(v.c[2]), 0] }
+    default:
+      return { space: 0, values: [...v.c.slice(0, 3).map((x) => u(x, 65535)), 0] }
+  }
 }
 
 function concat(parts: Uint8Array[]): Uint8Array {

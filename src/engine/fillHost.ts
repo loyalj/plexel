@@ -12,10 +12,13 @@ import { fillLayer, type FillSource } from '../tiles/fill'
 import { TILE, TILE_PIXELS, newSamples, type Samples, type TileFormat } from '../tiles/format'
 import type { TileId } from '../tiles/store'
 import { patternPixels } from '../tiles/patterns'
+import { keepPlanes } from '../tiles/planes'
 import { gradientAnchor, paintParams, patternLevels, type PatternImage } from '../vector/paint'
 import type { Renderer } from '../render/renderer'
-import { guarded, held } from './selectHost'
+import { held } from './tileHost'
+import { guarded } from './work'
 import { store } from './tileHost'
+import { cancelledError, progress, whenCancelled } from './jobs'
 
 export interface FillCommon {
   /** The document, for its patterns. */
@@ -38,7 +41,9 @@ export interface FillCalls {
   /** A paint, its colours already in the layer's mode, laid out in document pixels. Returns the layer's new set (null: left empty). */
   'fill.paint': { args: FillCommon & { paint: Paint }; result: string | null }
   /** Content-aware fill: what the selection covers made again from the layer's pixels round it. */
-  'fill.contentAware': { args: FillCommon & { seed: number }; result: string | null }
+  'fill.contentAware': { args: FillCommon & { seed: number; job?: string }; result: string | null }
+  /** An edit kept to some colour channels: `after` with the others, and alpha, as they were in `before` (tiles/planes.ts). */
+  'fill.keepPlanes': { args: { before: string | null; after: string | null; planes: boolean[] }; result: string | null }
   /** A rectangle of a set's pixels moved to the origin: a pattern's one repeat (Define Pattern). Null when it's empty. */
   'fill.crop': { args: { set: string; rect: [number, number, number, number] }; result: string | null }
 }
@@ -74,17 +79,27 @@ function finish(a: FillCommon, set: string | null): string | null {
   return set === a.layer ? set : held(set)
 }
 
-/** Runs content-aware fill's search in a worker of its own. */
-export function inpaintInWorker(job: { image: Uint8Array; channels: number; width: number; height: number; hole: Float32Array; seed: number }): Promise<Uint8Array> {
+/**
+ * Runs content-aware fill's search in a worker of its own, its progress
+ * reported for `id` (a page's job), and stopped outright if that's called off.
+ */
+export function inpaintInWorker(job: { image: Uint8Array; channels: number; width: number; height: number; hole: Float32Array; seed: number }, id?: string): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const w = new Worker(new URL('../retouch/inpaint.worker.ts', import.meta.url), { type: 'module', name: 'plexel-content-aware' })
-    w.onmessage = (e: MessageEvent<{ ok: true; image: Uint8Array } | { ok: false; error: string }>) => {
+    const stop = whenCancelled(id, () => {
       w.terminate()
+      reject(cancelledError())
+    })
+    w.onmessage = (e: MessageEvent<{ ok: true; image: Uint8Array } | { ok: false; error: string } | { progress: number }>) => {
+      if ('progress' in e.data) return progress(id, e.data.progress)
+      w.terminate()
+      stop()
       if (e.data.ok) resolve(e.data.image)
       else reject(new Error(e.data.error))
     }
     w.onerror = (e) => {
       w.terminate()
+      stop()
       reject(new Error(e.message || 'Content-aware fill stopped'))
     }
     w.postMessage(job, [job.image.buffer, job.hole.buffer])
@@ -93,6 +108,7 @@ export function inpaintInWorker(job: { image: Uint8Array; channels: number; widt
 
 export function fillHandlers(renderer: () => Promise<Renderer>): { [M in keyof FillCalls]: (args: FillCalls[M]['args']) => Promise<FillCalls[M]['result']> } {
   return {
+    'fill.keepPlanes': ({ before, after, planes }) => guarded(async () => held(await keepPlanes(store, before, after, planes))),
     'fill.crop': ({ set, rect }) =>
       guarded(async () => {
         const f = store.getSet(set).format
@@ -182,7 +198,7 @@ export function fillHandlers(renderer: () => Promise<Renderer>): { [M in keyof F
         const cover = await new CoverReader(store, a.cover).window(x0, y0, w, h)
         const hole = new Float32Array(w * h)
         for (let i = 0; i < hole.length; i++) hole[i] = cover[i] > 0 ? 1 : 0
-        const made = await inpaintInWorker({ image, channels: planes, width: w, height: h, hole, seed: a.seed })
+        const made = await inpaintInWorker({ image, channels: planes, width: w, height: h, hole, seed: a.seed }, a.job)
         // Into working terms, premultiplied, for the fill.
         const data = new Float32Array(w * h * 5)
         for (let p = 0; p < w * h; p++) {

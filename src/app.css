@@ -14,6 +14,34 @@
   --ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
   --mono: 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
   --radius: 4px;
+
+  /* The type scale: every piece of text is one of these. */
+  --text-xs: 10.5px; /* keys, counts, chips */
+  --text-sm: 11.5px; /* labels' notes, units, meta lines */
+  --text-md: 12.5px; /* the interface's text */
+  --text-lg: 14px; /* titles */
+
+  /* The spacing scale: gaps and padding are steps of it. */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+
+  /* A field's height, and a panel's tab bar's. */
+  --control-h: 24px;
+  --panel-head-h: 26px;
+}
+
+/* Compact: the larger steps tighter. */
+:root[data-density='compact'] {
+  --space-3: 4px;
+  --space-4: 6px;
+  --space-5: 9px;
+  --space-6: 12px;
+  --control-h: 21px;
+  --panel-head-h: 22px;
 }
 
 * {
@@ -40,7 +68,7 @@ html {
 body {
   background: var(--bg);
   color: var(--ink);
-  font: 12.5px/1.4 var(--ui);
+  font: var(--text-md)/1.4 var(--ui);
   /* An editor, not a page: nothing scrolls the whole window, and nothing
      outside a field is selectable by a stray drag across the canvas. */
   overflow: hidden;
@@ -64,7 +92,7 @@ input {
 
 kbd {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 /* --- the shell ------------------------------------------------------ */
@@ -93,9 +121,9 @@ kbd {
 .menubar {
   display: flex;
   align-items: stretch;
-  gap: 2px;
+  gap: var(--space-1);
   height: 30px;
-  padding-inline: 6px;
+  padding-inline: var(--space-3);
   background: var(--chrome);
   border-bottom: 1px solid var(--chrome-edge);
   position: relative;
@@ -105,8 +133,8 @@ kbd {
 .menubar-brand {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding-inline: 6px 12px;
+  gap: var(--space-4);
+  padding-inline: var(--space-3) var(--space-5);
   font-weight: 600;
   letter-spacing: 0.01em;
 }
@@ -140,7 +168,7 @@ kbd {
   top: 100%;
   left: 0;
   min-width: 230px;
-  padding: 4px;
+  padding: var(--space-2);
   margin: 0;
   list-style: none;
   background: var(--menu);
@@ -163,7 +191,7 @@ kbd {
   display: grid;
   grid-template-columns: 16px 1fr auto;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   width: 100%;
   padding: 4px 10px 4px 6px;
   border: 0;
@@ -194,7 +222,7 @@ kbd {
 .menu-arrow {
   color: var(--ink-faint);
   padding-left: 18px;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .menu-separator {
@@ -232,11 +260,84 @@ kbd {
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   width: 36px;
-  padding: 4px;
+  padding: var(--space-2);
   background: var(--chrome);
   border-right: 1px solid var(--chrome-edge);
+  /* Too short even for two columns: it scrolls. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+/* Too short for one column: two, as Photoshop's double-column toolbar. */
+.toolbar.two-columns {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  width: 67px;
+}
+
+.tool {
+  position: relative;
+  flex: none;
+}
+/* A group's slot: a small triangle in its corner says there are more tools behind it. */
+.tool.grouped::after {
+  content: '';
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  border-style: solid;
+  border-width: 0 0 5px 5px;
+  border-color: transparent transparent currentColor transparent;
+  opacity: 0.55;
+}
+
+/* A group's tools, beside its slot. */
+.tool-flyout {
+  position: fixed;
+  z-index: var(--z-menu);
+  zoom: var(--ui-scale);
+  min-width: 200px;
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--menu-edge);
+  border-radius: 6px;
+  box-shadow: 0 10px 28px var(--shadow);
+}
+.tool-flyout-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.tool-flyout-item:hover,
+.tool-flyout-item:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+.tool-flyout-item[aria-checked='true'] {
+  background: var(--selected);
+}
+.tool-flyout-item svg {
+  font-size: 18px;
+}
+.tool-flyout-name {
+  flex: 1;
+}
+.tool-flyout-key {
+  color: var(--ink-dim);
+  font-size: var(--text-md);
 }
 
 .tool {
@@ -277,9 +378,9 @@ kbd {
 .tab {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   max-width: 220px;
-  padding-inline: 12px 4px;
+  padding-inline: var(--space-5) var(--space-2);
   background: var(--chrome);
   color: var(--ink-dim);
   white-space: nowrap;
@@ -351,7 +452,7 @@ kbd {
   width: min(460px, 100%);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 22px 24px;
   background: var(--panel);
   border: 1px solid var(--rule);
@@ -366,7 +467,7 @@ kbd {
 
 .start-card h3 {
   margin: 6px 0 0;
-  font-size: 11px;
+  font-size: var(--text-sm);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-faint);
@@ -375,7 +476,7 @@ kbd {
 .start-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-4);
 }
 
 .start-actions kbd {
@@ -400,8 +501,8 @@ kbd {
   width: 100%;
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  padding: 6px 8px;
+  gap: var(--space-5);
+  padding: var(--space-3) var(--space-4);
   border: 0;
   border-radius: var(--radius);
   background: none;
@@ -428,15 +529,15 @@ kbd {
   width: min(420px, calc(100% - 24px));
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-4);
   z-index: var(--z-overlay);
 }
 
 .notice {
   display: flex;
-  gap: 8px;
+  gap: var(--space-4);
   align-items: flex-start;
-  padding: 8px 6px 8px 12px;
+  padding: var(--space-4) var(--space-3) var(--space-4) var(--space-5);
   border-radius: 6px;
   background: var(--menu);
   border: 1px solid var(--menu-edge);
@@ -466,13 +567,314 @@ kbd {
   left: 12px;
   bottom: 12px;
   max-width: min(520px, calc(100% - 24px));
-  padding: 8px 12px;
+  padding: var(--space-4) var(--space-5);
   border-radius: 6px;
   background: var(--menu);
   border: 1px solid var(--menu-edge);
   color: var(--ink);
   box-shadow: 0 4px 14px var(--shadow);
   z-index: var(--z-overlay);
+}
+
+/* A long job over the canvas: what, how far, Cancel. */
+.job-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  translate: -50% 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 300px;
+  max-width: calc(100% - 32px);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-5);
+  border: 1px solid var(--menu-edge);
+  border-radius: 8px;
+  background: var(--menu);
+  box-shadow: 0 8px 28px var(--shadow);
+  z-index: var(--z-overlay);
+  zoom: var(--ui-scale);
+}
+
+.job-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.job-track {
+  position: relative;
+  flex: 1;
+  min-width: 80px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--field);
+  overflow: hidden;
+}
+
+.job-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.15s;
+}
+
+.job-track.unknown .job-fill {
+  width: 35%;
+  animation: job-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes job-slide {
+  from {
+    left: -35%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+.job-pct {
+  min-width: 3ch;
+  color: var(--ink-dim);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* The colour picker at the pointer: a shade square and a hue strip. */
+.colour-hud {
+  position: absolute;
+  display: flex;
+  padding: 0;
+  pointer-events: none;
+  z-index: var(--z-overlay);
+}
+
+.colour-hud-square,
+.colour-hud-strip {
+  position: relative;
+  border-radius: 3px;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.55),
+    0 6px 20px rgb(0 0 0 / 0.4);
+}
+
+.colour-hud-strip {
+  background: linear-gradient(to bottom, #f00, #ff0 16.7%, #0f0 33.3%, #0ff 50%, #00f 66.7%, #f0f 83.3%, #f00);
+}
+
+.colour-hud-dot {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 3px rgb(0 0 0 / 0.6);
+}
+
+.colour-hud-mark {
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6);
+}
+
+/* An artboard's name over the canvas, at its top left: click, drag, double-click. */
+.artboard-label {
+  position: absolute;
+  translate: 0 -100%;
+  padding-bottom: 3px;
+  z-index: var(--z-overlay);
+  zoom: var(--ui-scale);
+  max-width: 320px;
+  pointer-events: none;
+}
+
+.artboard-label > span {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c9c9cc;
+  font-size: var(--text-sm);
+  cursor: move;
+  user-select: none;
+  pointer-events: auto;
+}
+
+.artboard-label > span:hover {
+  color: #fff;
+}
+
+.artboard-label.selected > span {
+  color: #5ea2ff;
+  font-weight: 600;
+}
+
+.artboard-label > input {
+  width: 180px;
+  padding: 1px 4px;
+  border: 1px solid var(--focus);
+  border-radius: var(--radius);
+  background: var(--field);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  pointer-events: auto;
+}
+
+/* A symbol's picture in the Symbols panel, and dragged onto the canvas. */
+.symbol-thumb {
+  display: inline-grid;
+  place-items: center;
+  width: 56px;
+  height: 40px;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.symbol-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.symbol-place {
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: none;
+  cursor: grab;
+}
+
+.symbol-row.current .symbol-place {
+  border-color: var(--accent);
+}
+
+.symbol-drag {
+  position: fixed;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  background: center / contain no-repeat;
+  opacity: 0.8;
+  pointer-events: none;
+  z-index: var(--z-overlay);
+}
+
+/* In Tiled View, the way back to the document among its copies. */
+.tile-home {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  translate: -50% 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border: 1px solid var(--menu-edge);
+  border-radius: 999px;
+  background: var(--menu);
+  color: var(--ink);
+  box-shadow: 0 4px 14px var(--shadow);
+  z-index: var(--z-overlay);
+  zoom: var(--ui-scale);
+}
+
+.tile-home:hover {
+  border-color: var(--accent);
+}
+
+/* --- Edit Toolbar ----------------------------------------------------- */
+.toolbar-edit {
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.toolbar-edit-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius);
+}
+
+.toolbar-edit-row:hover {
+  background: var(--hover);
+}
+
+.toolbar-edit-row.off .toolbar-edit-icon,
+.toolbar-edit-row.off .toolbar-edit-name {
+  opacity: 0.45;
+}
+
+.toolbar-edit-row.moving {
+  background: var(--selected);
+}
+
+.drop-before::before {
+  content: '';
+  position: absolute;
+  inset: -1px 0 auto;
+  height: 2px;
+  background: var(--accent);
+}
+
+.toolbar-edit-end {
+  position: relative;
+  height: 4px;
+}
+
+.toolbar-edit-grip {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  color: var(--ink-faint);
+  cursor: grab;
+  touch-action: none;
+}
+
+.toolbar-edit.dragging,
+.toolbar-edit.dragging * {
+  cursor: grabbing;
+}
+
+.toolbar-edit-check {
+  flex: 1;
+  min-width: 0;
+}
+
+.toolbar-edit-icon {
+  display: inline-grid;
+  place-items: center;
+  font-size: 17px;
+}
+
+.toolbar-edit-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-flyout-extra {
+  border-top: 1px solid var(--hairline);
 }
 
 /* --- dock ----------------------------------------------------------- */
@@ -495,7 +897,9 @@ kbd {
   min-height: 0;
 }
 
-/* A column: its width is the layout's, set inline in the interface's pixels (it's zoomed). */
+/* A column: its width is the layout's, set inline in the interface's pixels
+   (it's zoomed). Its groups share its height (each one's flex is set by
+   Dock.tsx), so it scrolls only when even their least won't fit. */
 .dock {
   display: flex;
   flex: none;
@@ -506,32 +910,80 @@ kbd {
   gap: 1px;
 }
 
-/* Given a height by its foot: what's in it scrolls. */
-.panel.sized {
+/* A docked group never shrinks past its tab bar and a strip of what's in
+   it (GROUP_FLOOR in Dock.tsx), and nothing in it spills over the next. */
+.dock > .panel {
+  overflow: hidden;
+  min-height: calc(var(--panel-head-h) + 46px);
+}
+
+.dock > .panel.collapsed {
+  min-height: 0;
+}
+
+/* When the column's too short for every group as it is, each is held to one height (Dock.tsx useLevel). */
+.dock[data-level] > .panel:not(.collapsed):not(.sized) {
+  max-height: var(--level);
+}
+
+/* What's in a docked group scrolls inside it; a list in it (Layers,
+   History, Brushes) scrolls on its own, its buttons staying in view. */
+.dock > .panel > .panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.panel-body.live {
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-body.live > * {
   flex: none;
 }
 
-.panel.sized > .panel-body {
-  flex: 1;
+.panel-body.live > .layers,
+.panel-body.live > .brushes-panel,
+.panel-body.live > .history-list {
+  flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
 }
 
-/* Without one, a docked panel squeezed by the others scrolls what's in it,
-   rather than letting it spill out under the panels below. */
-.dock > .panel > .panel-body {
-  min-height: 0;
-  overflow-y: auto;
+.panel-body.live > .layers,
+.panel-body.live > .brushes-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.layers > .layer-list,
+.brushes-panel > .brush-list {
+  flex: 1 1 auto;
+  min-height: 24px;
+}
+
+.dock .layer-list,
+.dock .history-list,
+.dock .brushes-panel > .brush-list,
+.float-panel .layer-list,
+.float-panel .history-list,
+.float-panel .brushes-panel > .brush-list {
+  max-height: none;
+}
+
+.layers > .layers-tools {
+  flex: none;
 }
 
 .panel {
   position: relative;
 }
 
+/* The divider under a docked group, inside it so the group can clip what's in it. */
 .panel-sizer {
   position: absolute;
-  inset: auto 0 -3px;
-  height: 6px;
+  inset: auto 0 0;
+  height: 5px;
   cursor: row-resize;
   z-index: 1;
 }
@@ -556,7 +1008,7 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-inline: 8px;
+  padding-inline: var(--space-4);
   border: 0;
   border-radius: var(--radius) var(--radius) 0 0;
   background: none;
@@ -575,10 +1027,33 @@ kbd {
   color: var(--ink);
 }
 
+/* The tabs at their natural widths, out of sight, for working out which fit. */
+.panel-tabs-measure {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  left: 0;
+  top: 0;
+  flex: none;
+  width: max-content;
+  overflow: visible;
+}
+
+.panel-tabs-measure .panel-tab {
+  display: inline-flex;
+  align-items: center;
+  max-width: none;
+}
+
+.panel-tabs-more {
+  flex: none;
+  font-weight: 600;
+}
+
 /* One panel alone: its tab is the title, as before there were tabs. */
 .panel-tabs.single .panel-tab {
   max-width: none;
-  padding-inline: 2px;
+  padding-inline: var(--space-1);
   background: none;
 }
 
@@ -666,7 +1141,7 @@ kbd {
   justify-content: flex-end;
   align-items: center;
   height: 14px;
-  padding-inline: 2px;
+  padding-inline: var(--space-1);
   background: var(--chrome-edge);
 }
 
@@ -684,7 +1159,7 @@ kbd {
   border-radius: var(--radius);
   background: none;
   color: var(--ink-faint);
-  font-size: 10px;
+  font-size: var(--text-xs);
   cursor: default;
 }
 
@@ -707,8 +1182,8 @@ kbd {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 4px 0;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -803,7 +1278,7 @@ kbd {
 
 .workspace-list {
   display: grid;
-  gap: 10px;
+  gap: var(--space-5);
   margin: 0 0 12px;
   padding: 0;
   list-style: none;
@@ -811,7 +1286,7 @@ kbd {
 
 .workspace-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-4);
 }
 
 .workspace-row > input {
@@ -832,11 +1307,13 @@ kbd {
 }
 
 .panel-head {
+  position: relative;
   display: flex;
+  flex: none;
   align-items: center;
-  gap: 4px;
-  height: 26px;
-  padding-inline: 4px 2px;
+  gap: var(--space-2);
+  height: var(--panel-head-h);
+  padding-inline: var(--space-2) var(--space-1);
   background: var(--panel-head);
   border-bottom: 1px solid var(--hairline);
 }
@@ -845,7 +1322,7 @@ kbd {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   min-width: 0;
   height: 100%;
   border: 0;
@@ -906,15 +1383,15 @@ kbd {
 
 .panel-tools {
   display: flex;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--hairline);
 }
 
 /* The Layers panel's icon buttons, at the right of its foot as in Photoshop. */
 .layers-tools {
   justify-content: flex-end;
-  gap: 2px;
+  gap: var(--space-1);
   padding: 3px 6px;
 }
 
@@ -934,7 +1411,7 @@ kbd {
 /* --- layers ---------------------------------------------------------- */
 .layer-list {
   margin: 0;
-  padding: 2px 0;
+  padding: var(--space-1) 0;
   list-style: none;
   max-height: 360px;
   overflow-y: auto;
@@ -943,9 +1420,9 @@ kbd {
 .layer-row {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-1);
   height: 28px;
-  padding-right: 8px;
+  padding-right: var(--space-4);
   cursor: default;
 }
 
@@ -991,14 +1468,14 @@ kbd {
 
 .layer-kind {
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--text-sm);
   white-space: nowrap;
 }
 
 .layer-rename {
   flex: 1;
   min-width: 0;
-  padding: 2px 6px;
+  padding: var(--space-1) var(--space-3);
   border: 1px solid var(--focus);
   border-radius: var(--radius);
   background: var(--field);
@@ -1008,7 +1485,7 @@ kbd {
 /* --- history --------------------------------------------------------- */
 .history-list {
   margin: 0;
-  padding: 2px 0;
+  padding: var(--space-1) 0;
   list-style: none;
   max-height: 260px;
   overflow-y: auto;
@@ -1016,7 +1493,7 @@ kbd {
 
 .history-step {
   width: 100%;
-  padding: 4px 12px;
+  padding: var(--space-2) var(--space-5);
   border: 0;
   background: none;
   text-align: left;
@@ -1036,24 +1513,24 @@ kbd {
 
 /* --- properties ------------------------------------------------------ */
 .props-doc {
-  padding: 12px;
+  padding: var(--space-5);
 }
 
 .props-layer {
-  padding: 12px;
+  padding: var(--space-5);
 }
 
 .props-title {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-4);
 }
 
 .slider-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 
 .slider-row input[type='range'] {
@@ -1073,7 +1550,7 @@ kbd {
 .check {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 
 .check input {
@@ -1084,13 +1561,13 @@ kbd {
 .statusbar {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-6);
   height: 24px;
   padding-inline: 10px;
   background: var(--chrome);
   border-top: 1px solid var(--chrome-edge);
   color: var(--ink-dim);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   white-space: nowrap;
 }
 
@@ -1105,7 +1582,7 @@ kbd {
 .status-engine {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
 }
 
 .status-dot {
@@ -1152,6 +1629,27 @@ kbd {
   width: min(380px, calc(100vw - 32px));
 }
 
+/* While a dialog previews, the rest of the interface waits, as under a backdrop. */
+:root[data-previewing] .dock-side,
+:root[data-previewing] .float-panel,
+:root[data-previewing] .toolbar,
+:root[data-previewing] .options-bar,
+:root[data-previewing] .menubar,
+:root[data-previewing] .tabs {
+  pointer-events: none;
+}
+
+/* A previewing dialog: the preview seen as it is, beside the dialog. */
+.scrim.floating.preview .dialog {
+  width: min(400px, calc(100vw - 32px));
+  max-height: calc(100vh - 96px);
+}
+
+/* Layer Style has its list of effects beside their settings. */
+.scrim.floating.preview .dialog[data-dialog='layerStyle'] {
+  width: min(640px, calc(100vw - 32px));
+}
+
 .dialog {
   width: min(560px, calc(100vw - 32px));
   max-height: 72vh;
@@ -1165,6 +1663,9 @@ kbd {
 }
 
 .dialog-head {
+  cursor: move;
+  touch-action: none;
+  user-select: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1176,7 +1677,7 @@ kbd {
 
 .dialog-head h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
@@ -1185,7 +1686,7 @@ kbd {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .dialog-body p {
@@ -1197,7 +1698,7 @@ kbd {
 .dialog-foot {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-4);
   padding: 10px 16px;
   border-top: 1px solid var(--hairline);
 }
@@ -1228,7 +1729,7 @@ kbd {
 }
 
 .button kbd {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
 }
 
 .button.danger {
@@ -1241,7 +1742,7 @@ kbd {
 .form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .form p {
@@ -1252,7 +1753,7 @@ kbd {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2);
   min-width: 0;
   flex: 1;
 }
@@ -1264,7 +1765,7 @@ kbd {
 
 .field-row {
   display: flex;
-  gap: 10px;
+  gap: var(--space-5);
   align-items: flex-start;
 }
 
@@ -1286,12 +1787,12 @@ kbd {
 
 .field-error {
   color: var(--danger);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .form-summary {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .dialog-foot-gap {
@@ -1301,7 +1802,7 @@ kbd {
 .anchor-grid {
   display: grid;
   grid-template-columns: repeat(3, 26px);
-  gap: 3px;
+  gap: var(--space-2);
 }
 
 .anchor {
@@ -1320,7 +1821,7 @@ kbd {
 .facts {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 4px 16px;
+  gap: var(--space-2) var(--space-6);
   margin: 0;
 }
 
@@ -1331,13 +1832,13 @@ kbd {
 .facts dd {
   margin: 0;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
 
 .shortcut-group h3 {
   margin: 0 0 4px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-faint);
@@ -1347,9 +1848,9 @@ kbd {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
   min-height: 28px;
-  padding: 2px 0;
+  padding: var(--space-1) 0;
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -1358,10 +1859,121 @@ kbd {
   width: min(720px, calc(100vw - 32px));
 }
 
+/* Save for Web: the panes to compare on the left, the chosen one's settings on the right. */
+.dialog[data-dialog='saveForWeb'] {
+  width: min(1180px, calc(100vw - 32px));
+  max-height: 92vh;
+}
+.sfw {
+  display: flex;
+  gap: var(--space-6);
+  min-height: 0;
+  height: min(640px, calc(92vh - 130px));
+}
+.sfw-view {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.sfw-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-4);
+}
+.sfw-tabs {
+  display: inline-flex;
+  border: 1px solid var(--field-edge);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.sfw-tabs button {
+  border: none;
+  background: none;
+  color: var(--ink);
+  padding: var(--space-2) var(--space-5);
+  cursor: pointer;
+}
+.sfw-tabs button[aria-selected='true'] {
+  background: var(--accent);
+  color: var(--accent-ink, #fff);
+}
+.sfw-panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
+}
+.sfw-2up {
+  grid-template-columns: 1fr 1fr;
+}
+.sfw-4up {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.sfw-pane {
+  margin: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 2px solid transparent;
+  border-radius: 4px;
+}
+.sfw-pane.chosen {
+  border-color: var(--accent);
+}
+.sfw-canvas {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+.sfw-pane figcaption {
+  font-size: var(--text-sm);
+  padding: 3px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sfw-settings {
+  width: 250px;
+  flex: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-content: start;
+  gap: var(--space-5);
+}
+.sfw-settings > * {
+  flex: none;
+}
+.sfw-size {
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.sfw-size input[type='number'] {
+  width: 76px;
+}
+.sfw-busy {
+  margin-right: auto;
+  font-size: var(--text-md);
+  opacity: 0.7;
+}
+
 .keys-top {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .keys-search {
@@ -1373,21 +1985,36 @@ kbd {
   color: var(--ink);
 }
 
+.keys-set {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--ink-dim);
+}
+
+.keys-set select {
+  padding: 4px 6px;
+  border: 1px solid var(--field-edge);
+  border-radius: var(--radius);
+  background: var(--field);
+  color: var(--ink);
+}
+
 .keys-count {
   color: var(--ink-faint);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .keys-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
 }
 
 .keys-label {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
@@ -1403,7 +2030,7 @@ kbd {
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 4px;
+  gap: var(--space-2);
 }
 
 .keys-chip {
@@ -1425,15 +2052,15 @@ kbd {
 }
 
 .keys-chip-key {
-  padding: 2px 6px;
+  padding: var(--space-1) var(--space-3);
   color: var(--ink);
 }
 
 .keys-chip-remove {
   display: inline-grid;
   place-items: center;
-  padding: 0 4px;
-  font-size: 11px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
   border-left: 1px solid var(--hairline);
 }
 
@@ -1470,7 +2097,7 @@ kbd {
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--accent) 10%, var(--field));
   color: var(--ink);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   outline: none;
 }
 
@@ -1500,7 +2127,7 @@ kbd {
   border-bottom: 1px solid var(--hairline);
   background: var(--field);
   color: var(--ink);
-  font-size: 14px;
+  font-size: var(--text-lg);
   outline: none;
 }
 
@@ -1508,14 +2135,14 @@ kbd {
   max-height: 46vh;
   overflow-y: auto;
   margin: 0;
-  padding: 4px;
+  padding: var(--space-2);
   list-style: none;
 }
 
 .palette-item {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 12px;
+  gap: var(--space-5);
   align-items: baseline;
   padding: 6px 10px;
   border-radius: var(--radius);
@@ -1538,7 +2165,7 @@ kbd {
 
 .palette-shortcut {
   color: var(--ink-faint);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .palette-none {
@@ -1560,7 +2187,7 @@ kbd {
   max-width: 560px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-5);
   padding: 24px 28px;
   background: var(--panel);
   border: 1px solid var(--rule);
@@ -1584,7 +2211,7 @@ kbd {
 
 .screen-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-4);
   margin-top: 6px;
 }
 
@@ -1598,7 +2225,7 @@ kbd {
 .colour {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-3);
   padding: 10px 12px 12px;
 }
 
@@ -1606,7 +2233,7 @@ kbd {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 10px;
+  gap: var(--space-5);
   margin-bottom: 4px;
 }
 
@@ -1694,7 +2321,7 @@ kbd {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 .colour-model {
@@ -1703,7 +2330,7 @@ kbd {
   border-radius: var(--radius);
   background: none;
   color: var(--ink-dim);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .colour-model[aria-selected='true'] {
@@ -1716,7 +2343,7 @@ kbd {
   display: grid;
   grid-template-columns: 14px 1fr 44px 14px;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
 }
 
 .colour-label {
@@ -1775,12 +2402,12 @@ kbd {
   background: none;
   color: var(--ink);
   text-align: left;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 .field-note {
   color: var(--ink-faint);
-  font-size: 11.5px;
+  font-size: var(--text-sm);
 }
 
 /* --- layer thumbnails ---------------------------------------------------
@@ -1795,7 +2422,8 @@ kbd {
   border-radius: 2px;
 }
 
-.layer-thumb.checker {
+.layer-thumb.checker,
+.symbol-thumb.checker {
   background: repeating-conic-gradient(#fff 0 25%, #ccc 0 50%) 0 0 / 8px 8px;
 }
 
@@ -1845,7 +2473,7 @@ kbd {
   flex: none;
   width: 12px;
   color: var(--ink-faint);
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 
 /* Where a dragged layer would land: a line above or below a row, or the
@@ -1893,7 +2521,7 @@ kbd {
 .options-bar {
   display: flex;
   align-items: center;
-  gap: 4px 14px;
+  gap: var(--space-2) var(--space-6);
   height: 34px;
   padding: 0 10px;
   overflow-x: auto;
@@ -1901,7 +2529,7 @@ kbd {
   background: var(--chrome);
   border-bottom: 1px solid var(--chrome-edge);
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: var(--text-md);
 }
 
 .options-tool {
@@ -1917,7 +2545,7 @@ kbd {
 .options-field {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-3);
 }
 
 .options-field select {
@@ -1932,7 +2560,7 @@ kbd {
 
 .options-number {
   width: 44px;
-  padding: 2px 4px;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--field-edge);
   border-radius: var(--radius);
   background: var(--field);
@@ -1947,7 +2575,7 @@ kbd {
   border-radius: var(--radius);
   background: var(--field);
   color: var(--ink-dim);
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 
 .options-toggle[aria-pressed='true'] {
@@ -1978,7 +2606,7 @@ kbd {
   position: absolute;
   right: -4px;
   bottom: -5px;
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-style: italic;
   color: var(--ink);
   background: var(--panel);
@@ -1987,6 +2615,55 @@ kbd {
 }
 .channel-row.current .channel-name {
   font-weight: 600;
+}
+
+/* Vector brushes: each drawn along a curve, on the panel's own colour (white behind, for the art's colours). */
+.brush-apply {
+  padding: 0;
+  border: none;
+  background: #fff;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px var(--field-edge);
+  cursor: pointer;
+  flex: none;
+  line-height: 0;
+}
+.brush-preview {
+  display: block;
+}
+.brush-kind {
+  flex: none;
+  font-size: var(--text-sm);
+  color: var(--ink-faint, var(--ink));
+  opacity: 0.75;
+}
+.brush-row .icon-button {
+  flex: none;
+}
+.panel-subhead {
+  margin: 6px 8px 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+.brush-options-preview {
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px var(--field-edge);
+  line-height: 0;
+  margin-bottom: 8px;
+}
+.brush-options-preview svg {
+  width: 100%;
+  height: auto;
+}
+.brush-tiles {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: var(--space-2) var(--space-4);
+  align-items: center;
 }
 
 /* A colour wheel (Colour Grading): hues round it, gray in the middle. */
@@ -2032,7 +2709,7 @@ kbd {
 .swatch-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(22px, 1fr));
-  gap: 4px;
+  gap: var(--space-2);
   padding: 8px 10px;
 }
 
@@ -2054,7 +2731,7 @@ kbd {
 .doc-swatches {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2);
   padding: 8px 10px 0;
 }
 
@@ -2068,14 +2745,14 @@ kbd {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 .doc-swatch {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) 14px;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
 }
 
 .doc-swatch .swatch-chip {
@@ -2090,7 +2767,7 @@ kbd {
   text-align: left;
   background: none;
   border: 0;
-  padding: 2px 4px;
+  padding: var(--space-1) var(--space-2);
   color: inherit;
   border-radius: 3px;
 }
@@ -2101,7 +2778,7 @@ kbd {
 }
 
 .doc-swatch-kind {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--ink-dim);
   text-align: center;
 }
@@ -2109,8 +2786,8 @@ kbd {
 .doc-swatch-options {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px 0;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
   border-top: 1px solid var(--hairline);
   border-bottom: 1px solid var(--hairline);
 }
@@ -2122,11 +2799,11 @@ fieldset.field-group {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-4);
 }
 
 fieldset.field-group legend {
-  padding: 0 4px;
+  padding: 0 var(--space-2);
   color: var(--ink-dim);
 }
 
@@ -2134,7 +2811,7 @@ fieldset.field-group legend {
 .separations-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-4);
   padding: 8px 10px;
 }
 
@@ -2144,7 +2821,7 @@ fieldset.field-group legend {
 }
 
 .separations td {
-  padding: 2px 0;
+  padding: var(--space-1) 0;
 }
 
 .separations td.num {
@@ -2175,7 +2852,7 @@ fieldset.field-group legend {
 /* --- brushes ----------------------------------------------------------- */
 .brush-list {
   margin: 0;
-  padding: 4px;
+  padding: var(--space-2);
   list-style: none;
   max-height: 340px;
   overflow-y: auto;
@@ -2189,9 +2866,9 @@ fieldset.field-group legend {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
+  gap: var(--space-1);
   width: 100%;
-  padding: 4px 8px;
+  padding: var(--space-2) var(--space-4);
   border: 1px solid transparent;
   border-radius: var(--radius);
   background: none;
@@ -2209,7 +2886,7 @@ fieldset.field-group legend {
 }
 
 .brush-name {
-  font-size: 12px;
+  font-size: var(--text-md);
   color: var(--ink-dim);
 }
 
@@ -2229,7 +2906,7 @@ fieldset.field-group legend {
 
 .brush-save {
   display: flex;
-  gap: 6px;
+  gap: var(--space-3);
 }
 
 .brush-save input {
@@ -2246,7 +2923,7 @@ fieldset.field-group legend {
 .brush-group {
   position: relative;
   margin: 6px 4px 2px;
-  font-size: 11px;
+  font-size: var(--text-sm);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--ink-faint);
@@ -2256,7 +2933,7 @@ fieldset.field-group legend {
 .brush-settings {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-3);
   padding: 6px 8px 10px;
 }
 
@@ -2267,12 +2944,12 @@ fieldset.field-group legend {
 .brush-section-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
 }
 
 .brush-section-title {
   flex: 1;
-  padding: 6px 0;
+  padding: var(--space-3) 0;
   border: 0;
   background: none;
   color: var(--ink);
@@ -2288,21 +2965,21 @@ fieldset.field-group legend {
 .brush-section-body {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-bottom: 8px;
+  gap: var(--space-3);
+  padding-bottom: var(--space-4);
 }
 
 .check-row,
 .brush-switches {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
+  gap: var(--space-2) var(--space-5);
 }
 
 .control-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2);
   padding-left: 10px;
   border-left: 2px solid var(--hairline);
 }
@@ -2314,16 +2991,16 @@ fieldset.field-group legend {
 .pose-row {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 .tip-picker {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
-  gap: 4px;
+  gap: var(--space-2);
   max-height: 160px;
   overflow-y: auto;
-  padding: 2px;
+  padding: var(--space-1);
   background: var(--field);
   border: 1px solid var(--field-edge);
   border-radius: var(--radius);
@@ -2359,7 +3036,7 @@ fieldset.field-group legend {
 .pen-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 
 .pen-row input {
@@ -2369,7 +3046,7 @@ fieldset.field-group legend {
 .pen-try {
   display: grid;
   grid-template-columns: 120px 1fr;
-  gap: 12px;
+  gap: var(--space-5);
   align-items: stretch;
 }
 
@@ -2404,7 +3081,7 @@ fieldset.field-group legend {
   border: 1px dashed var(--field-edge);
   border-radius: var(--radius);
   color: var(--ink-faint);
-  font-size: 12.5px;
+  font-size: var(--text-md);
   touch-action: none;
 }
 
@@ -2414,7 +3091,7 @@ fieldset.field-group legend {
 .param-controls {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-5);
 }
 
 .param-swatch {
@@ -2423,6 +3100,100 @@ fieldset.field-group legend {
   flex: none;
   border: 1px solid var(--field-edge);
   border-radius: var(--radius);
+}
+
+/* A colour chip: a swatch that opens the colour picker. */
+.colour-chip {
+  width: 26px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--field-edge);
+  border-radius: var(--radius);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
+}
+.colour-chip:hover {
+  border-color: var(--accent-line, var(--accent));
+}
+.colour-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.colour-chip[aria-expanded='true'] {
+  border-color: var(--accent);
+}
+.colour-chip.small {
+  width: 18px;
+  height: 18px;
+}
+
+/* The colour picker a chip opens: over everything, beside the chip. */
+.colour-picker {
+  position: fixed;
+  z-index: calc(var(--z-palette) + 20);
+  width: 244px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  background: var(--panel);
+  border: 1px solid var(--menu-edge);
+  border-radius: 8px;
+  box-shadow: 0 12px 34px var(--shadow);
+}
+.picker-square {
+  position: relative;
+  border-radius: var(--radius);
+  cursor: crosshair;
+  touch-action: none;
+}
+.picker-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6);
+  pointer-events: none;
+}
+.picker-hue {
+  position: relative;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+  cursor: ew-resize;
+  touch-action: none;
+}
+.picker-hue-mark {
+  position: absolute;
+  top: -2px;
+  width: 6px;
+  height: 16px;
+  margin-left: -3px;
+  border: 2px solid #fff;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6);
+  pointer-events: none;
+}
+.colour-picker .colour-models {
+  margin: 2px 0;
+}
+.picker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  max-height: 72px;
+  overflow-y: auto;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--hairline);
+}
+.picker-sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--hairline);
+  margin: 0 2px;
 }
 
 .curve-box {
@@ -2477,14 +3248,14 @@ fieldset.field-group legend {
 
 .levels-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-4);
 }
 
 .levels-field {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: 11.5px;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
   color: var(--ink-dim);
   flex: 1;
   min-width: 0;
@@ -2503,7 +3274,7 @@ fieldset.field-group legend {
 .gradient-stop {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
 }
 
 .gradient-stop input {
@@ -2525,24 +3296,24 @@ fieldset.field-group legend {
 
 .layer-fx {
   flex: none;
-  padding: 0 4px;
+  padding: 0 var(--space-2);
   margin-left: 4px;
   border: 1px solid var(--field-edge);
   border-radius: var(--radius);
   background: var(--field);
   color: var(--ink-dim);
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-style: italic;
 }
 
 .effect-row {
-  font-size: 12px;
+  font-size: var(--text-md);
   color: var(--ink-dim);
 }
 
 .layer-style {
   display: flex;
-  gap: 16px;
+  gap: var(--space-6);
   min-height: 320px;
 }
 
@@ -2554,13 +3325,13 @@ fieldset.field-group legend {
   width: 180px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 .fx-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   padding: 3px 6px;
   border-radius: var(--radius);
 }
@@ -2575,7 +3346,7 @@ fieldset.field-group legend {
   background: none;
   border: none;
   color: var(--ink);
-  padding: 2px 0;
+  padding: var(--space-1) 0;
 }
 
 .fx-settings {
@@ -2587,13 +3358,13 @@ fieldset.field-group legend {
 
 .fx-settings h3 {
   margin: 0 0 6px;
-  font-size: 14px;
+  font-size: var(--text-lg);
 }
 
 .props-fx {
   margin: 0;
   padding-left: 18px;
-  font-size: 12px;
+  font-size: var(--text-md);
 }
 
 /* --- vectors ---------------------------------------------------------------------------- */
@@ -2603,7 +3374,7 @@ fieldset.field-group legend {
   flex: none;
   width: 14px;
   color: var(--ink-dim);
-  font-size: 12px;
+  font-size: var(--text-md);
   text-align: center;
 }
 
@@ -2615,36 +3386,40 @@ fieldset.field-group legend {
 .box-fields {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
+  gap: var(--space-2);
 }
 
 .box-field {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
-.box-field span {
+.box-field > label {
+  flex: none;
+  min-width: 10px;
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .box-field input {
   width: 100%;
   min-width: 0;
+  padding-inline: var(--space-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .shape-fields {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-4);
 }
 
 .appearance-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
 }
 
 .appearance-head .field-label {
@@ -2666,8 +3441,8 @@ fieldset.field-group legend {
 .appearance-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 4px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
 }
 
 .appearance-item + .appearance-item {
@@ -2686,9 +3461,9 @@ fieldset.field-group legend {
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   min-width: 0;
-  padding: 2px;
+  padding: var(--space-1);
   border: 0;
   background: none;
   text-align: left;
@@ -2704,7 +3479,7 @@ fieldset.field-group legend {
   border-radius: var(--radius);
   background: none;
   color: var(--ink-dim);
-  font-size: 10px;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 
@@ -2721,8 +3496,8 @@ fieldset.field-group legend {
 .appearance-editor {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px 0 0 8px;
+  gap: var(--space-4);
+  padding: var(--space-4) 0 0 var(--space-4);
   border-left: 2px solid var(--accent-line);
 }
 
@@ -2731,14 +3506,14 @@ fieldset.field-group legend {
 .type-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-4);
   padding: 8px 10px;
 }
 
 .type-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 10px;
+  gap: var(--space-3) var(--space-5);
 }
 
 .type-field {
@@ -2746,14 +3521,14 @@ fieldset.field-group legend {
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto auto;
   align-items: center;
-  gap: 2px 4px;
+  gap: var(--space-1) var(--space-2);
   min-width: 0;
 }
 
-.type-field span {
+.type-field > label {
   grid-column: 1 / -1;
   color: var(--ink-dim);
-  font-size: 11px;
+  font-size: var(--text-sm);
 }
 
 .type-field input {
@@ -2763,7 +3538,7 @@ fieldset.field-group legend {
 
 .type-field em {
   color: var(--ink-faint);
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-style: normal;
   white-space: nowrap;
 }
@@ -2771,7 +3546,7 @@ fieldset.field-group legend {
 .type-axes {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-3);
 }
 
 .type-features summary {
@@ -2782,13 +3557,13 @@ fieldset.field-group legend {
 .type-features[open] {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2);
 }
 
 .type-styles {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2);
 }
 
 /* Icons (ui/Icon.tsx): the current text colour, at the current font size. */
@@ -2809,7 +3584,7 @@ fieldset.field-group legend {
 .channel-list {
   list-style: none;
   margin: 0;
-  padding: 4px 0;
+  padding: var(--space-2) 0;
   display: flex;
   flex-direction: column;
 }
@@ -2817,7 +3592,7 @@ fieldset.field-group legend {
 .channel-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   padding: 3px 8px;
   min-height: 28px;
 }
@@ -2842,6 +3617,40 @@ fieldset.field-group legend {
   height: 22px;
   border-radius: 3px;
   cursor: pointer;
+}
+
+/* A channel's picture, as the Layers panel's thumbnails are; its shortcut at the end of the row. */
+.channel-thumb {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--field-edge);
+  border-radius: 2px;
+}
+
+.channel-thumb.checker {
+  background: repeating-conic-gradient(#fff 0 25%, #ccc 0 50%) 0 0 / 8px 8px;
+}
+
+.channel-thumb canvas {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.channel-row .channel-key {
+  flex: none;
+}
+
+.channel-row[draggable="true"] {
+  cursor: grab;
+}
+
+/* Where a dragged channel will go: in front of this one. */
+.channel-row[data-drop="here"] {
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 /* --- interface settings (Edit → Interface) ------------------------------
@@ -2902,6 +3711,9 @@ fieldset.field-group legend {
   padding: 3px;
   gap: 1px;
 }
+:root[data-density='compact'] .toolbar.two-columns {
+  width: 60px;
+}
 :root[data-density='compact'] .tool {
   width: 26px;
   height: 26px;
@@ -2910,11 +3722,8 @@ fieldset.field-group legend {
 :root[data-density='compact'] .layer-row {
   height: 23px;
 }
-:root[data-density='compact'] .panel-head {
-  height: 22px;
-}
 :root[data-density='compact'] .menu-button {
-  padding-block: 2px;
+  padding-block: var(--space-1);
 }
 :root[data-density='compact'] .statusbar {
   height: 21px;
@@ -2965,7 +3774,7 @@ fieldset.field-group legend {
   top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  padding: 6px 12px;
+  padding: var(--space-3) var(--space-5);
   border-radius: 6px;
   background: var(--menu);
   border: 1px solid var(--menu-edge);
@@ -2996,14 +3805,14 @@ fieldset.field-group legend {
 .workspace-switch {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   color: var(--ink-dim);
   font-size: 15px;
 }
 
 .workspace-switch select {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-md);
   color: var(--ink);
   background: var(--field);
   border: 1px solid var(--field-edge);
@@ -3022,7 +3831,7 @@ fieldset.field-group legend {
   border: 1px solid var(--menu-edge);
   box-shadow: 0 6px 18px var(--shadow);
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--text-md);
   line-height: 1.4;
   pointer-events: none;
   white-space: normal;
@@ -3036,13 +3845,13 @@ fieldset.field-group legend {
 .tip-title {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: var(--space-5);
   justify-content: space-between;
 }
 
 .tip-title kbd,
 .chord kbd {
-  padding: 0 4px;
+  padding: 0 var(--space-2);
   border-radius: 3px;
   border: 1px solid var(--rule);
   background: var(--field);
@@ -3060,13 +3869,13 @@ fieldset.field-group legend {
 
 .chord {
   display: inline-flex;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 .key-list {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 3px 10px;
+  gap: var(--space-2) var(--space-5);
   margin: 7px 0 0;
 }
 
@@ -3090,7 +3899,7 @@ fieldset.field-group legend {
 /* --- the status bar's key hints ------------------------------------------- */
 .key-hints {
   display: flex;
-  gap: 14px;
+  gap: var(--space-6);
   min-width: 0;
   overflow: hidden;
   color: var(--ink-faint);
@@ -3101,7 +3910,7 @@ fieldset.field-group legend {
 }
 
 .key-hint kbd {
-  font-size: 10.5px;
+  font-size: var(--text-xs);
 }
 
 .key-hint.held {
@@ -3153,7 +3962,7 @@ fieldset.field-group legend {
   background: var(--menu);
   border: 1px solid var(--menu-edge);
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--text-md);
   white-space: nowrap;
 }
 
@@ -3226,7 +4035,7 @@ fieldset.field-group legend {
   border-radius: 4px;
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 12px;
+  font-size: var(--text-md);
   white-space: nowrap;
   pointer-events: none;
   box-shadow: 0 4px 12px var(--shadow);
@@ -3243,8 +4052,8 @@ fieldset.field-group legend {
   z-index: var(--z-menu);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+  gap: var(--space-3);
+  padding: var(--space-4);
   border-radius: 6px;
   background: var(--menu);
   border: 1px solid var(--menu-edge);
@@ -3272,7 +4081,7 @@ fieldset.field-group legend {
 
 .palette-why {
   display: block;
-  font-size: 11.5px;
+  font-size: var(--text-sm);
   color: var(--ink-faint);
 }
 
@@ -3322,7 +4131,7 @@ fieldset.field-group legend {
   border-bottom: 1px solid var(--chrome-edge);
   display: grid;
   place-items: center;
-  font-size: 9px;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
   cursor: crosshair;
   user-select: none;
@@ -3330,12 +4139,12 @@ fieldset.field-group legend {
 
 .drag-readout {
   position: absolute;
-  padding: 2px 6px;
+  padding: var(--space-1) var(--space-3);
   border-radius: 4px;
   background: var(--menu);
   border: 1px solid var(--menu-edge);
   color: var(--ink);
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   pointer-events: none;
@@ -3346,7 +4155,7 @@ fieldset.field-group legend {
 .field-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
-  gap: 8px;
+  gap: var(--space-4);
   margin-inline-start: 22px;
 }
 
@@ -3360,7 +4169,7 @@ fieldset.field-group legend {
   padding: 6px 10px 10px;
   margin: 0;
   display: grid;
-  gap: 4px;
+  gap: var(--space-2);
 }
 
 /* Layers selected with the key layer: lighter, so the key layer stands out. */
@@ -3388,4 +4197,267 @@ fieldset.field-group legend {
     0 4px 10px rgb(0 0 0 / 0.35);
   pointer-events: none;
   z-index: var(--z-overlay);
+}
+
+/* --- shared controls (ui/controls.tsx) ----------------------------------- */
+
+/* A label's ⓘ: the setting's explanation, in its tooltip. */
+.hint {
+  display: inline-grid;
+  place-items: center;
+  margin-inline-start: var(--space-2);
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
+  vertical-align: -1px;
+  cursor: help;
+}
+
+.hint:hover {
+  color: var(--accent);
+}
+
+.field-label {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-dim);
+}
+
+/* Facts about the thing (counts, sizes, what a setting applies to): one quiet line. */
+.field-meta {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
+}
+
+/* Nothing here yet: one short line, its how-to behind the ⓘ. */
+.field-empty {
+  margin: 0;
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.field-warning {
+  color: var(--warn, var(--danger));
+  font-size: var(--text-sm);
+}
+
+/* A small fact at the end of a list row. */
+.item-meta {
+  color: var(--ink-faint);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+/* Checkboxes that belong together, on one line where they fit. */
+.check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+}
+
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* Set to something other than its default: a dot before the label (a double-click puts the default back). */
+[data-changed]::before {
+  content: '';
+  flex: none;
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-inline-end: var(--space-2);
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+/* A label that scrubs its number: drag sideways. */
+.scrub {
+  cursor: ew-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+:root[data-scrubbing],
+:root[data-scrubbing] * {
+  cursor: ew-resize !important;
+}
+
+.number-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.number-field input {
+  width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A slider and its number as one bar: the range input underneath, filled to
+   the value; the label at its left and the number and unit at its right on
+   top. */
+.slider-field .slider-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  height: var(--control-h);
+  gap: 0;
+}
+
+.slider-field .slider-row > input[type='range'] {
+  grid-area: 1 / 1 / 2 / 4;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 1px solid var(--field-edge);
+  border-radius: var(--radius);
+  background: linear-gradient(to right, color-mix(in srgb, var(--accent) 30%, var(--field)) var(--fill), var(--field) var(--fill));
+  cursor: default;
+}
+
+.slider-field .slider-row > input[type='range']:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--field-edge));
+}
+
+.slider-field .slider-row > input[type='range']:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -1px;
+}
+
+.slider-field .slider-row > input[type='range']::-webkit-slider-runnable-track {
+  height: 100%;
+  background: none;
+}
+
+.slider-field .slider-row > input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 2px;
+  height: 100%;
+  background: var(--accent);
+}
+
+.slider-field .slider-row > input[type='range']::-moz-range-thumb {
+  width: 2px;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: var(--accent);
+}
+
+.slider-field .slider-row > input[type='range']:disabled {
+  opacity: 0.5;
+}
+
+.slider-field .slider-label {
+  grid-area: 1 / 1 / 2 / 2;
+  justify-self: start;
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding-inline: var(--space-3) var(--space-2);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-dim);
+}
+
+.slider-field .slider-row > .slider-number {
+  grid-area: 1 / 2 / 2 / 3;
+  position: relative;
+  z-index: 1;
+  width: 48px;
+  height: calc(var(--control-h) - 6px);
+  padding: 0 var(--space-1);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.slider-field .slider-row > .slider-number:hover {
+  border-color: var(--field-edge);
+  background: var(--field);
+}
+
+.slider-field .slider-row > .slider-number:focus {
+  border-color: var(--focus);
+  background: var(--field);
+  outline: none;
+}
+
+.slider-field .slider-row > .unit {
+  grid-area: 1 / 3 / 2 / 4;
+  position: relative;
+  z-index: 1;
+  min-width: var(--space-3);
+  padding-inline-end: var(--space-3);
+  font-size: var(--text-sm);
+  pointer-events: none;
+}
+
+/* A few choices side by side, one pressed. */
+.segmented {
+  display: flex;
+  min-width: 0;
+  padding: var(--space-1);
+  gap: var(--space-1);
+  border: 1px solid var(--field-edge);
+  border-radius: var(--radius);
+  background: var(--field);
+}
+
+.segmented > button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: calc(var(--control-h) - 6px);
+  padding: 0 var(--space-3);
+  overflow: hidden;
+  border: 0;
+  border-radius: calc(var(--radius) - 1px);
+  background: none;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.segmented > button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.segmented > button[aria-checked='true'] {
+  background: var(--selected);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.segmented > button:disabled {
+  opacity: 0.5;
+}
+
+/* Panels' forms: one rhythm, a step tighter than a dialog's. */
+.props-layer,
+.props-doc {
+  gap: var(--space-4);
+}
+
+.props-vector,
+.shape-fields,
+.appearance-editor,
+.param-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }

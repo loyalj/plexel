@@ -10,10 +10,11 @@
  */
 import { addChannel, addMask, removeChannel, renameChannel, removeNode, setChannelTiles, setMaskProps, setSelection, setTiles } from '../doc/edit'
 import type { ColourRangePreset } from '../tiles/coverage'
-import type { Doc, DocNode, NodeId } from '../doc/types'
+import { channelKind, type Doc, type DocChannel, type DocNode, type NodeId } from '../doc/types'
 import { engine } from '../engine/EngineHost'
 import type { SelectModify, SelectShape } from '../engine/selectHost'
 import type { CombineOp, Refine } from '../tiles/coverage'
+import { channelTarget, planesTarget } from './channels'
 import { colours } from './colours'
 import { documents, newId, type OpenDoc } from './documents'
 import { notify } from './notices'
@@ -99,8 +100,10 @@ export function wandAt(x: number, y: number, op: CombineOp) {
   const doc = d.history.present
   const w = selectTools().get().wand
   const node = w.sampleAll ? null : layerFor(d)
+  // An alpha or spot channel targeted is what's read, as in Photoshop.
+  const ch = channelTarget(d)
   void selectWith(d, 'Magic Wand', () =>
-    engine().call('select.wand', { key: d.key, x, y, tolerance: w.tolerance, contiguous: w.contiguous, node: node?.id ?? null, antialias: w.antialias, op, current: doc.selection?.tiles ?? null }),
+    engine().call('select.wand', { key: d.key, x, y, tolerance: w.tolerance, contiguous: w.contiguous, node: node?.id ?? null, antialias: w.antialias, op, current: doc.selection?.tiles ?? null, ...(ch ? { channel: ch.id } : {}) }),
   )
 }
 
@@ -164,7 +167,7 @@ export function commitSelectionFrom(set: string | null, label: string) {
 }
 
 /** Select and Mask's edge detection and refine brush, on a selection: the result, held until `release`, without a step. */
-export async function refineEdgeSet(current: string, o: { radius: number; smart: boolean; strokes: { points: [number, number][]; radius: number }[]; sampleAll?: boolean }): Promise<string | null> {
+async function refineEdgeSet(current: string, o: { radius: number; smart: boolean; strokes: { points: [number, number][]; radius: number }[]; sampleAll?: boolean }): Promise<string | null> {
   const d = active()
   if (!d) return null
   return engine().call('select.refineEdge', { key: d.key, node: sampled(d, o.sampleAll ?? true), current, radius: o.radius, smart: o.smart, strokes: o.strokes })
@@ -203,6 +206,17 @@ export async function saveSelection(o: { channel: string | null; name: string; o
   } catch (e) {
     notify('error', 'Save Selection didn’t work.', [e instanceof Error ? e.message : String(e)])
   }
+}
+
+/**
+ * A colour channel loaded as the selection by its brightness (CMYK: white
+ * where there's no ink), or with `index` null the composite by its
+ * luminosity (Select → Load Luminosity): a Ctrl-click on a colour row.
+ */
+export function loadColourChannel(index: number | null, op: CombineOp) {
+  const d = active()
+  if (!d) return
+  void selectWith(d, index === null ? 'Load Luminosity' : 'Load Channel', () => engine().call('select.fromComposite', { key: d.key, channel: index, op, current: d.history.present.selection?.tiles ?? null }))
 }
 
 /** Select → Load Selection, or a click on a channel: the channel as the selection, combined as `op` says. */
@@ -319,37 +333,51 @@ function refusal(node: DocNode): string | null {
 
 /**
  * Fills the target with the foreground or background colour, through the
- * selection when there is one (Edit → Fill). On a mask, the colour's gray
- * value is what's filled: white reveals, black hides.
+ * selection when there is one (Edit → Fill). On a mask or an alpha
+ * channel, the colour's gray value is what's filled: white reveals or
+ * selects, black hides; on a spot channel black is full ink.
  */
-export async function fillTarget(which: 'fg' | 'bg') {
+export async function fillTarget(which: 'fg' | 'bg', label = which === 'fg' ? 'Fill with Foreground' : 'Fill with Background') {
   const d = active()
   if (!d) return
-  const t = pixelTarget(d)
-  if (!t) return
-  const why = refusal(t.node)
-  if (why) return notify('info', why)
   const doc = d.history.present
-  const colour = colours().get()[which]
-  const label = which === 'fg' ? 'Fill with Foreground' : 'Fill with Background'
   try {
+    const ch = channelTarget(d)
+    if (ch) {
+      const g = await grayOf(doc, which)
+      await throughChannel(d, ch, [Math.round((channelKind(ch) === 'spot' ? 1 - g : g) * 255), 255], label)
+      return
+    }
+    const t = pixelTarget(d)
+    if (!t) return
+    const why = refusal(t.node)
+    if (why) return notify('info', why)
     if (t.mask && t.mask.kind === 'mask') {
       const g = await grayOf(doc, which)
       await throughSelection(d, t.mask, { mode: 'gray', depth: 8 }, [Math.round(g * 255), 255], label)
       return
     }
-    const { value, clipped } = await samplesFor(doc, colour)
-    await throughSelection(d, t.node, formatOf(doc), value, label)
+    const { value, clipped } = await samplesFor(doc, colours().get()[which])
+    await throughSelection(d, t.node, formatOf(doc), value, label, planesTarget(d))
     if (clipped) notify('info', 'The colour was outside the document’s gamut, so the nearest colour it has was used.')
   } catch (e) {
     notify('error', `${label} didn’t work.`, [e instanceof Error ? e.message : String(e)])
   }
 }
 
-/** Clears what the selection covers on the target: Edit → Clear, the Delete key with a selection. On a mask, clearing hides. */
+/** Whether there's something Fill and Delete would change: an alpha or spot channel targeted, or a pixel layer or its mask. */
+export const canFill = (d: OpenDoc) => !!channelTarget(d) || !!pixelTarget(d)
+
+/**
+ * Clears what the selection covers on the target: Edit → Clear, the Delete
+ * key with a selection. On a mask, clearing hides. On a channel, or on
+ * some colour channels, it fills with the background colour, as
+ * Photoshop's does.
+ */
 export async function clearTarget() {
   const d = active()
   if (!d) return
+  if (channelTarget(d) || (pixelTarget(d)?.mask === null && planesTarget(d))) return fillTarget('bg', 'Clear')
   const t = pixelTarget(d)
   if (!t) return
   const why = refusal(t.node)
@@ -363,13 +391,23 @@ export async function clearTarget() {
   }
 }
 
+/** An alpha or spot channel with a gray value laid on through the selection, in its own pixels, committed in place. */
+async function throughChannel(d: OpenDoc, ch: DocChannel, value: number[], label: string) {
+  const doc = d.history.present
+  const set = await engine().call('select.fill', { layer: ch.tiles, format: { mode: 'gray', depth: 8 }, transform: ch.transform, cover: doc.selection?.tiles ?? null, width: doc.width, height: doc.height, value })
+  if (set === ch.tiles) return
+  const release = set ? hold([set]) : () => {}
+  store().commit((x) => setChannelTiles(x, ch.id, set, true), { key: d.key, label })
+  release()
+}
+
 /** The foreground or background as a gray level, 0..1, for painting and filling masks. */
-export async function grayOf(doc: Doc, which: 'fg' | 'bg'): Promise<number> {
+async function grayOf(doc: Doc, which: 'fg' | 'bg'): Promise<number> {
   const { value } = await samplesFor({ ...doc, mode: 'gray', depth: 8, profile: { builtin: 'gray-gamma-2.2' } }, colours().get()[which])
   return value[0] / 255
 }
 
-async function throughSelection(d: OpenDoc, node: DocNode, format: { mode: Doc['mode']; depth: Doc['depth'] }, value: number[] | null, label: string) {
+async function throughSelection(d: OpenDoc, node: DocNode, format: { mode: Doc['mode']; depth: Doc['depth'] }, value: number[] | null, label: string, planes: boolean[] | null = null) {
   if (node.kind !== 'pixel' && node.kind !== 'mask') return
   const doc = d.history.present
   // A mask with no tiles is its outside value everywhere: fill from that, not from nothing.
@@ -377,7 +415,9 @@ async function throughSelection(d: OpenDoc, node: DocNode, format: { mode: Doc['
   if (node.kind === 'mask' && !layer && node.props.outside > 0) {
     layer = await engine().call('select.fill', { layer: null, format, transform: node.transform, cover: null, width: doc.width, height: doc.height, value: [Math.round(node.props.outside * 255), 255] })
   }
-  const set = await engine().call('select.fill', { layer, format, transform: node.transform, cover: doc.selection?.tiles ?? null, width: doc.width, height: doc.height, value })
+  let set = await engine().call('select.fill', { layer, format, transform: node.transform, cover: doc.selection?.tiles ?? null, width: doc.width, height: doc.height, value })
+  // Only the colour channels targeted: the rest put back.
+  if (planes && node.kind === 'pixel') set = await engine().call('fill.keepPlanes', { before: node.props.tiles, after: set, planes })
   if (set === node.props.tiles) return
   const release = set ? hold([set]) : () => {}
   store().commit((x) => setTiles(x, node.id, set), { key: d.key, label })

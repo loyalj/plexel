@@ -20,15 +20,10 @@ import { COLOUR_CHANNELS, TILE, TILE_PIXELS, newSamples, type TileFormat } from 
 import { convertSet } from '../tiles/convert'
 import type { TileId } from '../tiles/store'
 import { colour } from './colourHost'
-import { decodeJpeg } from './imageHost'
+import { BROWSER_DECODERS } from './imageHost'
 import { addProfile } from './colourHost'
-import { pinSet, store, unpinSet } from './tileHost'
-
-const HOLD_MS = 60_000
-const hold = (id: string) => {
-  pinSet(id)
-  setTimeout(() => unpinSet(id), HOLD_MS)
-}
+import { held, store } from './tileHost'
+import { checkpoint, progress } from './jobs'
 
 export interface PsdOpened {
   doc: Doc
@@ -57,6 +52,23 @@ function planesToSet(f: TileFormat, w: number, h: number, planes: PsdSamples[], 
       let any = false
       const tw = Math.min(TILE, w - tx * TILE)
       const th = Math.min(TILE, h - ty * TILE)
+      if (scale === 1 && !planes.some((p) => p instanceof Float32Array) && !(alpha instanceof Float32Array)) {
+        // The same depth in and out: rows copied as they are, not sample by sample.
+        for (let y = 0; y < th; y++) {
+          const src = (ty * TILE + y) * w + tx * TILE
+          const p = y * TILE
+          for (let c = 0; c < n; c++) if (planes[c]) s.set(planes[c].subarray(src, src + tw), c * TILE_PIXELS + p)
+          if (!alpha) s.fill(outMax, n * TILE_PIXELS + p, n * TILE_PIXELS + p + tw)
+          else {
+            const row = alpha.subarray(src, src + tw)
+            s.set(row, n * TILE_PIXELS + p)
+            if (!any) for (let x = 0; x < tw && !any; x++) if (row[x]) any = true
+          }
+        }
+        if (!alpha && tw > 0 && th > 0) any = true
+        if (any) entries.push([tx, ty, store.data(f, s)])
+        continue
+      }
       for (let y = 0; y < th; y++)
         for (let x = 0; x < tw; x++) {
           const src = (ty * TILE + y) * w + tx * TILE + x
@@ -70,28 +82,36 @@ function planesToSet(f: TileFormat, w: number, h: number, planes: PsdSamples[], 
     }
   if (!entries.length) return null
   const id = store.createSet(f, entries)
-  hold(id)
+  held(id)
   return id
 }
 
-export async function openPsd(bytes: Uint8Array, name: string, working: Record<ColourMode, ProfileRef>, intent: Intent = 'relative', bpc = true): Promise<PsdOpened> {
+export async function openPsd(bytes: Uint8Array, name: string, working: Record<ColourMode, ProfileRef>, intent: Intent = 'relative', bpc = true, job?: string): Promise<PsdOpened> {
   const { cms, registry } = await colour()
   const converter = new Converter(registry)
   const profiles: { hash: string; bytes: Uint8Array }[] = []
 
   const open = async (data: Uint8Array, fileName: string, into: { mode: ColourMode; depth: Depth; profile: ProfileRef } | null): Promise<{ doc: Doc; warnings: string[]; fonts: string[] }> => {
-    const f = await readPsd(data)
+    // The composite only for a file without layers, where it's the Background.
+    // The file read is the first tenth of opening it; its layers, the rest.
+    if (!into) progress(job, 0)
+    const f = await readPsd(data, { composite: 'flat' })
+    if (!into) await checkpoint(job, 0.1)
     // The embedded profile, registered before anything is converted through it.
     const icc = f.resources.find((r) => r.id === 1039)?.data ?? null
     let iccRef: ProfileRef | null = null
     if (icc) {
       try {
         const p = cms.openProfile(icc)
+        const builtin = registry.builtinOf(icc, p)
         p.close()
-        const hash = await sha256(icc)
-        addProfile(hash, icc)
-        profiles.push({ hash, bytes: icc })
-        iccRef = { asset: hash }
+        if (builtin) iccRef = { builtin }
+        else {
+          const hash = await sha256(icc)
+          addProfile(hash, icc)
+          profiles.push({ hash, bytes: icc })
+          iccRef = { asset: hash }
+        }
       } catch {
         iccRef = null
       }
@@ -137,6 +157,8 @@ export async function openPsd(bytes: Uint8Array, name: string, working: Record<C
       },
       working,
       newId,
+      // Only the file being opened reports: a smart object inside it is part of a layer.
+      progress: into ? undefined : (f) => checkpoint(job, 0.1 + 0.9 * f),
     }
     // The document's mode, as toDoc will decide it, so colours convert into it.
     let docMode: ColourMode = f.mode === 4 ? 'cmyk' : f.mode === 3 || f.mode === 2 || f.mode === 9 ? 'rgb' : 'gray'
@@ -152,7 +174,7 @@ export async function openPsd(bytes: Uint8Array, name: string, working: Record<C
   /** A smart object's file: a PSD or PSB as a document, an image as a document of one layer, in the parent's terms. */
   const openNested = async (data: Uint8Array, fileName: string, into: { mode: ColourMode; depth: Depth; profile: ProfileRef }): Promise<{ doc: Doc; warnings: string[]; fonts: string[] }> => {
     if (data[0] === 0x38 && data[1] === 0x42 && data[2] === 0x50 && data[3] === 0x53) return open(data, fileName, into)
-    const raster = await decodeImage(data, fileName, decodeJpeg)
+    const raster = await decodeImage(data, fileName, BROWSER_DECODERS)
     const defaultId = raster.mode === 'gray' ? 'gray-gamma-2.2' : raster.mode === 'cmyk' ? 'generic-cmyk' : 'srgb'
     const from = raster.icc ? cms.openProfile(raster.icc) : registry.builtin(defaultId)
     const to = registry.resolve(into.profile, into.mode).profile
@@ -164,7 +186,7 @@ export async function openPsd(bytes: Uint8Array, name: string, working: Record<C
       t.close()
       if (raster.icc) from.close()
     }
-    hold(set)
+    held(set)
     const rootId = newId('r')
     const px = makeNode('pixel', newId('p'), fileName.replace(/\.[a-z0-9]+$/i, ''), { tiles: set, resample: 'bicubic' })
     const root = makeNode('group', rootId, 'Root')
@@ -182,7 +204,7 @@ export async function openPsd(bytes: Uint8Array, name: string, working: Record<C
     const map = new Map<string, string>()
     for (const id of pixelSets(doc)) {
       const next = await convertSet(store, id, { mode: into.mode, depth: into.depth }, lut ? (c, n) => runConvertLut(lut, c, n) : null)
-      hold(next)
+      held(next)
       map.set(id, next)
     }
     const t = same ? null : cms.transform(fromP, toP, intent, bpc ? 0x2000 : 0)

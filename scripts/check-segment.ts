@@ -204,7 +204,9 @@ for (const autoEnhance of [false, true]) {
   const i: QuickSelectInput = { image, channels: 4, width: S, height: S, current: new Float32Array(S * S), stroke: strokeLine(S, S, c - 30, c, c + 30, c, 10), mode: 'add', autoEnhance: true }
   const [out, ms] = time(() => quickSelect(i), 3)
   const [fg, bg] = shares(out, inDisc)
-  check('a 512 × 512 window', fg >= 0.9 && bg < 0.03 && ms < 150, `disc ${pct(fg)}, background ${pct(bg)}, ${ms.toFixed(1)} ms`)
+  // 150 ms alone; twice that when run beside other suites (run-checks.mjs sets PLEXEL_CHECKS_PARALLEL), whose load it would otherwise measure.
+  const budget = process.env.PLEXEL_CHECKS_PARALLEL ? 300 : 150
+  check('a 512 × 512 window', fg >= 0.9 && bg < 0.03 && ms < budget, `disc ${pct(fg)}, background ${pct(bg)}, ${ms.toFixed(1)} ms`)
 }
 {
   const S = 1024
