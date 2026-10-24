@@ -161,6 +161,36 @@ const roundTrip = (psb) =>
     const after = sig(P.documents().active().history.present)
     return { same: before === after, head, warnings: ex.warnings, before, after }
   }, psb)
+// Colour per character and Photoshop's paragraph settings go into the PSD's text and come back.
+{
+  const back = await page.evaluate(async () => {
+    const P = globalThis.plexel
+    const { createDoc, insertNode, makeNode } = P.doc
+    let doc = createDoc({ name: 'Runs', width: 400, height: 200, resolution: 72, mode: 'rgb', depth: 8, profile: { builtin: 'srgb' } }, 'runs-root')
+    const n = makeNode('text', 'runs', 'Runs', {
+      mode: 'point',
+      content: { paragraphs: [{ runs: [{ text: 'Black ', style: null, props: { size: 30 } }, { text: 'blue', style: null, props: { size: 30, fill: { kind: 'solid', colour: [0, 0, 1] }, stroke: { kind: 'solid', colour: [1, 0, 0] }, strokeWidth: 2 } }], style: null, props: { hyphenate: true, wordSpacing: [70, 95, 140], autoLeading: 130 } }] },
+      frame: null,
+      pathOffset: 0,
+      appearance: [{ kind: 'fill', enabled: true, paint: { kind: 'solid', colour: [0, 0, 0] }, opacity: 1, blend: 'normal' }],
+    })
+    n.transform = [1, 0, 0, 1, 20, 100]
+    doc = insertNode(doc, n, doc.root, 0)
+    P.documents().add({ doc, file: null, saved: true })
+    await P.text.startFonts()
+    await P.engine().call('render.idle', {})
+    const d = P.documents().active()
+    const ex = await P.exports.psdOf(d.history.present, d.key, false)
+    await P.files.openFile(new File([ex.bytes], 'runs.psd'), null)
+    const t = Object.values(P.documents().active().history.present.nodes).find((x) => x.kind === 'text')
+    const p = t.props.content.paragraphs[0]
+    return { runs: p.runs.map((r) => ({ text: r.text, fill: r.props.fill?.colour ?? null, stroke: r.props.stroke?.colour ?? null, width: r.props.strokeWidth ?? null })), para: { hyphenate: p.props.hyphenate, wordSpacing: p.props.wordSpacing, autoLeading: p.props.autoLeading } }
+  })
+  const blue = back.runs.find((r) => r.text === 'blue')
+  const black = back.runs.find((r) => r.text.startsWith('Black'))
+  check('a run’s own fill and stroke go into the PSD and come back, the rest the layer’s', !!blue && JSON.stringify(blue.fill) === '[0,0,1]' && JSON.stringify(blue.stroke) === '[1,0,0]' && Math.abs(blue.width - 2) < 1e-6 && !!black && black.fill === null && black.stroke === null, JSON.stringify(back.runs))
+  check('and the paragraph’s hyphenation, word spacing and auto leading', back.para.hyphenate === true && JSON.stringify(back.para.wordSpacing?.map((v) => Math.round(v))) === '[70,95,140]' && Math.round(back.para.autoLeading) === 130, JSON.stringify(back.para))
+}
 // Photoshop's patterns are images and Plexel's aren't yet, so a Pattern Overlay can't be written; it's said so,
 // and the round trip is judged without it.
 await openFile(PSD + 'layer_effects.psd')
@@ -221,6 +251,18 @@ await openFile(PSD + 'text.psd')
 const live = await svgDrawn(false)
 const outl = await svgDrawn(true)
 check('text is live <text> by default, paths as outlines', live.text.includes('<text') && !outl.text.includes('<text') && outl.text.includes('<path'))
+{
+  // Its text layers keep how Photoshop drew them, shown while their fonts aren't here; names not found stay PostScript names.
+  const t = await page.evaluate(() => {
+    const P = globalThis.plexel
+    const doc = P.documents().active().history.present
+    const texts = Object.values(doc.nodes).filter((n) => n.kind === 'text')
+    const runs = texts.flatMap((n) => n.props.content.paragraphs.flatMap((p) => p.runs.map((r) => r.props)))
+    return { texts: texts.length, stands: texts.filter((n) => n.props.stand?.tiles).length, runs: runs.map((r) => [r.font, r.style]) }
+  })
+  check('each text layer keeps the pixels Photoshop drew it with', t.texts > 0 && t.stands === t.texts, JSON.stringify(t))
+  check('a font not here keeps its PostScript name, for the library to find it later', t.runs.every(([font, style]) => !!font && (style === '' || style === undefined || typeof style === 'string')), JSON.stringify(t.runs))
+}
 
 console.log('\nPDF out: pdf.js reads it')
 const names = Object.fromEntries(Object.entries(OPS).map(([k, v]) => [v, k]))

@@ -21,8 +21,8 @@
  *                   their transparency as a soft mask
  *   CMYK            a PDF/X-4 output intent of the document's profile
  */
-import { geometryPath, type AppearanceItem, type Paint } from '../../doc/vector'
-import { brushAsPaths, strokeAsPath } from '../../vector/outline'
+import { geometryPath, mainColour, type AppearanceItem, type Paint } from '../../doc/vector'
+import { brushAsPaths, characterGroups, strokeAsPath } from '../../vector/outline'
 import { strokeNeedsOutline } from '../../doc/vector'
 import { glyphsToPath } from '../../geom/glyphs'
 import { transformPath, type PathData } from '../../geom/path'
@@ -248,7 +248,7 @@ export async function docToPdf(doc: Doc, host: PdfHost): Promise<{ bytes: Uint8A
         if (it.paint.kind === 'gradient') {
           o += `q\n${g}${pathOps(path)}W${even ? '*' : ''} n\n/${shading(it.paint, box)} sh\nQ\n`
         } else {
-          const colour = it.paint.kind === 'solid' ? it.paint.colour : it.paint.colour
+          const colour = mainColour(it.paint)
           const set = linked?.kind === 'spot' ? `/${spotSpace(linked)} cs ${f(it.paint.kind === 'solid' ? (it.paint.tint ?? 1) : 1)} scn` : colourOp(colour, false)
           o += `q\n${g}${set}\n${pathOps(path)}f${even ? '*' : ''}\nQ\n`
         }
@@ -268,7 +268,7 @@ export async function docToPdf(doc: Doc, host: PdfHost): Promise<{ bytes: Uint8A
           for (const p of brushAsPaths(path, it, doc.mode)) {
             const ev = p.path.fillRule === 'evenodd' ? '*' : ''
             if (p.paint.kind === 'gradient') o += `q\n${g}${pathOps(p.path)}W${ev} n\n/${shading(p.paint, box)} sh\nQ\n`
-            else o += `q\n${g}${colourOp(p.paint.colour, false)}\n${pathOps(p.path)}f${ev}\nQ\n`
+            else o += `q\n${g}${colourOp(mainColour(p.paint), false)}\n${pathOps(p.path)}f${ev}\nQ\n`
           }
           continue
         }
@@ -277,7 +277,7 @@ export async function docToPdf(doc: Doc, host: PdfHost): Promise<{ bytes: Uint8A
           const outline = strokeAsPath(path, it)
           if (it.paint.kind === 'gradient') o += `q\n${g}${cut}${pathOps(outline)}W n\n/${shading(it.paint, box)} sh\nQ\n`
           else {
-            const colour = it.paint.kind === 'solid' ? it.paint.colour : it.paint.colour
+            const colour = mainColour(it.paint)
             const set = linked?.kind === 'spot' ? `/${spotSpace(linked)} cs ${f(it.paint.kind === 'solid' ? (it.paint.tint ?? 1) : 1)} scn` : colourOp(colour, false)
             o += `q\n${g}${cut}${set}\n${pathOps(outline)}f\nQ\n`
           }
@@ -288,7 +288,7 @@ export async function docToPdf(doc: Doc, host: PdfHost): Promise<{ bytes: Uint8A
           warn('Gradient strokes are drawn in their first colour in the PDF')
           o += `q\n${g}${cut}${st}${colourOp(it.paint.stops[0].colour, true)}\n${pathOps(path)}S\nQ\n`
         } else {
-          const colour = it.paint.kind === 'solid' ? it.paint.colour : it.paint.colour
+          const colour = mainColour(it.paint)
           const set = linked?.kind === 'spot' ? `/${spotSpace(linked)} CS ${f(it.paint.kind === 'solid' ? (it.paint.tint ?? 1) : 1)} SCN` : colourOp(colour, true)
           o += `q\n${g}${cut}${st}${set}\n${pathOps(path)}S\nQ\n`
         }
@@ -358,7 +358,9 @@ export async function docToPdf(doc: Doc, host: PdfHost): Promise<{ bytes: Uint8A
           return ''
         }
         warn('Text is in the PDF as outlines: exact, though not selectable')
-        body = `${node.transform.map(f).join(' ')} cm\n${paintPath(glyphsToPath(l.glyphs), node.props.appearance)}`
+        body = `${node.transform.map(f).join(' ')} cm\n${characterGroups(l.glyphs, node.props.appearance)
+          .map((g) => paintPath(glyphsToPath(g.glyphs), g.appearance))
+          .join('')}`
       } else if (node.kind === 'boolean') {
         const p = docPathOf((x) => doc.nodes[x], node)
         if (p) body = paintPath(p, node.props.appearance)

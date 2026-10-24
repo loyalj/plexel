@@ -8,7 +8,7 @@
  * document is closed, so the copy is written for both.
  */
 
-export type PanelId = 'layers' | 'properties' | 'colour' | 'swatches' | 'brushes' | 'brush-settings' | 'history' | 'character' | 'paragraph' | 'separations' | 'channels' | 'patterns' | 'graphic-styles' | 'vector-brushes' | 'symbols'
+export type PanelId = 'layers' | 'properties' | 'colour' | 'swatches' | 'brushes' | 'brush-settings' | 'tool-presets' | 'history' | 'character' | 'paragraph' | 'glyphs' | 'separations' | 'channels' | 'patterns' | 'graphic-styles' | 'vector-brushes' | 'symbols'
 
 export interface PanelDef {
   id: PanelId
@@ -61,6 +61,12 @@ export const PANELS: PanelDef[] = [
     shortcut: 'F5',
   },
   {
+    id: 'tool-presets',
+    title: 'Tool Presets',
+    empty: 'Tools with their options kept under a name, chosen in one click; Photoshop’s too.',
+    defaultOpen: false,
+  },
+  {
     id: 'character',
     title: 'Character',
     empty: 'Fonts, sizes, spacing and OpenType features for text.',
@@ -69,7 +75,13 @@ export const PANELS: PanelDef[] = [
   {
     id: 'paragraph',
     title: 'Paragraph',
-    empty: 'Alignment, indents, spacing and the composer for text.',
+    empty: 'Alignment, indents, spacing, hyphenation, justification and tabs for text.',
+    defaultOpen: false,
+  },
+  {
+    id: 'glyphs',
+    title: 'Glyphs',
+    empty: 'Every character of the font in use, and each one’s alternates, to insert into text.',
     defaultOpen: false,
   },
   {

@@ -6,7 +6,7 @@
  */
 import { useMemo } from 'react'
 import type { ColourMode } from '../doc/types'
-import { blackIn, solid, type Paint } from '../doc/vector'
+import { blackIn, mainColour, solid, type Paint } from '../doc/vector'
 import type { VectorBrush } from '../doc/vectorBrush'
 import { anchor, flattenPath } from '../geom/path'
 import { brushPieces } from '../vector/brush'
@@ -15,7 +15,7 @@ import { swatchCss } from './ParamControls'
 const W = 120
 const H = 36
 
-const fillOf = (p: Paint, mode: ColourMode) => swatchCss(p.kind === 'solid' ? p.colour : p.kind === 'gradient' ? p.stops[0].colour : p.colour, mode)
+const fillOf = (p: Paint, mode: ColourMode) => swatchCss(mainColour(p), mode)
 
 export function BrushPreview({ brush, mode, width = W, height = H }: { brush: VectorBrush; mode: ColourMode; width?: number; height?: number }) {
   const paths = useMemo(() => {

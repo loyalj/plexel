@@ -29,7 +29,10 @@ import { origins } from './app/viewAids'
 import { moveTool } from './app/moveTool'
 import { channels } from './app/channels'
 import { widthPointsOf, widthSelection } from './app/widthTool'
+import { gradientHandlesOf, gradientSelection, paintFocus } from './app/gradientEdit'
 import { preloadDialogs } from './ui/lazyDialogs'
+import { toolPresets } from './app/toolPresets'
+import { patternEditOf } from './app/patternEdit'
 
 // Before the first render, not during it: React would paint one frame in
 // the default palette before an effect could repaint it, and a flash of
@@ -52,7 +55,7 @@ const lazyExports = {
   svgOf: async (...a: Parameters<Awaited<ReturnType<typeof exporters>>['svgOf']>) => (await exporters()).svgOf(...a),
   pdfOf: async (...a: Parameters<Awaited<ReturnType<typeof exporters>>['pdfOf']>) => (await exporters()).pdfOf(...a),
 }
-;(globalThis as { plexel?: unknown }).plexel = { engine, documents, views, doc: { createDoc, insertNode, makeNode, setFx }, text: { layoutOf, startFonts }, colours, proofing, convert: { convertMode, convertDocument }, files: { openFile }, exports: lazyExports, brushes, importBrushes, tools, selectTools, fillTools, interfacePrefs, guidePrefs, origins, moveTool, retouch, transformUi, liquifySettings, channels, width: { pointsOf: widthPointsOf, selection: widthSelection }, dialogsLoaded: preloadDialogs }
+;(globalThis as { plexel?: unknown }).plexel = { engine, documents, views, doc: { createDoc, insertNode, makeNode, setFx }, text: { layoutOf, startFonts }, colours, proofing, convert: { convertMode, convertDocument }, files: { openFile }, exports: lazyExports, brushes, importBrushes, tools, selectTools, fillTools, interfacePrefs, guidePrefs, origins, moveTool, retouch, transformUi, liquifySettings, channels, width: { pointsOf: widthPointsOf, selection: widthSelection }, gradients: { handlesOf: gradientHandlesOf, selection: gradientSelection, focus: paintFocus }, dialogsLoaded: preloadDialogs, toolPresets, patternEdit: { of: patternEditOf } }
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

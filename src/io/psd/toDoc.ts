@@ -577,17 +577,24 @@ export async function psdToDoc(f: PsdFile, host: PsdHost): Promise<PsdImport> {
     const paraRuns = eArr(at(ed, 'EngineDict', 'ParagraphRun', 'RunArray'))
     const paraLens = eArr(at(ed, 'EngineDict', 'ParagraphRun', 'RunLengthArray')).map((x) => eNum(x))
     let fill: ParamColour | null = null
-    let mixed = false
+    const colourOf = (values: EValue | undefined): ParamColour | null => {
+      const fc = eArr(values).map((x) => eNum(x))
+      if (!fc.length) return null
+      return mode === 'cmyk' ? docTerms('cmyk', fc.slice(1, 5)) : mode === 'gray' ? docTerms('gray', [fc[1]]) : docTerms('rgb', fc.slice(1, 4))
+    }
     const charProps = (sd: EValue | undefined): Partial<CharProps> => {
       const d = at(sd, 'StyleSheet', 'StyleSheetData')
       const ps = fontName(eNum(at(d, 'Font')))
       fonts.add(ps)
-      const fc = eArr(at(d, 'FillColor', 'Values')).map((x) => eNum(x))
-      if (fc.length) {
-        const c = mode === 'cmyk' ? docTerms('cmyk', fc.slice(1, 5)) : mode === 'gray' ? docTerms('gray', [fc[1]]) : docTerms('rgb', fc.slice(1, 4))
-        if (fill && c.some((v, i) => Math.abs(v - fill![i]) > 1e-3)) mixed = true
+      // The first run's colour is the layer's fill; a run in another colour has it as its own (colour per character).
+      const c = colourOf(at(d, 'FillColor', 'Values'))
+      let own: Partial<CharProps> = {}
+      if (c) {
+        if (fill && c.some((v, i) => Math.abs(v - fill![i]) > 1e-3)) own = { fill: { kind: 'solid', colour: c } }
         fill ??= c
       }
+      const sc = at(d, 'StrokeFlag') === true ? colourOf(at(d, 'StrokeColor', 'Values')) : null
+      if (sc) own = { ...own, stroke: { kind: 'solid', colour: sc }, strokeWidth: eNum(at(d, 'OutlineWidth'), 1) * s }
       const size = eNum(at(d, 'FontSize'), 12) * s
       const lead = at(d, 'Leading')
       const auto = at(d, 'AutoLeading') !== false
@@ -603,6 +610,7 @@ export async function psdToDoc(f: PsdFile, host: PsdHost): Promise<PsdImport> {
         verticalScale: eNum(at(d, 'VerticalScale'), 1) * 100,
         underline: at(d, 'Underline') === true,
         strikethrough: at(d, 'Strikethrough') === true,
+        ...own,
       }
     }
     const paraProps = (pd: EValue | undefined): Partial<ParaProps> => {
@@ -615,7 +623,26 @@ export async function psdToDoc(f: PsdFile, host: PsdHost): Promise<PsdImport> {
         indentRight: eNum(at(p, 'EndIndent')) * s,
         spaceBefore: eNum(at(p, 'SpaceBefore')) * s,
         spaceAfter: eNum(at(p, 'SpaceAfter')) * s,
+        ...(at(p, 'EveryLineComposer') === false ? { composer: 'single' as const } : {}),
+        ...(at(p, 'AutoHyphenate') === true ? { hyphenate: true } : {}),
+        hyphenation: {
+          minWord: Math.round(eNum(at(p, 'HyphenatedWordSize'), 5)),
+          minBefore: Math.round(eNum(at(p, 'PreHyphen'), 2)),
+          minAfter: Math.round(eNum(at(p, 'PostHyphen'), 2)),
+          limit: Math.round(eNum(at(p, 'ConsecutiveHyphens'), 2)),
+          zone: eNum(at(p, 'Zone'), 0) * s,
+          caps: true,
+        },
+        ...range3('wordSpacing', at(p, 'WordSpacing')),
+        ...range3('letterSpacing', at(p, 'LetterSpacing')),
+        ...range3('glyphScaling', at(p, 'GlyphSpacing')),
+        ...(typeof at(p, 'AutoLeading') === 'number' ? { autoLeading: eNum(at(p, 'AutoLeading')) * 100 } : {}),
       }
+    }
+    /** Photoshop's least, wanted and most (fractions) as percentages, when the file has all three. */
+    const range3 = (k: 'wordSpacing' | 'letterSpacing' | 'glyphScaling', v: EValue | undefined): Partial<ParaProps> => {
+      const a = eArr(v).map((x) => eNum(x) * 100)
+      return a.length === 3 ? { [k]: [Math.min(a[0], a[1]), a[1], Math.max(a[1], a[2])] as [number, number, number] } : {}
     }
     // Paragraphs split at returns; each gets its paragraph run's settings and its share of the style runs.
     const full = raw + '\r'
@@ -654,7 +681,6 @@ export async function psdToDoc(f: PsdFile, host: PsdHost): Promise<PsdImport> {
       void text
       pos = stop + 1
     }
-    if (mixed) warn('Text with several colours came in in its first colour; colour per character comes later')
     const content: TextContent = { paragraphs }
     // Point or box text.
     const shape = at(ed, 'EngineDict', 'Rendered', 'Shapes', 'Children', 0, 'Cookie', 'Photoshop')
@@ -668,6 +694,17 @@ export async function psdToDoc(f: PsdFile, host: PsdHost): Promise<PsdImport> {
       appearance: [{ kind: 'fill', enabled: true, paint: { kind: 'solid', colour: fill ?? descColour(undefined) }, opacity: 1, blend: 'normal' }],
     })
     n.transform = transform
+    // How Photoshop drew it: shown while a font it asks for isn't here (KindProps['text'].stand), in the text's own coordinates.
+    const drawn = pixelNode(L, L.name)
+    if (drawn.kind === 'pixel' && drawn.props.tiles) {
+      const [a, b, c, dd, e, ff] = transform
+      const det = a * dd - b * c
+      if (Math.abs(det) > 1e-12) {
+        const x = L.left - e
+        const y = L.top - ff
+        ;(n.props as { stand?: unknown }).stand = { tiles: drawn.props.tiles, m: [dd / det, -b / det, -c / det, a / det, (dd * x - c * y) / det, (-b * x + a * y) / det] }
+      }
+    }
     // Warped text: the Warp effect, over the text's bounds (in its own coordinates, as Photoshop keeps them).
     const tw = obj(t.text, 'warp')
     if (tw && en(tw, 'warpStyle') && en(tw, 'warpStyle') !== 'warpNone') {

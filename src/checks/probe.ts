@@ -30,7 +30,7 @@ import { seedOf } from '../render/graph'
 import type { SceneUpdate } from '../render/scene'
 import { strideOf, tileBufferBytes, type Store } from '../render/shaders/common'
 import { invert, multiply, type Matrix } from '../render/view'
-import { DEFAULT_BRUSH, DEFAULT_DUAL, DEFAULT_TEXTURE, colourVaries, type BrushSettings } from '../brush/defs'
+import { DEFAULT_AIRBRUSH, DEFAULT_BRISTLE, DEFAULT_BRUSH, DEFAULT_DUAL, DEFAULT_ERODIBLE, DEFAULT_TEXTURE, colourVaries, type BrushSettings } from '../brush/defs'
 import { toLayer } from '../brush/dab'
 import { dabColour } from '../brush/colour'
 import { strokeDabs, type PenSample } from '../brush/stroke'
@@ -423,7 +423,8 @@ async function paintProbe(r: Renderer, tiles: TileStore, mode: ColourMode, depth
   // A selection with a soft edge that the stroke crosses: an ellipse, feathered.
   const selection = await feather(tiles, rasterizePolygon(tiles, ellipsePoints(240, 130, 150, 70), 480, 300), 16, 480, 300)
   const selReader = new CoverReader(tiles, selection)
-  const cases: { name: string; settings: BrushSettings; eraser: boolean; t: number[]; selection?: boolean; planes?: boolean[] }[] = [
+  const tilted = { tiltX: 40, tiltY: 15, rotation: null, pressure: null }
+  const cases: { name: string; settings: BrushSettings; eraser: boolean; t: number[]; selection?: boolean; planes?: boolean[]; wear?: number }[] = [
     { name: 'a hard round brush', settings: brush({ hardness: 1 }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
     { name: 'a soft one at 40% flow, 70% opacity', settings: brush({ hardness: 0, flow: 0.4, opacity: 0.7 }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
     { name: 'Multiply', settings: brush({ mode: 'multiply' }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
@@ -442,6 +443,10 @@ async function paintProbe(r: Renderer, tiles: TileStore, mode: ColourMode, depth
     { name: 'hue, saturation and brightness jitter, per tip', settings: brush({ hueJitter: 0.4, saturationJitter: 0.5, brightnessJitter: 0.3, spacing: 0.3 }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
     { name: 'a dual brush and a stroke-wide texture, with colour', settings: brush({ colourJitter: 0.6, dual: { ...DEFAULT_DUAL, mode: 'overlay' }, texture: { ...DEFAULT_TEXTURE, id: 'burlap', depth: 0.5, mode: 'linear-burn' } }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
     // The Channels panel's target: the first colour channel alone (the last, in Gray), the rest kept.
+    { name: 'a bristle tip, pressed and tilted (its footprints change as it splays)', settings: brush({ special: { ...DEFAULT_BRISTLE, shape: 'flat-curve', bristles: 0.5 }, spacing: 0.03, size: 50, pose: tilted }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
+    { name: 'an erodible triangle, part worn, on a turned layer', settings: brush({ special: { ...DEFAULT_ERODIBLE, shape: 'triangle', softness: 1 }, size: 30, spacing: 0.08 }), eraser: false, t: [Math.cos(0.3), Math.sin(0.3), -Math.sin(0.3), Math.cos(0.3), 30, -10], wear: 0.4 },
+    { name: 'an erodible point, worn as it goes, on its side', settings: brush({ special: { ...DEFAULT_ERODIBLE, softness: 1 }, size: 24, spacing: 0.06, pose: tilted }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
+    { name: 'an airbrush tip, tilted (its spray leaning)', settings: brush({ special: { ...DEFAULT_AIRBRUSH, granularity: 0.7, spatterAmount: 0.8 }, size: 70, spacing: 0.2, flow: 0.5, pose: tilted }), eraser: false, t: [1, 0, 0, 1, 0, 0] },
     { name: 'on some colour channels only, soft, in Multiply', settings: brush({ hardness: 0.3, mode: 'multiply', colourJitter: 0.5 }), eraser: false, t: [1, 0, 0, 1, 0, 0], planes: Array.from({ length: COLOURS[mode] }, (_, i) => i === 0 || i === 2) },
   ]
   const out = []
@@ -454,12 +459,12 @@ async function paintProbe(r: Renderer, tiles: TileStore, mode: ColourMode, depth
     r.updateScene(key, { doc: { ...docOf(f, 'root'), width: 480, height: 300 }, nodes: [root, node].map((x) => ({ node: x, version: version++ })), removed: [], reset: true })
     const seed = 1234 + i
     const id = 900000 + i
-    const why = r.beginStroke({ id, key, node: 'p', settings: c.settings, eraser: c.eraser, seed, fg, bg, selection: c.selection ? selection : null, ...(c.planes ? { planes: c.planes } : {}) })
+    const why = r.beginStroke({ id, key, node: 'p', settings: c.settings, eraser: c.eraser, seed, fg, bg, selection: c.selection ? selection : null, ...(c.planes ? { planes: c.planes } : {}), ...(c.wear !== undefined ? { wear: c.wear } : {}) })
     if (why) throw new Error(why)
     r.addSamples(id, samples)
     const { set: result } = await r.endStroke(id)
     // The reference: the same dabs, stamped and laid on by the CPU.
-    const dabs = strokeDabs(c.settings, seed, samples).map((d) => toLayer(d, c.t))
+    const dabs = strokeDabs(c.settings, seed, samples, { wear: c.wear }).map((d) => toLayer(d, c.t))
     const work = (v: number[]) => (mode === 'cmyk' ? v.map((x) => 1 - x) : v)
     const fgw = work(fg)
     const bgw = work(bg)
@@ -877,6 +882,8 @@ const FX_CASES: { name: string; fx: LayerFx[]; opacity?: number; fill?: number; 
   { name: 'Gradient Overlay', fx: [{ kind: 'gradient-overlay', enabled: true, params: { angle: 30, blend: 'multiply' } }] },
   { name: 'Pattern Overlay, dots turned', fx: [{ kind: 'pattern-overlay', enabled: true, params: { pattern: 'dots', scale: 11, angle: 25, backgroundOpacity: 40, opacity: 80 } }] },
   { name: 'Pattern Overlay, checkerboard in Multiply', fx: [{ kind: 'pattern-overlay', enabled: true, params: { pattern: 'checker', scale: 7, blend: 'multiply' } }] },
+  { name: 'Pattern Overlay, a document pattern, turned and scaled', fx: [{ kind: 'pattern-overlay', enabled: true, params: { image: 'probe-pattern', imageScale: 170, angle: 20, opacity: 90 } }] },
+  { name: 'Pattern Overlay, a document pattern drawn small (its pyramid), in Multiply', fx: [{ kind: 'pattern-overlay', enabled: true, params: { image: 'probe-pattern', imageScale: 13, blend: 'multiply' } }] },
   { name: 'Bevel & Emboss, inner', fx: [{ kind: 'bevel', enabled: true, params: { size: 8 } }] },
   { name: 'Bevel & Emboss, emboss, down', fx: [{ kind: 'bevel', enabled: true, params: { size: 6, style: 'emboss', direction: 'down', soften: 2 } }] },
   { name: 'Stroke, outside', fx: [{ kind: 'stroke', enabled: true, params: { size: 4 } }] },
@@ -907,6 +914,8 @@ async function fxProbe(r: Renderer, tiles: TileStore, mode: ColourMode, depth: D
   const SIZE = TILE * 3
   const { set, whole } = probeLayer(tiles, f, true)
   const back = probeLayer(tiles, f, false)
+  const pat = probePattern(tiles, f)
+  const img: PatternImage = { key: pat.tiles, w: pat.width, h: pat.height, levels: patternLevels(pat.width, pat.height, await patternPixels(tiles, pat.tiles, pat.width, pat.height)) }
   const out = []
   for (const [k, c] of FX_CASES.entries()) {
     const root = makeNode('group', 'root')
@@ -917,9 +926,9 @@ async function fxProbe(r: Renderer, tiles: TileStore, mode: ColourMode, depth: D
     a.fillOpacity = c.fill ?? 1
     a.blend = c.blend ?? 'normal'
     root.children = ['bg', 'a']
-    const got = await renderMiddle(r, f, `fx-probe-${k}`, [root, bg, a])
+    const got = await renderMiddle(r, f, `fx-probe-${k}`, [root, bg, a], [pat])
     const list = activeFx(c.fx).map((x) => ({ kind: x.kind, v: fxValues(x, mode) }))
-    const layers = fxLayers(whole, list, { scale: 1, mode, bounds: [0, 0, SIZE, SIZE] })
+    const layers = fxLayers(whole, list, { scale: 1, mode, bounds: [0, 0, SIZE, SIZE], pattern: (id) => (id === PROBE_PATTERN ? img : undefined) })
     const special = ['color-burn', 'linear-burn', 'color-dodge', 'linear-dodge', 'vivid-light', 'linear-light', 'hard-mix', 'difference'].includes(a.blend)
     const pxAt = (reg: Region, o: number): Px => ({ c: Array.from(reg.data.subarray(o, o + n)), a: reg.data[o + n] })
     const expect = (i: number): Px => {
@@ -996,6 +1005,52 @@ function vectorCases(mode: ColourMode): { name: string; nodes: (root: DocNode) =
     { name: 'a pattern brush with corner tiles round a turned rectangle', nodes: () => [shape(rect, [stroke(solid(red), 24, { brush: builtinBrushes(mode).find((b) => b.id === 'builtin:railroad') })], turn(0.2))] },
     { name: 'a scatter brush along a line', nodes: () => [shape({ kind: 'shape', shape: { type: 'line', x1: 240, y1: 300, x2: 540, y2: 470 } }, [stroke(solid(blue), 48, { brush: builtinBrushes(mode).find((b) => b.id === 'builtin:stars') })])] },
     { name: 'a stroke outside, bevelled, with a gradient', nodes: () => [shape(rect, [stroke(grad('linear', { angle: 0 }), 18, { align: 'outside', join: 'bevel' })], turn(0.25))] },
+    // Gradients along and across strokes, freeform gradients and meshes (vector/paint.ts's fields).
+    { name: 'a gradient along a stroke round an ellipse', nodes: () => [shape(ellipse, [stroke(grad('linear', { stroke: 'along' }), 22)])] },
+    { name: 'a gradient across a mitred stroke with a width profile', nodes: () => [shape(star, [stroke(grad('linear', { stroke: 'across', reverse: true }), 26, { profile: [{ at: 0, left: 0.4, right: 1 }, { at: 0.5, left: 1.6, right: 0.7 }, { at: 1, left: 0.4, right: 1 }] })], turn(0.15))] },
+    { name: 'a gradient across an inside stroke on a turned rectangle', nodes: () => [shape(rect, [stroke(grad('linear', { stroke: 'across' }), 20, { align: 'inside' })], turn(-0.3, 1.1))] },
+    {
+      name: 'a freeform gradient of three points, one see-through',
+      nodes: () => [
+        shape(star, [
+          fillItem({
+            kind: 'freeform',
+            points: [
+              { p: [300, 300], colour: red, alpha: 1, spread: 1 },
+              { p: [450, 330], colour: blue, alpha: 0.6, spread: 1.6 },
+              { p: [380, 460], colour: pale, alpha: 1, spread: 0.7 },
+            ],
+          }),
+        ]),
+      ],
+    },
+    {
+      name: 'a warped 2 × 2 mesh on a turned shape, past its edge',
+      nodes: () => [
+        shape(
+          ellipse,
+          [
+            fillItem({
+              kind: 'mesh',
+              cols: 2,
+              rows: 2,
+              nodes: [
+                [270, 270, red, 1],
+                [380, 280, pale, 1],
+                [500, 270, blue, 1],
+                [260, 380, blue, 1],
+                [410, 360, red, 0.5],
+                [490, 390, pale, 1],
+                [270, 470, pale, 1],
+                [380, 500, blue, 1],
+                [480, 460, red, 1],
+              ].map(([x, y, colour, alpha]) => ({ p: [x as number, y as number] as [number, number], colour: colour as number[], alpha: alpha as number })),
+            }),
+          ],
+          turn(0.2, 1.05),
+        ),
+      ],
+    },
     {
       name: 'a dashed line with round caps',
       nodes: () => [shape({ kind: 'shape', shape: { type: 'line', x1: 240, y1: 280, x2: 540, y2: 500 } }, [stroke(solid(blue), 12, { cap: 'round', dash: [30, 18] })])],
@@ -1139,7 +1194,7 @@ async function vectorProbe(r: Renderer, tiles: TileStore, mode: ColourMode, dept
         const cc = rasterRegion(cl, TILE, TILE, it.clip.rule, clRows)
         for (let i = 0; i < cov.length; i++) cov[i] *= it.clip.mode === 'inside' ? cc[i] : 1 - cc[i]
       }
-      return { it, cov, parts, p: paintParams(it.item.paint, mode, toNode, outline.pathBox, patterns) }
+      return { it, cov, parts, p: paintParams(it.item.paint, mode, toNode, outline.pathBox, patterns, it.centre) }
     })
     const expect = (i: number): Px => {
       const o = ((TILE + Math.floor(i / TILE)) * SIZE + TILE + (i % TILE)) * S

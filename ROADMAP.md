@@ -13,7 +13,7 @@ of every phase, and whenever something is deferred or decided.
   Krita and Inkscape alongside): the gap map, https://claude.ai/artifact/QpD1KdqmsSdcaXcLjoBdGd (updated after
   each phase).
 
-Last updated: 13 October 2026: the six gaps done, freehand vector tools too; then panels and controls from the third brainstorm, and eight more from the brainstorms (shortcut sets, long jobs, zooming to things, the colour picker at the pointer, your toolbar, defaults, preview dialogs, Tiled View's frame).
+Last updated: 24 October 2026: working with many layers (dragging several layers at once, new layers going into the selected group and named after it, Rasterize on a group, Merge Layers; then from the brainstorm: Draw Into, numbering, folded groups opening, Select All in Group, Group and Ungroup, Move to Group, drag improvements and Alt-copy, the merge family, Combine into One Shape, folding commands, colour labels, Rename Layers); before it, brushes that change as they paint (bristle, erodible and airbrush tips, the stylus wheel), tool presets and ABR out, then patterns from artwork with pattern editing mode and Pattern Overlay from pixels; before it, typography (colour per character, hyphenation, justification ranges, tab stops, the Glyphs panel); before it, fonts that turn up (no false missing-font warnings, system fonts kept by name and listed by themselves, PSD fonts found later and drawn as Photoshop drew them meanwhile, a font menu with previews); before it, gradients on the canvas, freeform gradients and meshes.
 
 ## Where it stands
 
@@ -45,14 +45,21 @@ Last updated: 13 October 2026: the six gaps done, freehand vector tools too; the
 | Boards | Artboards (the Artboard tool, presets, backgrounds, clipping, export each) and symbols (the Symbols panel, Edit Symbol live, Break Link) | Done |
 | Flow | Shortcut sets, long jobs' progress and cancel, Zoom to Selection and Layer, the colour picker at the pointer, Edit Toolbar, defaults reset by a double-click, undimmed movable preview dialogs, Tiled View's frame | Done |
 | Panels | From the third brainstorm: a column's height shared, sizes as proportions, tabs in a » menu, ⓘ hints for sentences, a type and spacing scale, scrubbing labels, slider bars, segmented choices | Done |
+| Start | The start page, after Woodson's: Open and recent files with pictures, New with a card per preset and Custom… | Done; samples later |
+| Gradients | From the gap map: gradient handles on the canvas, freeform gradients, meshes and the Mesh tool, gradients along and across strokes | Done |
+| Typography | Ideas 13–17: colour per character, hyphenation, the composer's spacing ranges and glyph scaling, tab stops, the Glyphs panel | Done |
+| Fonts | From the user's report and 25 ideas: ideas 1–6 and 10 (pending fonts, names kept, one lookup chain, system fonts listed by themselves, PSD fonts found later, Photoshop's pixels as a stand-in, a font menu with previews) | Done; 11–25 later, 7–9 skipped for now |
+| Brush engine | From the gap map: bristle, erodible and airbrush tips, the stylus wheel and Initial Rotation, tool presets (and TPL files), brushes out as ABR | Done |
+| Patterns | From the gap map: patterns from artwork, pattern editing mode (grid, brick and hex, spacing), Pattern Overlay with the document's patterns | Done |
+| Many layers | From the user's workflow: several layers dragged at once, new layers into the selected group with its name, Rasterize on a group (and several layers), Merge Layers; then brainstorm ideas 1, 2, 4, 5, 6, 10–20, 22, 24 and 25 (Draw Into, numbering, Group and Ungroup, Move to Group, the merge family, Combine into One Shape, colour labels, Rename Layers…) | Done; ideas 3, 7, 8, 9, 21 and 23 later (group drawing defaults, Select Similar, selecting layers on the canvas, the panel's filter, counts before big jobs, compact rows) |
 | 15+ | Chosen from the gap map | Later |
 
-All forty-nine check suites pass (`npm run check`, seven to fourteen minutes as the machine allows):
+All fifty check suites pass (`npm run check`, seven to fourteen minutes as the machine allows):
 `doc`, `io`, `color`, `print`, `tiles`, `render-ref`, `images`, `brush`,
 `select`, `segment`, `matte`, `retouch`, `adjust`, `geom`, `snap`, `text`,
 `commands`, `interchange`, `theme`, `static` headless; `engine`, `shell`, `files`,
 `pixels`, `gpu`, `canvas`, `paint`, `tools`, `effects`, `vectors`, `type`,
-`proof`, `clipboard`, `fills`, `ux`, `guides`, `workflow`, `tiled`, `healing`, `warp`, `filters`, `appearance`, `construct`, `channels`, `panels`, `flow`, `boards`, `artboards`,
+`proof`, `clipboard`, `fills`, `ux`, `guides`, `workflow`, `tiled`, `healing`, `warp`, `filters`, `appearance`, `construct`, `channels`, `panels`, `flow`, `boards`, `artboards`, `layers`,
 `interchange-browser` in Chrome.
 The browser suites also pass against `vite preview` of a production build.
 Every budget in PERFORMANCE.md is met (12 October 2026, after the first
@@ -77,6 +84,206 @@ Renamed from Pixlayer to Plexel on 11 October 2026. Files keep the
 still open. Settings saved in the browser under the old name aren't carried
 over. The first deployment went to a Pages project called `pixlayer`
 (https://pixlayer.pages.dev), which is no longer deployed to.
+
+## The brush engine's gap, then patterns (done)
+
+Asked for on 19 October 2026: close the gap map's "Brush engine" row, then
+its "Patterns" row. Done the same day.
+
+- Decided: bristle, erodible and airbrush tips are footprints chosen per
+  dab, generated images named by their settings and a level
+  (`brush/special.ts`), so the GPU's stamp kernel and its CPU reference
+  didn't change and nothing new is sent to the worker; the stroke builder
+  picks the level (bristle depth from pressure and tilt, erodible wear,
+  a spray variant) and stretches, turns or moves the dab for tilt. Wear is
+  counted on the page from the same samples and kept per tool. The stylus
+  wheel is `PointerEvent.tangentialPressure` (the browser does read it); a
+  pen that has never turned one counts as full on. Tool presets take and
+  give each tool's own store, laid over only where the kind of value
+  matches. ABR out carries Plexel's settings whole beside Photoshop's keys,
+  so the round trip is exact. A pattern from artwork keeps its tile as a
+  document (as a symbol does) and still has a repeat of pixels, so nothing
+  that draws patterns changed; pattern editing mode is a tab that's a tiled
+  document along the axes the layout repeats exactly, so the copies and
+  seamless drawing are Tiled View's. Make Pattern copies the layers (the
+  originals stay), as Illustrator's does.
+- Done: `brush/special.ts`, the stroke builder (`special`, `wheel`,
+  `initial-twist`, `StrokeOptions.wear`), the pen ring and pointer (the
+  wheel), the Brush Settings panel (the three tips, their settings, Sharpen
+  Tip), seven presets, the cursor; `io/abr.ts` (dBrush and dTips, codes 4
+  and 7), `io/abrWrite.ts` and the Brushes panel's Export; `io/tpl.ts`,
+  `app/toolPresets.ts` and the Tool Presets panel; `doc/patterns.ts`
+  (`PatternTile`, `repeatOf`, `editTiling`, contents), `DocPattern.art` read,
+  collected, dropped and converted, `fill.repeat`, `app/patternEdit.ts`,
+  Layer → Pattern → Make Pattern, the Patterns panel's Edit and Pattern
+  Options; Pattern Overlay's `image` and `imageScale` on the GPU and in
+  fx/ref.ts.
+- Checks: check:brush (footprints, splay, wear and the page's count, the
+  leaning spray, the wheel, Initial Rotation, ABR special tips, ABR written
+  and read back with and without Plexel's key, a TPL file), check:gpu
+  (bristle, erodible and airbrush strokes; Pattern Overlay with a document
+  pattern; every mode and depth), check:doc (layouts, tiling, contents,
+  saved, collected, converted), check:paint (the tips in the panel, Sharpen
+  Tip, Export, Tool Presets, a TPL file imported), check:fills (Make
+  Pattern, the tab, layouts, edits going back, Done, Cancel, Save a Copy,
+  Pattern Overlay on the canvas, a pattern from pixels opened).
+
+Found on the way: Document → Mode didn't convert symbols' contents (their
+pixels and colours stayed in the old mode); they convert now. Make
+Pattern's box from the layers' bounds was a pixel layer's whole tiles;
+it's the exact pixels now. check:fills' Magnetic Lasso clicked faster
+than the gesture's double-click (350 ms), which closed the outline early
+on a fast machine; the check waits between clicks. Page errors in the
+browser checks now carry the first lines of their stack.
+
+## Typography: ideas 13–17 (done)
+
+Asked for on 19 October 2026 (ideas 13 to 17 of the 25); done the same day.
+
+- Decided: a character's own fill and stroke (`CharProps.fill`, `stroke`,
+  `strokeWidth`; any paint, the panel setting colours) replace the text's
+  bottom fill and bottom stroke for those glyphs (added when it has none),
+  the rest of the appearance going over everything, so Photoshop's colour
+  runs and Illustrator's character colours both map onto it. Hyphenation
+  by the hyphen package's TeX patterns (ISC; each language a lazy chunk),
+  off by default so existing text doesn't reflow; "words longer than" as
+  Photoshop counts. Word spacing, letter spacing and glyph scaling as
+  Photoshop's least / wanted / most (80/100/133, 0/0/0, 100/100/100), the
+  wanted values always applied; justification takes word spaces, then
+  letters, then glyph scaling. Tab stops measured from the paragraph's
+  start edge, default stops every four ems. Glyphs found from the font's
+  cmap (read from the file, no wasm change), alternates by shaping.
+- Done: `doc/text.ts` (the new settings, read back in range), `text/layout.ts`
+  (hyphen breaks, both composers, `justification`, `placeLine`'s tabs,
+  leaders and hyphens, paints per glyph), `text/hyphenate.ts`,
+  `text/glyphs.ts`, `geom/glyphs.ts` (`paints`, `glyphSubset`),
+  `vector/outline.ts` (`perCharacter`, `characterGroups`), Document →
+  Mode converting characters' colours, PSD in and out (run colours and
+  strokes, hyphenation, spacing ranges, auto leading), SVG (run fills in
+  live text, groups in outlines), PDF and EPS (a path per paint), Create
+  Outlines (a group of shapes per paint); the Character panel's Fill and
+  Stroke, the Paragraph panel's Hyphenate, Hyphenation, Justification and
+  Tabs, the Glyphs panel (Window → Glyphs).
+- Checks: check:text (patterns load and break words, the limit and word
+  length, soft hyphens, settings read back, wanted spacing, justification
+  within ranges, tab stops of each kind with leaders and default stops,
+  paints per glyph and the outline split, cmap and alternates);
+  check:type (Hyphenate from the panel with patterns loading in the page,
+  a run drawn in its own colour on the GPU, the Glyphs panel inserting a
+  glyph and an alternate); check:interchange-browser (run colours,
+  strokes and paragraph settings through a PSD).
+- Left: a tab ruler on the canvas; gradients per character from the panel;
+  Photoshop's tab stops in PSD; glyph names (the post table) in the Glyphs
+  panel; hyphenation exceptions of your own (a dictionary).
+
+## Fonts that turn up (done)
+
+Reported on 19 October 2026: system fonts (Impact) drawn but called missing,
+others left in a placeholder; a PSD's text in a stand-in font where another
+web viewer showed the right one. 25 ideas drawn up; 1–6 and 10 asked for
+and done the same day; 7 (Google Fonts lookup), 8 (Resolve Fonts dialog)
+and 9 (font status in panels) skipped for now.
+
+- Causes: `FontLibrary.face` answered null for a font still loading, and
+  layout called that missing; a system font's entries were replaced by the
+  file's own names once read, so text asking by the browser's names lost
+  it; a PSD's PostScript names were looked up once, as it opened.
+- Done: `resolve` (family and style, PostScript name, a guess from one,
+  full or loosely written names, nearest style), `pending` and `status`,
+  `keepNames` (browser's names stay, the file's kept as aliases);
+  `TextLayout.pending`; warnings after `systemFontsSettled`, only for
+  fonts still missing at the library's version; `autoSystemFonts` when the
+  local-fonts permission is granted; PSD runs keep their PostScript name
+  (style '') until found; text layers keep Photoshop's pixels
+  (`KindProps['text'].stand`), drawn while fonts are missing or pending,
+  dropped by edits, saved and converted with the tiles; `ui/FontPicker.tsx`
+  and `app/fontMenu.ts`.
+- Checks: check:text (pending, names kept, the lookup chain), check:doc
+  (stand-ins kept, saved, dropped), check:interchange-browser (stand-ins and
+  PostScript names from text.psd), check:type (with Local Font Access
+  granted over the DevTools protocol: listed without a click, no false
+  warning, PSD fonts found, the font menu).
+- Left: ideas 11–25 (similar-font
+  suggestions, collections, colour per character, hyphenation, the
+  composer's spacing, tab stops, a Glyphs panel, drop caps and lists,
+  vertical text, Find and Replace, spell checking, CJK fallbacks fetched on
+  demand, threaded frames and wrap, optical kerning and an OpenType panel,
+  live text in PDF and EPS); 7–9 when wanted. Kinds in the font menu come
+  from names, not the fonts' own classification.
+
+## Gradients on the canvas, freeform and mesh (done)
+
+Asked for on 19 October 2026 from the gap map's Gradients row (Illustrator,
+Affinity and Inkscape all meet it; Plexel was partial); done the same day.
+
+- Decided: two new paint kinds, `freeform` (colour points) and `mesh` (a
+  grid of coloured points), and `stroke: 'along' | 'across'` on a gradient;
+  all in the shape's own coordinates. One paint kernel still: the new kinds
+  read a field cut to the tile (stroke centre segments, freeform points, or
+  a mesh's patches and points) from the binding image patterns use.
+  Freeform blends by inverse distance (power 3, scaled by spread); meshes
+  have straight-sided patches, found by inverting the bilinear map, and a
+  Catmull–Rom spline through the points' colours (smooth across patches).
+  Across a stroke follows the width profile; inside and outside strokes run
+  from the path to the visible edge. The canvas edits the item open in
+  Properties when it can (`paintFocus`), else the top fill, else the top
+  stroke. Stops are drawn beside the line, clear of its end handles. Files
+  that can't hold them take the shape as an image of itself.
+- Done: `vector/mesh.ts` (inverse bilinear, the spline, split, resize,
+  freeform weights), `vector/paint.ts`'s fields and CPU reference,
+  `render/shaders/vector.ts` (kinds 8 to 10), `app/gradientEdit.ts` (the
+  annotator, freeform points, the Mesh tool, Delete), Properties' Freeform
+  and Mesh editors and Apply (Within, Along, Across) on strokes, the Mesh
+  tool (in the Gradient slot; U in Illustrator's keys; icon grid-four);
+  `mapPaintColours`, `paintColours`, `mainColour` in doc/vector.ts so
+  conversion, masks, colorizing and the exporters handle every kind.
+- Checks: check:gpu (five new probes: along, across with a profile, across
+  an inside stroke, freeform, a warped mesh, every mode and depth),
+  check:geom (the mesh arithmetic, files read back), check:fills (the
+  annotator, freeform points, the Mesh tool on the canvas).
+- Left: curved mesh lines with handles on mesh points (Illustrator's);
+  freeform gradients' Lines mode; double-clicking a stop for its colour,
+  and colour midpoints between stops; SVG 2's `meshgradient` read (Inkscape
+  writes it); meshes and freeform gradients as PDF and EPS shadings (types
+  4 to 7) rather than images; spot colours in meshes.
+- Found on the way: check:fills' Magnetic Lasso check ("the outline followed
+  the square's edges") fails, with the new editor's overlay switched off
+  too; it looks older than this work. (Look into)
+
+## The start page (done)
+
+Asked for on 18 October 2026, after the start page of the sister project
+Woodson; done the same day, samples left for later.
+
+- Decided: the page fills the document area, on the pasteboard, in place of
+  the card that floated over it, and shows on the same terms (nothing open,
+  and the session restored). Two sections of square cards, Open first (as
+  Woodson's own projects come first, so recent files don't sit under the
+  presets), then New. A preset's card makes its document at once, as the
+  dialog would with that preset and nothing changed (named Untitled, a white
+  Background); **Custom…** is the dialog. A recent file's picture is the
+  thumbnail.png the .pxll carries, kept in IndexedDB beside its handle (a
+  `pictures` store, version 2 of the `plexel` database), since a handle
+  can't be read without a click; it's taken from the file as it opens and
+  from what's written as it saves. A document with nothing to draw has no
+  picture, and its card shows an icon.
+- Done: `ui/StartPage.tsx` (the cards, the arrow keys moving between them by
+  where they sit, the × that takes a file off Recent), `newFromPreset` in
+  `app/files.ts`, `readPxll` returning the thumbnail, `touchRecent` keeping
+  pictures and `onRecentChange` so lists follow, `forgetRecent` dropping the
+  handle and picture too; three icons (`start.custom`, `start.open`,
+  `start.clipboard`).
+- Checks: check:files (a preset card makes its document, a saved file's
+  picture under Recent, × takes it off, Custom… opens the dialog, no Recent
+  without File System Access).
+- Left: **samples** ("Learn from a sample", as Woodson has): documents built
+  in code, written as .pxll with pictures by a script, with a check that
+  fails when a sample changes and its picture wasn't made again; opened as an
+  unsaved copy. Candidates: a photo retouch (masks, adjustment layers), a
+  poster (type, shapes, effects), a print flyer (CMYK, spot colours,
+  proofing), an icon set (artboards, symbols), a painting (brushes, the
+  Mixer Brush). Also: your own presets as cards; the last background and
+  artboard choice remembered for the cards.
 
 ## Artboards and symbols (done)
 
@@ -1517,6 +1724,8 @@ Things put off on the way, with where they're expected to land. When one
 is done, move it to the CHANGELOG and take it off this list.
 
 **Shell and workspace**
+- Samples on the start page, and your own presets as cards (see *The start
+  page*). (Next for the start page)
 - Our own icons, drawn on Phosphor's 256-unit grid in its Regular and Fill
   weights, for what Phosphor has none of: the Mixer Brush, Smudge, Quick
   Selection, the Magnetic Lasso (today a mode of the Lasso, with no icon of
@@ -1609,15 +1818,19 @@ is done, move it to the CHANGELOG and take it off this list.
 **Painting**
 - Predicted pointer events, drawn ahead of the pen for display only, to
   shorten how far the stroke trails it. (Later)
-- Erodible, airbrush and bristle tips (ABR files' come in round, named),
-  and a stylus wheel control (the browser can't read one). (Later)
-- Photoshop's tool presets (`.tpl`) and brush presets saved out as ABR.
+- Bristle, erodible and airbrush tips from ABR files keep their shape;
+  their other settings are found by key name (Adobe hasn't published the
+  keys) and otherwise defaulted, said. Checked against made-up files, not
+  ones Photoshop wrote. (Later, with a file from Photoshop)
+- Bristle tips are footprints at twelve depths, not simulated hairs that
+  bend and trail; no 3D brush preview. (Later, if it matters)
+- Tool presets saved out as `.tpl`; TPL's sampled tips are read as ABR's
+  are but haven't been checked against a real file; the Crop tool's sizes,
+  the Pen's style, custom shapes and styles in TPL files aren't kept.
   (Later)
 - The Mixer Brush's paint model is fitted by eye to Photoshop's described
   behaviour, not measured against its strokes; Sample All Layers reads
   the image as it was when the frame began. (Later, if it matters)
-- An initial-rotation control in ABR files follows the pen's rotation
-  throughout. (Later)
 - The retouching tools: Blur, Sharpen, Dodge, Burn, Sponge, the healing
   brushes and Clone Stamp, their own gap-map row. (A later phase)
 - A stroke is limited to 1,024 tiles (about 256 MB of coverage); past that
@@ -1687,10 +1900,12 @@ is done, move it to the CHANGELOG and take it off this list.
   updated on Save, not as they're edited. (Later)
 
 **Fills and gradients**
-- Patterns from pixels in Pattern Overlay: a layer style's patterns are
-  still the four formulas (its parameter is a fixed choice; it needs a
-  pattern parameter kind and the pattern buffer in the effects kernel).
-  (Later)
+- Pattern editing mode: a brick or hex layout wraps the tab only along
+  the axis it repeats exactly, so artwork past the tile's edge the other
+  way is cut off there; a hex tile isn't clipped to a hexagon. Patterns
+  from artwork go to SVG, PDF and PSD as their repeat's pixels. Photoshop's
+  Pattern Overlay doesn't come in with its pattern yet (the `Patt` block,
+  below). (Later)
 - An app-wide pattern library (as the brushes have) and patterns larger
   than 1,024 pixels a side; today patterns are the document's. (Later)
 - A gradient editor with presets of your own, colour midpoints and
@@ -1715,9 +1930,9 @@ is done, move it to the CHANGELOG and take it off this list.
   (`Doc.selection.path` is reserved). (Later)
 - Live Paint's gaps and edge colouring; the Shape Builder's gap options;
   Pathfinder's Outline. (Later)
-- Gradient handles drawn on the canvas for a selected shape's gradient
-  (the Gradient tool's drag sets its line today), freeform gradients and
-  meshes. (Later)
+- Gradients: curved mesh lines, freeform Lines mode, stop midpoints, mesh
+  and freeform gradients as PDF/EPS shadings (see "Gradients on the
+  canvas", above). (Later)
 - Combining more than two shapes into one live compound in one go
   (Pathfinder does it, as paths). (Later)
 - Editing a compound's shapes on the canvas without selecting them in the
@@ -1731,13 +1946,11 @@ is done, move it to the CHANGELOG and take it off this list.
   unfeathered. (Later)
 
 **Type**
-- Colour per character: text's fills and strokes are the layer's, as a
-  shape's are; Illustrator and Photoshop colour runs. (Later)
 - Threaded frames (text flowing from one frame to the next), text wrap
   round other layers, vertical text, and Photoshop's warped text. (Later)
-- Hyphenation, tab stops, drop caps, bullets and numbering, optical
-  kerning, and the composer's settings (word and letter spacing ranges).
-  Tabs go in as characters but don't line up yet. (Later)
+- Drop caps, bullets and numbering, optical kerning; a tab ruler on the
+  canvas; per-character gradients chosen in the Character panel (the model
+  takes any paint; the panel sets colours). (Later)
 - Fallback fonts for Chinese, Japanese and Korean (a CJK font is about
   15 MB, too big to bundle; system fonts cover them where they're loaded),
   emoji in colour, and WOFF and WOFF2 files. (Later)
@@ -1868,8 +2081,9 @@ is done, move it to the CHANGELOG and take it off this list.
   refreshes at 30 Hz, which the bench measures and judges against.
 - The page exposes `globalThis.plexel` (the engine, the document and view
   stores, the doc functions, `text.layoutOf` and `text.startFonts`, the
-  colours, the proofing store, `convert`, `files.openFile` and the
-  `exports` (PSD, SVG, PDF)) for the browser checks and the bench. The
+  colours, the proofing store, `convert`, `files.openFile`, the
+  `exports` (PSD, SVG, PDF), `toolPresets` and `patternEdit.of`) for the
+  browser checks and the bench. The
   engine's `test.probe` call loads `render/probe.ts` on demand: the GPU
   probes (compositing, resampling, the display table, painting), the
   bench's measurements, and a dump of the display tiles. `render.idle`

@@ -44,7 +44,8 @@ const itemOk = (it: AppearanceItem) =>
   (it.blend === 'normal' &&
     // A fill's or stroke's own effects are drawn, not written: the shape goes as an image of itself.
     !it.effects?.some((e) => e.enabled) &&
-    (it.paint.kind === 'solid' || (it.paint.kind === 'gradient' && (it.paint.type === 'linear' || it.paint.type === 'radial'))) &&
+    // Freeform gradients, meshes and gradients along or across a stroke have no counterpart in the files: drawn.
+    (it.paint.kind === 'solid' || (it.paint.kind === 'gradient' && !it.paint.stroke && (it.paint.type === 'linear' || it.paint.type === 'radial'))) &&
     // Inside and outside strokes are written as a stroke twice as wide, clipped to the shape or to all but it.
     true)
 

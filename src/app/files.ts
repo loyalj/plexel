@@ -52,6 +52,9 @@ import type { ParamColour } from '../doc/params'
 import { colourEngineNow } from './colour'
 import { artboardDocs, selectedArtboard } from './artboards'
 import { ZipWriter, memorySink } from '../io/zip'
+import { builtinsFor } from '../color/profiles'
+import { toPixels } from '../doc/units'
+import type { Preset } from '../doc/presets'
 
 /** What a new document starts with, as Photoshop offers it. */
 export type Background = 'white' | 'black' | 'background' | 'transparent'
@@ -98,15 +101,32 @@ export async function newDocument(o: NewDocOptions, background: Background = 'wh
   return documents().add({ doc, file: null, saved: false, label: 'New Document' })
 }
 
-/** The engine and the asset store, as a .pxll writer wants them, for the document `key`. */
-const sourcesFor = (key: string | null): PxllSources => ({
+/**
+ * A new document from a preset, as the start screen's cards make one: what
+ * the New Document dialog would make with the preset chosen and nothing
+ * else changed.
+ */
+export function newFromPreset(p: Preset) {
+  const width = toPixels(p.width, p.unit, p.resolution)
+  const height = toPixels(p.height, p.unit, p.resolution)
+  return newDocument({ name: 'Untitled', width, height, resolution: p.resolution, mode: p.mode, depth: p.depth, profile: { builtin: builtinsFor(p.mode)[0].id } })
+}
+
+/**
+ * The engine and the asset store, as a .pxll writer wants them, for the
+ * document `key`. The thumbnail made for the file is left in `made`, for
+ * the recent list.
+ */
+const sourcesFor = (key: string | null, made?: { thumbnail?: Uint8Array }): PxllSources => ({
   pack: (id) => engine().call('tiles.pack', { id }),
   profile: (hash) => assets().get(hash),
   fonts: (doc) => fontsToCarry(doc),
   previews: key
     ? async () => {
         const [thumbnail, preview] = await Promise.all([engine().call('render.preview', { key, size: 256 }), engine().call('render.preview', { key, size: 1024 })])
-        return thumbnail && preview ? { thumbnail, preview } : null
+        if (!thumbnail || !preview) return null
+        if (made) made.thumbnail = thumbnail
+        return { thumbnail, preview }
       }
     : undefined,
 })
@@ -137,11 +157,13 @@ async function releaseLazy(target: FileSystemFileHandle) {
   }
 }
 
-/** Streams a document into a file, holding its tiles meanwhile. */
-async function streamTo(handle: FileSystemFileHandle, doc: Doc, key: string) {
+/** Streams a document into a file, holding its tiles meanwhile; resolves to the thumbnail written with it, if one was. */
+async function streamTo(handle: FileSystemFileHandle, doc: Doc, key: string): Promise<Uint8Array | null> {
   const release = hold(tileSetsOf(doc))
+  const made: { thumbnail?: Uint8Array } = {}
   try {
-    await writeStreamToHandle(handle, (sink) => writePxll(doc, sink, sourcesFor(key)), () => releaseLazy(handle))
+    await writeStreamToHandle(handle, (sink) => writePxll(doc, sink, sourcesFor(key, made)), () => releaseLazy(handle))
+    return made.thumbnail ?? null
   } finally {
     release()
   }
@@ -210,7 +232,7 @@ export async function openFile(file: File, handle: FileSystemFileHandle | null):
     warnings.push(`${lost.size === 1 ? 'A layer' : `${lost.size} layers`} lost ${lost.size === 1 ? 'its' : 'their'} pixels and opened empty`)
   }
   const handleKey = handle ? await storeHandle(handle) : null
-  if (handleKey) await touchRecent(handleKey, file.name)
+  if (handleKey) await touchRecent(handleKey, file.name, read.thumbnail)
   documents().add({ doc, file: { handleKey, name: file.name }, saved: !lost.size })
   if (warnings.length) notify('warning', `“${file.name}” was repaired as it opened.`, warnings)
   return true
@@ -333,9 +355,9 @@ export async function save(key = documents().getState().active): Promise<boolean
       notify('warning', `Plexel wasn’t allowed to write to “${d.file.name}”, so nothing was saved.`)
       return false
     }
-    await streamTo(handle, doc, d.key)
+    const thumbnail = await streamTo(handle, doc, d.key)
     documents().markSaved(d.key, doc, d.file)
-    await touchRecent(d.file.handleKey, d.file.name)
+    await touchRecent(d.file.handleKey, d.file.name, thumbnail)
     notify('info', `Saved “${d.file.name}”.`)
     return true
   } catch (e) {
@@ -358,9 +380,9 @@ export async function saveAs(key = documents().getState().active): Promise<boole
     }
     const handle = await pickFileToSave(suggested)
     if (!handle) return false
-    await streamTo(handle, doc, d.key)
+    const thumbnail = await streamTo(handle, doc, d.key)
     const handleKey = await storeHandle(handle)
-    if (handleKey) await touchRecent(handleKey, handle.name)
+    if (handleKey) await touchRecent(handleKey, handle.name, thumbnail)
     documents().markSaved(d.key, doc, { handleKey, name: handle.name })
     notify('info', `Saved “${handle.name}”.`)
     return true

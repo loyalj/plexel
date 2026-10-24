@@ -46,6 +46,12 @@ export interface FillCalls {
   'fill.keepPlanes': { args: { before: string | null; after: string | null; planes: boolean[] }; result: string | null }
   /** A rectangle of a set's pixels moved to the origin: a pattern's one repeat (Define Pattern). Null when it's empty. */
   'fill.crop': { args: { set: string; rect: [number, number, number, number] }; result: string | null }
+  /**
+   * A pattern's one repeat from its tile (doc/patterns.ts): the `w` × `h` at the
+   * origin of `set` laid at each of `at` in a `width` × `height` repeat,
+   * wrapping round its edges, later copies over earlier. Null when it's empty.
+   */
+  'fill.repeat': { args: { set: string; w: number; h: number; width: number; height: number; at: [number, number][] }; result: string | null }
 }
 
 /** The widest region content-aware fill searches, a side, around what it fills. */
@@ -136,6 +142,55 @@ export function fillHandlers(renderer: () => Promise<Renderer>): { [M in keyof F
         }
         if (!made.length) return null
         return held(store.createSet(f, made.map(([tx, ty, s]): [number, number, TileId] => [tx, ty, store.data(f, s)])))
+      }),
+    'fill.repeat': ({ set, w, h, width, height, at }) =>
+      guarded(async () => {
+        const f = store.getSet(set).format
+        const planes = f.mode === 'rgb' ? 4 : f.mode === 'gray' ? 2 : 5
+        const max = f.depth === 16 ? 65535 : 255
+        // The tile's pixels, straight, 0..1.
+        const tile = new Float32Array(w * h * planes)
+        for (let ty = 0; ty * TILE < h; ty++)
+          for (let tx = 0; tx * TILE < w; tx++) {
+            const id = store.tileAt(set, tx, ty)
+            if (id === undefined) continue
+            const u = store.isUniform(id)
+            const s = u ? null : await store.samples(id)
+            for (let y = ty * TILE; y < Math.min(h, (ty + 1) * TILE); y++)
+              for (let x = tx * TILE; x < Math.min(w, (tx + 1) * TILE); x++) {
+                const i = (y - ty * TILE) * TILE + (x - tx * TILE)
+                for (let c = 0; c < planes; c++) tile[(y * w + x) * planes + c] = (u ? u[c] : s![c * TILE_PIXELS + i]) / max
+              }
+          }
+        // Each copy laid over what's there, wrapping round the repeat.
+        const out = new Float32Array(width * height * planes)
+        const a = planes - 1
+        for (const [ox, oy] of at)
+          for (let y = 0; y < h; y++)
+            for (let x = 0; x < w; x++) {
+              const si = (y * w + x) * planes
+              const sa = tile[si + a]
+              if (sa <= 0) continue
+              const di = ((((y + oy) % height) + height) % height * width + ((((x + ox) % width) + width) % width)) * planes
+              const da = out[di + a]
+              const ra = sa + da * (1 - sa)
+              for (let c = 0; c < a; c++) out[di + c] = (tile[si + c] * sa + out[di + c] * da * (1 - sa)) / ra
+              out[di + a] = ra
+            }
+        const made: [number, number, TileId][] = []
+        for (let ty = 0; ty * TILE < height; ty++)
+          for (let tx = 0; tx * TILE < width; tx++) {
+            const s = newSamples(f)
+            let any = false
+            for (let y = 0; y < TILE && ty * TILE + y < height; y++)
+              for (let x = 0; x < TILE && tx * TILE + x < width; x++) {
+                const si = ((ty * TILE + y) * width + tx * TILE + x) * planes
+                if (out[si + a] > 0) any = true
+                for (let c = 0; c < planes; c++) s[c * TILE_PIXELS + y * TILE + x] = Math.round(Math.min(1, Math.max(0, out[si + c])) * max)
+              }
+            if (any) made.push([tx, ty, store.data(f, s)])
+          }
+        return made.length ? held(store.createSet(f, made)) : null
       }),
     'fill.paint': (a) =>
       guarded(async () => {

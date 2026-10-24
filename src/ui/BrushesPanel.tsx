@@ -12,7 +12,7 @@
  */
 import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { brushAssets } from '../app/brushAssets'
-import { pickBrushFiles } from '../app/brushImport'
+import { exportBrushes, pickBrushFiles } from '../app/brushImport'
 import { brushes, type PaintTool, type UserPreset } from '../app/brushes'
 import { BRUSH_PRESETS, presetSettings, type BrushSettings } from '../brush/defs'
 import { strokePreview } from '../brush/preview'
@@ -104,6 +104,9 @@ export const BrushesPanel = memo(function BrushesPanel() {
             </button>
             <button type="button" className="button small" data-import-brushes onClick={() => void pickBrushFiles()}>
               Import…
+            </button>
+            <button type="button" className="button small" data-export-brushes title={state.user.length ? 'Every brush of yours, as a Photoshop ABR file' : 'The current brush, as a Photoshop ABR file'} onClick={() => void exportBrushes(tool)}>
+              Export…
             </button>
           </>
         ) : (

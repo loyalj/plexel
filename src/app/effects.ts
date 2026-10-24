@@ -16,7 +16,7 @@ import type { Doc, DocNode, LayerFx, NodeId } from '../doc/types'
 import { engine } from '../engine/EngineHost'
 import { FILTER_BY_ID } from '../filters/defs'
 import { channelTarget, planesTarget } from './channels'
-import { documents, newId, type OpenDoc } from './documents'
+import { documents, newId, placing, type OpenDoc } from './documents'
 import { notify } from './notices'
 import { hold } from './pixels'
 import { isCancelled, runJob } from './jobs'
@@ -25,9 +25,9 @@ import { whereNew } from '../doc/tree'
 const store = () => documents()
 const active = () => store().active()
 
-/** Where a new layer goes: above the selected one, in its group; otherwise at the top. */
+/** Where a new layer goes: in the pinned group, or above the selected one (the topmost of several), in its group; otherwise at the top. */
 export function placeForNew(d: OpenDoc): { parent: NodeId; index: number } {
-  return whereNew(d.history.present, d.selected)
+  return whereNew(d.history.present, d.selected, null, placing(d))
 }
 
 /** Layer → New Adjustment Layer → (one of ADJUSTMENT_DEFS): above the selected layer, chosen. */

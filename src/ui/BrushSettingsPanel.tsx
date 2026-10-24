@@ -12,8 +12,13 @@ import { memo, useEffect, useRef, useState, useSyncExternalStore, type ReactNode
 import { brushAssets } from '../app/brushAssets'
 import { brushes, type PaintTool } from '../app/brushes'
 import {
+  BRISTLE_SHAPES,
   BUILTIN_TIPS,
+  DEFAULT_AIRBRUSH,
+  DEFAULT_BRISTLE,
   DEFAULT_BRUSH,
+  DEFAULT_ERODIBLE,
+  ERODIBLE_SHAPES,
   DEFAULT_DUAL,
   DEFAULT_POSE,
   DEFAULT_TEXTURE,
@@ -28,8 +33,10 @@ import {
   type BrushSettings,
   type DynInput,
   type DynTarget,
+  type SpecialTip,
   type TipId,
 } from '../brush/defs'
+import { representativeTip } from '../brush/special'
 import { strokePreview } from '../brush/preview'
 import { BUILTIN_TEXTURES, TEXTURE_LABELS } from '../brush/textures'
 import { sampleTip, tipImage } from '../brush/tips'
@@ -58,13 +65,15 @@ export const BrushSettingsPanel = memo(function BrushSettingsPanel() {
   const protectTexture = state.protectTexture
   const set = (patch: Partial<BrushSettings>) => brushes().update(tool, patch)
   const id = (k: string) => `bs-${k}`
-  const round = b.tip === 'round'
+  const round = b.tip === 'round' && !b.special
+  const special = b.special
   return (
     <div className="brush-settings" data-brush-settings={tool}>
       <p className="field-meta">{TOOL_BY_ID.get(tool)?.name ?? 'Brush'}</p>
 
       <Section title="Brush Tip Shape" id="tip" open>
-        <TipPicker value={b.tip} onChange={(tip) => set({ tip })} id={id('tip')} />
+        <TipPicker value={special ? `special:${special.kind}` : b.tip} onChange={(tip) => set(tip.startsWith('special:') ? { special: specialDefault(tip.slice(8) as SpecialTip['kind']) } : { tip, special: null })} id={id('tip')} special />
+        {special && <SpecialSection t={special} set={(p) => set({ special: { ...special, ...p } as SpecialTip })} id={id} wear={state.wear[tool] ?? 0} onSharpen={() => brushes().sharpen(tool)} />}
         <Slider id={id('size')} label="Size" min={1} max={2000} step={1} unit="px" value={b.size} onChange={(size) => set({ size })} />
         <div className="check-row">
           <Check id={id('flip-x')} label="Flip X" value={b.flipX} onChange={(flipX) => set({ flipX })} />
@@ -200,7 +209,7 @@ export const BrushSettingsPanel = memo(function BrushSettingsPanel() {
         <Check id={id('protect-texture')} label="Protect Texture" value={protectTexture} onChange={(on) => brushes().setProtectTexture(on)} />
       </div>
       <Slider id={id('smoothing')} label="Smoothing" min={0} max={95} step={1} unit="%" value={b.smoothing * 100} onChange={(v) => set({ smoothing: v / 100 })} />
-      <button type="button" className="button small" data-brush-reset onClick={() => set({ ...DEFAULT_BRUSH, size: b.size, tip: b.tip })}>
+      <button type="button" className="button small" data-brush-reset onClick={() => set({ ...DEFAULT_BRUSH, size: b.size, tip: b.tip, special: b.special })}>
         Reset All Sections
       </button>
 
@@ -210,6 +219,78 @@ export const BrushSettingsPanel = memo(function BrushSettingsPanel() {
 })
 
 // --- parts ------------------------------------------------------------------------------------
+
+const SPECIAL_KINDS: SpecialTip['kind'][] = ['bristle', 'erodible', 'airbrush']
+const SPECIAL_LABELS: Record<SpecialTip['kind'], string> = { bristle: 'Bristle Tip', erodible: 'Erodible Tip', airbrush: 'Airbrush Tip' }
+const specialDefault = (k: SpecialTip['kind']): SpecialTip => ({ ...(k === 'bristle' ? DEFAULT_BRISTLE : k === 'erodible' ? DEFAULT_ERODIBLE : DEFAULT_AIRBRUSH) })
+const SHAPE_LABELS: Record<string, string> = {
+  'round-point': 'Round Point',
+  'round-blunt': 'Round Blunt',
+  'round-curve': 'Round Curve',
+  'round-angle': 'Round Angle',
+  'round-fan': 'Round Fan',
+  'flat-point': 'Flat Point',
+  'flat-blunt': 'Flat Blunt',
+  'flat-curve': 'Flat Curve',
+  'flat-angle': 'Flat Angle',
+  'flat-fan': 'Flat Fan',
+  point: 'Point',
+  flat: 'Flat',
+  round: 'Round',
+  square: 'Square',
+  triangle: 'Triangle',
+}
+
+/** A bristle, erodible or airbrush tip's own settings, as Photoshop's Brush Tip Shape shows them for each. */
+function SpecialSection({ t, set, id, wear, onSharpen }: { t: SpecialTip; set(p: Partial<SpecialTip>): void; id: (k: string) => string; wear: number; onSharpen(): void }) {
+  const shapes = t.kind === 'bristle' ? BRISTLE_SHAPES : t.kind === 'erodible' ? ERODIBLE_SHAPES : null
+  return (
+    <div className="special-tip" data-special={t.kind}>
+      {shapes && t.kind !== 'airbrush' && (
+        <label className="field">
+          <span>Shape</span>
+          <select id={id('special-shape')} value={t.shape} onChange={(e) => set({ shape: e.target.value } as Partial<SpecialTip>)}>
+            {shapes.map((s) => (
+              <option key={s} value={s}>
+                {SHAPE_LABELS[s]}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {t.kind === 'bristle' && (
+        <>
+          <Slider id={id('bristles')} label="Bristles" min={1} max={100} step={1} unit="%" value={t.bristles * 100} onChange={(v) => set({ bristles: Math.max(0.01, v / 100) })} hint="How many hairs the brush has." />
+          <Slider id={id('bristle-length')} label="Length" min={25} max={500} step={1} unit="%" value={t.length * 100} onChange={(v) => set({ length: v / 100 })} hint="Longer hairs splay further as the brush is pressed." />
+          <Slider id={id('bristle-thickness')} label="Thickness" min={1} max={200} step={1} unit="%" value={t.thickness * 100} onChange={(v) => set({ thickness: Math.max(0.01, v / 100) })} />
+          <Slider id={id('bristle-stiffness')} label="Stiffness" min={1} max={100} step={1} unit="%" value={t.stiffness * 100} onChange={(v) => set({ stiffness: Math.max(0.01, v / 100) })} hint="Stiff hairs hold together; soft ones splay at a light touch." />
+        </>
+      )}
+      {t.kind === 'erodible' && (
+        <>
+          <Percent id={id('softness')} label="Softness" value={t.softness} onChange={(softness) => set({ softness })} />
+          <div className="check-row">
+            <span className="field-meta" data-wear={Math.round(wear * 100)}>
+              Worn {Math.round(wear * 100)}%
+            </span>
+            <button type="button" className="button small" data-sharpen disabled={wear === 0} onClick={onSharpen}>
+              Sharpen Tip
+            </button>
+          </div>
+        </>
+      )}
+      {t.kind === 'airbrush' && (
+        <>
+          <Percent id={id('air-hardness')} label="Hardness" value={t.hardness} onChange={(hardness) => set({ hardness })} />
+          <Percent id={id('air-distortion')} label="Distortion" value={t.distortion} onChange={(distortion) => set({ distortion })} />
+          <Percent id={id('air-granularity')} label="Granularity" value={t.granularity} onChange={(granularity) => set({ granularity })} />
+          <Percent id={id('air-spatter-size')} label="Spatter Size" value={t.spatterSize} onChange={(spatterSize) => set({ spatterSize })} />
+          <Percent id={id('air-spatter-amount')} label="Spatter Amount" value={t.spatterAmount} onChange={(spatterAmount) => set({ spatterAmount })} />
+        </>
+      )}
+    </div>
+  )
+}
 
 function Section({ title, id, open, on, onToggle, children }: { title: string; id: string; open?: boolean; on?: boolean; onToggle?(on: boolean): void; children: ReactNode }) {
   const [shown, setShown] = useState(!!open)
@@ -388,8 +469,12 @@ function TextureSection({ b, set, id }: { b: BrushSettings; set(p: Partial<Brush
 }
 
 /** Every tip: the round one, the built-in images, and the user's (Define Brush Preset, ABR files). */
-function TipPicker({ value, onChange, id }: { value: TipId; onChange(t: TipId): void; id: string }) {
-  const tips: { id: TipId; name: string }[] = [...BUILTIN_TIPS.map((t) => ({ id: t, name: t[0].toUpperCase() + t.slice(1) })), ...brushAssets().list('tip').map((a) => ({ id: a.id, name: a.name }))]
+function TipPicker({ value, onChange, id, special }: { value: TipId; onChange(t: TipId): void; id: string; special?: boolean }) {
+  const tips: { id: TipId; name: string }[] = [
+    ...BUILTIN_TIPS.map((t) => ({ id: t, name: t === 'bristle' ? 'Dry Bristle' : t[0].toUpperCase() + t.slice(1) })),
+    ...(special ? SPECIAL_KINDS.map((k) => ({ id: `special:${k}`, name: SPECIAL_LABELS[k] })) : []),
+    ...brushAssets().list('tip').map((a) => ({ id: a.id, name: a.name })),
+  ]
   return (
     <div className="tip-picker" role="radiogroup" aria-label="Tip" id={id}>
       {tips.map((t) => (
@@ -412,7 +497,7 @@ function TipThumb({ tip }: { tip: TipId }) {
     if (!c || !ctx) return
     const img = ctx.createImageData(THUMB, THUMB)
     const ink = getComputedStyle(c).color.match(/\d+/g)?.map(Number) ?? [220, 220, 220]
-    const t = tipImage(tip)
+    const t = tipImage(tip.startsWith('special:') ? representativeTip(specialDefault(tip.slice(8) as SpecialTip['kind'])) : tip)
     for (let y = 0; y < THUMB; y++)
       for (let x = 0; x < THUMB; x++) {
         const ux = ((x + 0.5) / THUMB) * 2 - 1

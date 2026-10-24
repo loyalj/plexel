@@ -6,7 +6,8 @@
  *   Arabic and Devanagari, under /fonts, each fetched when first wanted;
  * - the system's, listed by Local Font Access in Chromium when asked
  *   (Type → Load System Fonts; the browser asks permission), each read when
- *   first used;
+ *   first used; listed again by themselves in later sessions once the
+ *   browser has said yes (`autoSystemFonts`);
  * - added by the user (Type → Add Fonts…), kept in the browser's private
  *   storage (OPFS) so they're there next time;
  * - a document's own, carried in its .pxll file.
@@ -19,6 +20,7 @@ import { startHarfBuzz } from '../text/hb'
 import { FontLibrary, styleWeight, type FontEntry } from '../text/fonts'
 import { sha256 } from '../io/assets'
 import { notify } from './notices'
+import { Listeners } from '../lib/listeners'
 
 let library: FontLibrary | null = null
 let starting: Promise<FontLibrary> | null = null
@@ -63,6 +65,7 @@ export function fontLibrary(): Promise<FontLibrary> {
     lib.setFallbacks({ Arab: ['/fonts/NotoSansArabic-Regular.ttf'], Deva: ['/fonts/NotoSansDevanagari-Regular.ttf'] })
     library = lib
     void loadUserFonts(lib)
+    void autoSystemFonts()
     return lib
   })())
 }
@@ -83,13 +86,48 @@ interface LocalFontData {
 export const canLoadSystemFonts = () => typeof (globalThis as { queryLocalFonts?: unknown }).queryLocalFonts === 'function'
 
 let systemLoaded = false
+let systemLoading: Promise<number> | null = null
 export const systemFontsLoaded = () => systemLoaded
+const systemChanges = new Listeners()
+/** Told when the system's fonts have been listed. */
+export const subscribeSystemFonts = (fn: () => void) => systemChanges.subscribe(fn)
 
-/** Type → Load System Fonts: the fonts installed on this computer, listed (the browser asks first). */
-export async function loadSystemFonts(): Promise<number> {
+/**
+ * The system's fonts listed without a click, when the browser has already
+ * let this page list them (it remembers): so a document's fonts are there
+ * when it opens, as in a desktop app. Asked never prompts here; a page
+ * that hasn't been allowed waits for Type → Load System Fonts.
+ */
+export function autoSystemFonts(): Promise<void> {
+  return (autoTried ??= tryAutoSystemFonts())
+}
+let autoTried: Promise<void> | null = null
+
+/** Settled once the page has listed the system's fonts by itself, or found it may not: what missing-font warnings wait for. */
+export const systemFontsSettled = (): Promise<void> => autoTried ?? Promise.resolve()
+
+async function tryAutoSystemFonts(): Promise<void> {
+  if (!canLoadSystemFonts() || systemLoaded) return
+  try {
+    const p = await navigator.permissions.query({ name: 'local-fonts' as PermissionName })
+    if (p.state === 'granted') await loadSystemFonts(true)
+  } catch {
+    // A browser that doesn't know the permission's name: left to the menu.
+  }
+}
+
+/** Type → Load System Fonts: the fonts installed on this computer, listed (the browser asks first). `quiet`: nothing said if it can't. */
+export function loadSystemFonts(quiet = false): Promise<number> {
+  return (systemLoading ??= listSystemFonts(quiet).then((n) => {
+    if (!systemLoaded) systemLoading = null
+    return n
+  }))
+}
+
+async function listSystemFonts(quiet: boolean): Promise<number> {
   const query = (globalThis as { queryLocalFonts?: () => Promise<LocalFontData[]> }).queryLocalFonts
   if (!query) {
-    notify('info', 'This browser doesn’t let pages list the fonts installed on the computer. Type → Add Fonts… adds font files.')
+    if (!quiet) notify('info', 'This browser doesn’t let pages list the fonts installed on the computer. Type → Add Fonts… adds font files.')
     return 0
   }
   const lib = await fontLibrary()
@@ -97,15 +135,17 @@ export async function loadSystemFonts(): Promise<number> {
   try {
     list = await query()
   } catch {
-    notify('info', 'Plexel wasn’t allowed to list the system’s fonts. Type → Add Fonts… adds font files instead.')
+    if (!quiet) notify('info', 'Plexel wasn’t allowed to list the system’s fonts. Type → Add Fonts… adds font files instead.')
     return 0
   }
+  // One file read per font: a collection's faces are each listed by the browser, and each reads the file.
   for (const fd of list) {
     lib.addLazy(`local:${fd.postscriptName}`, 'local', async () => new Uint8Array(await (await fd.blob()).arrayBuffer()), [
-      { family: fd.family, style: fd.style, weight: styleWeight(fd.style), italic: /italic|oblique/i.test(fd.style), index: 0, coords: {}, postscript: fd.postscriptName },
+      { family: fd.family, style: fd.style, weight: styleWeight(fd.style), italic: /italic|oblique/i.test(fd.style), index: 0, coords: {}, postscript: fd.postscriptName, full: fd.fullName },
     ])
   }
   systemLoaded = true
+  systemChanges.emit()
   return list.length
 }
 

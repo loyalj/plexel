@@ -96,6 +96,8 @@ export interface BrushCursor {
   size: number
   /** The tip's outline, turned and squashed as the dab is, in document pixels (brush/outline.ts). */
   loops?: [number, number][][] | null
+  /** What the pen's pressure paints now, inside the brush's full size: its outline, in document pixels. */
+  inner?: [number, number][][] | null
 }
 
 /** A brush tip or pattern image, by its content hash. */
@@ -193,6 +195,8 @@ export interface EngineCalls extends SelectCalls, ClipCalls, FillCalls, SelectIm
   'tiles.valuesAt': { args: { points: { set: string; x: number; y: number; kind: 'alpha' | 'cover'; outside?: number }[] }; result: number[] }
   /** Rasterize: a pixel layer (or a smart object's contents) through its transform, baked into tiles on the document's grid. */
   'render.rasterize': { args: { key: string; node: NodeId }; result: string | null }
+  /** Merge Layers: the layers (painting order) drawn together into a new tile set, held until the page commits it. */
+  'render.merge': { args: { key: string; nodes: NodeId[] }; result: string | null }
   /**
    * A pixel layer with effects (filter or adjustment nodes, not in the
    * document) run on it for good, through the selection if there is one:

@@ -525,6 +525,46 @@ export async function rasterizeNode(r: Renderer, store: TileStore, key: string, 
   return read.length ? store.createSet(f, read.map(([tx, ty, samples]) => [tx, ty, store.data(f, samples)])) : null
 }
 
+let merges = 0
+
+/**
+ * Merge Layers: the layers `ids` (painting order, bottom first) drawn
+ * together as the canvas draws them, each with its opacity, blend, masks,
+ * effects and clipped layers, into new tiles on the document's grid. Drawn
+ * as a scene of their own, the layers alone in its root group, so what's
+ * under and around them doesn't come into it. Null when they draw nothing.
+ */
+export async function mergeNodes(r: Renderer, store: TileStore, key: string, ids: NodeId[]): Promise<string | null> {
+  const s = r.docState(key)
+  const doc = s?.scene.doc
+  if (!s || !doc) throw new Error('Merge Layers needs an open document')
+  const tmpKey = `merge-${++merges}`
+  const root = makeNode('group', `${tmpKey}-root`)
+  root.children = ids.filter((id) => s.scene.node(id))
+  const nodes: DocNode[] = [root]
+  const visit = (id: NodeId) => {
+    const n = s.scene.node(id)
+    if (!n) return
+    nodes.push(n)
+    n.masks.forEach(visit)
+    n.effects.forEach(visit)
+    n.children?.forEach(visit)
+  }
+  root.children.forEach(visit)
+  r.updateScene(tmpKey, { doc: { ...doc, root: root.id, selection: null }, nodes: nodes.map((node, i) => ({ node, version: i + 1 })), removed: [], reset: true })
+  try {
+    const t = r.docState(tmpKey)!
+    const b = t.scene.bounds(root.id)
+    if (!b) return null
+    const f: TileFormat = { mode: doc.mode, depth: doc.depth }
+    const read: [number, number, Samples][] = []
+    await readTiles(r, t, tileRange(b), (job) => r.renderNodeTile(job, root.id), (tx, ty, samples) => read.push([tx, ty, samples]))
+    return read.length ? store.createSet(f, read.map(([tx, ty, samples]) => [tx, ty, store.data(f, samples)])) : null
+  } finally {
+    r.close(tmpKey)
+  }
+}
+
 let bakes = 0
 
 /**

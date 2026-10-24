@@ -9,7 +9,7 @@
 import { linkable, swatchPaint } from '../doc/swatches'
 import { ARROW_SHAPES, WIDTH_PRESETS, presetOf, type ArrowShape, type Arrowhead, type WidthPoint } from '../geom/stroke'
 import { swatchColourIn } from '../app/docSwatches'
-import { useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { flipAcross, flipAlong, sameProfile } from '../geom/width'
 import { widthProfiles } from '../app/widthProfiles'
 import { brushById, brushChoices, brushOptions } from '../app/vectorBrushes'
@@ -18,7 +18,11 @@ import { setOperandOp, setShapeAppearance, setShapeGeometry, convertSelectedToPa
 import { swatchIn } from '../app/colour'
 import { placeOf } from '../doc/tree'
 import type { BlendModeId, BoolOp, Doc, DocNode } from '../doc/types'
-import { ALIGNS, CAPS, GRADIENT_TYPES, JOINS, appearanceIn, fillItem, gradientPaint, solid, strokeItem, type AppearanceItem, type Paint, type PaintStop } from '../doc/vector'
+import { ALIGNS, CAPS, GRADIENT_TYPES, JOINS, MAX_FREEFORM, MAX_MESH, appearanceIn, fillItem, gradientPaint, mainColour, solid, strokeItem, type AppearanceItem, type FreeformPoint, type Paint, type PaintStop, type StrokeGradient } from '../doc/vector'
+import { gradientSelection, paintBox, paintFocus } from '../app/gradientEdit'
+import { newMesh, resizeMesh } from '../vector/mesh'
+import { paintColourAt } from '../vector/paint'
+import type { Box } from '../geom/path'
 import { anchorCount } from '../geom/path'
 import { SHAPE_LABEL, shapeBox, withBox, type ShapeParams } from '../geom/shapes'
 import { BLEND_DEFS } from '../render/blendModes'
@@ -56,6 +60,14 @@ const PAINT_KINDS: [Paint['kind'], string][] = [
   ['solid', 'Colour'],
   ['gradient', 'Gradient'],
   ['pattern', 'Pattern'],
+  ['freeform', 'Freeform'],
+  ['mesh', 'Mesh'],
+]
+
+const STROKE_GRADIENTS: ['within' | StrokeGradient, string][] = [
+  ['within', 'Within'],
+  ['along', 'Along'],
+  ['across', 'Across'],
 ]
 
 /** A number setting; `def` is its default, marked when it's off it (none when it has none). */
@@ -229,6 +241,8 @@ export function paintCss(p: Paint, mode: Doc['mode']): string {
   if (p.kind === 'solid') return swatchCss(p.colour, mode)
   if (p.kind === 'pattern' && !PATTERN_BY_ID.has(p.pattern)) return 'repeating-conic-gradient(#888 0 25%, #ccc 0 50%) 0 0 / 8px 8px'
   if (p.kind === 'pattern') return `repeating-linear-gradient(45deg, ${swatchCss(p.colour, mode)} 0 3px, ${swatchCss(p.background, mode)} 3px 6px)`
+  if (p.kind === 'freeform') return p.points.length > 1 ? `linear-gradient(to right, ${p.points.map((q) => swatchCss(q.colour, mode)).join(', ')})` : swatchCss(mainColour(p), mode)
+  if (p.kind === 'mesh') return `linear-gradient(to right, ${p.nodes.slice(0, p.cols + 1).map((q) => swatchCss(q.colour, mode)).join(', ')})`
   return `linear-gradient(to right, ${p.stops.map((s) => `${swatchCss(s.colour, mode)} ${Math.round(s.at * 100)}%`).join(', ')})`
 }
 
@@ -248,6 +262,7 @@ function Appearance({ node, doc }: { node: DocNode; doc: Doc }) {
     setOpen(items.length)
   }
   const at = open !== null && open < items.length ? open : null
+  useEffect(() => paintFocus.set(node.id, at), [node.id, at])
   return (
     <div className="field appearance" data-appearance>
       <div className="appearance-head">
@@ -301,6 +316,7 @@ function Appearance({ node, doc }: { node: DocNode; doc: Doc }) {
         <ItemEditor
           key={`${node.id}:${at}`}
           doc={doc}
+          node={node}
           item={items[at]}
           index={at}
           onChange={(next, key) =>
@@ -326,11 +342,11 @@ function Appearance({ node, doc }: { node: DocNode; doc: Doc }) {
 
 const BLENDS = BLEND_DEFS.filter((b) => b.id !== 'pass-through')
 
-function ItemEditor({ doc, item, index, onChange }: { doc: Doc; item: AppearanceItem; index: number; onChange(next: AppearanceItem, key: string): void }) {
+function ItemEditor({ doc, node, item, index, onChange }: { doc: Doc; node: DocNode; item: AppearanceItem; index: number; onChange(next: AppearanceItem, key: string): void }) {
   const id = `props-item-${index}`
   return (
     <div className="appearance-editor" data-appearance-editor={index}>
-      <PaintEditor id={id} doc={doc} paint={item.paint} onChange={(paint, key) => onChange({ ...item, paint }, key)} />
+      <PaintEditor id={id} doc={doc} paint={item.paint} onChange={(paint, key) => onChange({ ...item, paint }, key)} onStroke={item.kind === 'stroke'} layer={{ id: node.id, item: index }} />
       <NumberParam id={`${id}-opacity`} def={num('opacity', 'Opacity', 0, 100, 1, '%', undefined, 100)} value={Math.round(item.opacity * 100)} onChange={(v) => onChange({ ...item, opacity: v / 100 }, 'opacity')} />
       <div className="field">
         <label htmlFor={`${id}-blend`}>Blend mode</label>
@@ -511,12 +527,38 @@ function ItemEffects({ id, doc, item, onChange }: { id: string; doc: Doc; item: 
  * or a pattern, built in or made from pixels. Shapes' fills and strokes,
  * fill layers and the Gradient tool all edit their paints with this.
  */
-export function PaintEditor({ id, doc, paint: p, onChange: setPaint, kinds = ['solid', 'gradient', 'pattern'], hint }: { id: string; doc: Doc; paint: Paint; onChange(next: Paint, key: string): void; kinds?: Paint['kind'][]; hint?: string }) {
+export function PaintEditor({
+  id,
+  doc,
+  paint: p,
+  onChange: setPaint,
+  kinds = ['solid', 'gradient', 'pattern', 'freeform', 'mesh'],
+  hint,
+  onStroke,
+  layer,
+}: {
+  id: string
+  doc: Doc
+  paint: Paint
+  onChange(next: Paint, key: string): void
+  kinds?: Paint['kind'][]
+  hint?: string
+  /** A stroke's paint: a gradient can run along or across it. */
+  onStroke?: boolean
+  /** Which layer's paint (a fill layer's is item −1): where its gradients lie, and which of its stops or points the canvas has selected. */
+  layer?: { id: string; item: number }
+}) {
   const white = doc.mode === 'cmyk' ? [0, 0, 0, 0] : doc.mode === 'gray' ? [1] : [1, 1, 1]
+  const box: Box = layer ? paintBox(doc, layer.id) : [0, 0, doc.width, doc.height]
+  useSyncExternalStore(gradientSelection.subscribe, gradientSelection.snapshot)
+  const key = documents().getState().active
+  const selected = layer && key ? gradientSelection.of({ key, id: layer.id, item: layer.item }) : null
   const changeKind = (kind: Paint['kind']) => {
-    const main = p.kind === 'solid' ? p.colour : p.kind === 'pattern' ? p.colour : p.stops[0].colour
+    const main = mainColour(p)
     if (kind === 'solid') setPaint(solid(main), 'kind')
     else if (kind === 'gradient') setPaint(gradientPaint(main, white), 'kind')
+    else if (kind === 'freeform') setPaint(freeformFrom(p, main, white, doc.mode, box), 'kind')
+    else if (kind === 'mesh') setPaint(meshFrom(p, white, doc.mode, box), 'kind')
     else
       setPaint(
         {
@@ -548,8 +590,22 @@ export function PaintEditor({ id, doc, paint: p, onChange: setPaint, kinds = ['s
               ))}
             </select>
           </div>
-          <StopsEditor id={`${id}-stops`} doc={doc} stops={p.stops} onChange={(stops, key) => setPaint({ ...p, stops }, key)} />
-          {p.line ? (
+          {onStroke && (
+            <Segmented
+              id={`${id}-gstroke`}
+              label="Apply"
+              hint="Within: laid across the stroke as across a fill. Along: from each path’s start to its end. Across: from one edge of the stroke to the other."
+              value={p.stroke ?? 'within'}
+              options={STROKE_GRADIENTS}
+              defaultValue="within"
+              onChange={(v) => {
+                const { stroke: _s, ...rest } = p
+                setPaint(v === 'within' ? rest : { ...rest, stroke: v }, 'gstroke')
+              }}
+            />
+          )}
+          <StopsEditor id={`${id}-stops`} doc={doc} stops={p.stops} selected={selected} onChange={(stops, key) => setPaint({ ...p, stops }, key)} />
+          {p.stroke ? null : p.line ? (
             <div className="field" data-gradient-line>
               <span className="field-meta">
                 Along a drawn line <Hint text="The line the Gradient tool drew: drag with it (G) on the canvas to move its ends." />
@@ -577,6 +633,8 @@ export function PaintEditor({ id, doc, paint: p, onChange: setPaint, kinds = ['s
           </label>
         </>
       )}
+      {p.kind === 'freeform' && <FreeformEditor id={id} doc={doc} paint={p} box={box} selected={selected} onChange={setPaint} />}
+      {p.kind === 'mesh' && <MeshEditor id={id} doc={doc} paint={p} selected={selected} onChange={setPaint} />}
       {p.kind === 'pattern' && (
         <>
           <div className="field">
@@ -869,7 +927,7 @@ function DashField({ id, dash, onChange }: { id: string; dash: number[]; onChang
 }
 
 /** A gradient's stops: where each is, its colour (its chip) and how opaque. */
-function StopsEditor({ id, doc, stops, onChange }: { id: string; doc: Doc; stops: PaintStop[]; onChange(s: PaintStop[], key: string): void }) {
+function StopsEditor({ id, doc, stops, selected, onChange }: { id: string; doc: Doc; stops: PaintStop[]; selected?: number | null; onChange(s: PaintStop[], key: string): void }) {
   const css = `linear-gradient(to right, ${stops.map((s) => `${swatchCss(s.colour, doc.mode)} ${Math.round(s.at * 100)}%`).join(', ')})`
   const sorted = (s: PaintStop[]) => [...s].sort((a, b) => a.at - b.at)
   return (
@@ -877,7 +935,7 @@ function StopsEditor({ id, doc, stops, onChange }: { id: string; doc: Doc; stops
       <span className="field-label">Stops</span>
       <div className="gradient-bar" style={{ background: css }} />
       {stops.map((s, i) => (
-        <div className="gradient-stop" key={i}>
+        <div className={`gradient-stop${selected === i ? ' selected' : ''}`} key={i} data-stop={i}>
           <DocColourChip value={s.colour} doc={doc} label={`Stop ${i + 1} colour`} onChange={(c) => onChange(stops.map((x, j) => (j === i ? { ...x, colour: c } : x)), `colour${i}`)} data={{ 'stop-colour': String(i) }} />
           <input
             id={`${id}-${i}`}
@@ -944,6 +1002,84 @@ function StopsEditor({ id, doc, stops, onChange }: { id: string; doc: Doc; stops
       <button type="button" className="button small" onClick={() => onChange(sorted([...stops, { at: 0.5, colour: stops[0].colour, alpha: 1 }]), 'add')}>
         Add Stop
       </button>
+    </div>
+  )
+}
+
+/** A freeform gradient made from a paint: four points over the box, in the colours it had there (a colour: it, white, and between). */
+function freeformFrom(p: Paint, main: number[], white: number[], mode: Doc['mode'], box: Box): Paint {
+  const at = (u: number, v: number): [number, number] => [box[0] + (box[2] - box[0]) * u, box[1] + (box[3] - box[1]) * v]
+  const places: [number, number][] = [
+    [0.25, 0.3],
+    [0.75, 0.3],
+    [0.3, 0.75],
+    [0.72, 0.72],
+  ]
+  const mix = main.map((c, i) => (c + (white[i] ?? c)) / 2)
+  const points: FreeformPoint[] = places.map(([u, v], i) => {
+    const q = at(u, v)
+    const c = p.kind === 'solid' ? { colour: [main, white, mix, main][i], alpha: 1 } : paintColourAt(p, mode, box, q[0], q[1])
+    return { p: q, colour: c.colour, alpha: c.alpha, spread: 1 }
+  })
+  return { kind: 'freeform', points }
+}
+
+/** A mesh made from a paint: 2 × 2 patches in the colours it had at each point (a colour: it, with white in the middle). */
+function meshFrom(p: Paint, white: number[], mode: Doc['mode'], box: Box): Paint {
+  return newMesh(box, 2, 2, (u, v) => {
+    if (p.kind === 'solid') return { colour: u === 0.5 && v === 0.5 ? white : p.colour, alpha: 1 }
+    return paintColourAt(p, mode, box, box[0] + (box[2] - box[0]) * u, box[1] + (box[3] - box[1]) * v)
+  })
+}
+
+/** A freeform gradient's points: each one's colour, opacity and spread; the canvas places them. */
+function FreeformEditor({ id, doc, paint: p, box, selected, onChange }: { id: string; doc: Doc; paint: Extract<Paint, { kind: 'freeform' }>; box: Box; selected: number | null; onChange(p: Paint, key: string): void }) {
+  const set = (i: number, q: Partial<FreeformPoint>, key: string) => onChange({ ...p, points: p.points.map((x, j) => (j === i ? { ...x, ...q } : x)) }, `${key}${i}`)
+  return (
+    <div className="field gradient" data-editor="freeform">
+      <span className="field-meta">
+        Colour points <Hint text="With the Gradient tool (G): drag a point to move it, click in the shape to add one in the foreground colour, Delete removes the selected one." />
+      </span>
+      {p.points.length === 0 && <p className="field-empty">No points: nothing is painted</p>}
+      {p.points.map((q, i) => (
+        <div className={`gradient-stop${selected === i ? ' selected' : ''}`} key={i} data-point={i}>
+          <DocColourChip value={q.colour} doc={doc} label={`Point ${i + 1} colour`} onChange={(c) => set(i, { colour: c }, 'colour')} data={{ 'point-colour': String(i) }} />
+          <input id={`${id}-point-${i}`} type="number" aria-label={`Point ${i + 1} opacity, percent`} data-tip="Opacity" min={0} max={100} value={Math.round(q.alpha * 100)} onChange={(e) => Number.isFinite(Number(e.target.value)) && set(i, { alpha: Math.min(100, Math.max(0, Number(e.target.value))) / 100 }, 'alpha')} />
+          <input type="number" aria-label={`Point ${i + 1} spread, percent`} data-tip="Spread: how far its colour reaches" min={10} max={1000} value={Math.round(q.spread * 100)} onChange={(e) => Number.isFinite(Number(e.target.value)) && set(i, { spread: Math.min(10, Math.max(0.1, Number(e.target.value) / 100)) }, 'spread')} />
+          <button type="button" className="button small" aria-label={`Remove point ${i + 1}`} onClick={() => onChange({ ...p, points: p.points.filter((_, j) => j !== i) }, 'remove')}>
+            <Icon name="ui.close" />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="button small"
+        disabled={p.points.length >= MAX_FREEFORM}
+        onClick={() => onChange({ ...p, points: [...p.points, { p: [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2], colour: swatchIn(doc, 'fg') ?? mainColour(p), alpha: 1, spread: 1 }] }, 'add')}
+      >
+        Add Point
+      </button>
+    </div>
+  )
+}
+
+/** A mesh: how many patches across and down, and the colour of the point selected on the canvas. */
+function MeshEditor({ id, doc, paint: p, selected, onChange }: { id: string; doc: Doc; paint: Extract<Paint, { kind: 'mesh' }>; selected: number | null; onChange(p: Paint, key: string): void }) {
+  const node = selected !== null ? p.nodes[selected] : undefined
+  return (
+    <div className="field gradient" data-editor="mesh">
+      <NumberParam id={`${id}-mcols`} def={num('cols', 'Columns', 1, MAX_MESH, 1, '', 'Patches across; the mesh is made again with the colours it had')} value={p.cols} onChange={(v) => onChange(resizeMesh(p, Math.round(v), p.rows), 'mcols')} />
+      <NumberParam id={`${id}-mrows`} def={num('rows', 'Rows', 1, MAX_MESH, 1, '', 'Patches down; the mesh is made again with the colours it had')} value={p.rows} onChange={(v) => onChange(resizeMesh(p, p.cols, Math.round(v)), 'mrows')} />
+      {node && selected !== null ? (
+        <div className="gradient-stop selected" data-mesh-point={selected}>
+          <DocColourChip value={node.colour} doc={doc} label="Mesh point colour" onChange={(c) => onChange({ ...p, nodes: p.nodes.map((x, j) => (j === selected ? { ...x, colour: c } : x)) }, `ncolour${selected}`)} data={{ 'mesh-colour': String(selected) }} />
+          <input type="number" aria-label="Mesh point opacity, percent" data-tip="Opacity" min={0} max={100} value={Math.round(node.alpha * 100)} onChange={(e) => Number.isFinite(Number(e.target.value)) && onChange({ ...p, nodes: p.nodes.map((x, j) => (j === selected ? { ...x, alpha: Math.min(100, Math.max(0, Number(e.target.value))) / 100 } : x)) }, `nalpha${selected}`)} />
+        </div>
+      ) : (
+        <p className="field-meta">
+          Select a point on the canvas <Hint text="With the Mesh tool or the Gradient tool, click a mesh point to set its colour here. The Mesh tool adds rows and columns where you click." />
+        </p>
+      )}
     </div>
   )
 }

@@ -24,8 +24,8 @@
  * Image data is Flate-compressed and ASCII85-encoded, so the file is 7-bit
  * clean. `host` is the PDF writer's.
  */
-import { geometryPath, type AppearanceItem, type Paint } from '../../doc/vector'
-import { brushAsPaths, strokeAsPath } from '../../vector/outline'
+import { geometryPath, mainColour, paintTranslucent, type AppearanceItem, type Paint } from '../../doc/vector'
+import { brushAsPaths, characterGroups, strokeAsPath } from '../../vector/outline'
 import { strokeNeedsOutline } from '../../doc/vector'
 import { glyphsToPath } from '../../geom/glyphs'
 import { transformPath, type PathData } from '../../geom/path'
@@ -86,7 +86,7 @@ export function ascii85(b: Uint8Array): string {
 }
 
 /** Blend modes are all Normal in EPS, and nothing is see-through: what a node needs to be written as vectors here. */
-const itemOpaque = (it: AppearanceItem) => !it.enabled || (it.opacity >= 1 && it.blend === 'normal' && (it.paint.kind !== 'gradient' || it.paint.stops.every((s) => s.alpha >= 1)))
+const itemOpaque = (it: AppearanceItem) => !it.enabled || (it.opacity >= 1 && it.blend === 'normal' && (it.paint.kind === 'pattern' || !paintTranslucent(it.paint)))
 
 /** Whether a node goes into EPS as vectors: a plain opaque shape or text (or a group of them), clipped by vector masks at most. */
 export function epsVector(doc: Doc, n: DocNode | undefined): boolean {
@@ -130,7 +130,7 @@ export async function docToEps(doc: Doc, host: EpsHost): Promise<{ bytes: Uint8A
   const paintColour = (p: Paint): string => {
     const linked = p.kind === 'solid' && p.swatch ? swatches.get(p.swatch) : undefined
     if (linked?.kind === 'spot' && p.kind === 'solid') return `${spotSpace(linked)} setcolorspace ${f(p.tint ?? 1)} setcolor\n`
-    return setColour(p.kind === 'solid' ? p.colour : p.kind === 'gradient' ? p.stops[0].colour : p.colour)
+    return setColour(mainColour(p))
   }
 
   // --- paths -----------------------------------------------------------------------------------------
@@ -299,7 +299,9 @@ export async function docToEps(doc: Doc, host: EpsHost): Promise<{ bytes: Uint8A
         return ''
       }
       warn('Text is in the EPS as outlines: exact, though not editable')
-      body = `[${node.transform.map(f).join(' ')}] concat\n${paintPath(glyphsToPath(l.glyphs), node.props.appearance)}`
+      body = `[${node.transform.map(f).join(' ')}] concat\n${characterGroups(l.glyphs, node.props.appearance)
+        .map((g) => paintPath(glyphsToPath(g.glyphs), g.appearance))
+        .join('')}`
     } else if (node.kind === 'boolean') {
       const p = docPathOf((x) => doc.nodes[x], node)
       if (p) body = paintPath(p, node.props.appearance)

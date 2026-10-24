@@ -14,8 +14,8 @@
  */
 import { describeEdit } from '../doc/describe'
 import { commit as commitHistory, initHistory, jumpTo, redo, trimPast, undo, type History } from '../doc/history'
-import type { Doc, NodeId } from '../doc/types'
-import { neighbourOf, placeOf } from '../doc/tree'
+import type { Doc, DocNode, NodeId } from '../doc/types'
+import { neighbourOf, noteNumbers, placeOf, type NewPlaceOptions } from '../doc/tree'
 import type { FileRef } from '../io/journal'
 import { Listeners } from '../lib/listeners'
 
@@ -37,6 +37,12 @@ export interface OpenDoc {
    */
   others: readonly NodeId[]
   folded: ReadonlySet<NodeId>
+  /** Groups the panel opened by itself, because a new layer went into them while they were folded. */
+  autoOpened: ReadonlySet<NodeId>
+  /** Groups folded again by hand after that: folded on purpose, they stay folded when layers go in. */
+  keepFolded: ReadonlySet<NodeId>
+  /** The group new layers go into whatever's selected (Layer → Draw Into), or none. View state, not history. */
+  drawInto: NodeId | null
   /**
    * Painting and pixel commands go to the selected layer's mask rather than
    * its pixels: its mask thumbnail was clicked, as in Photoshop.
@@ -57,6 +63,11 @@ export interface OpenDoc {
    * id. What's done here goes back there as it's done (app/symbols.ts).
    */
   symbolOf: { key: string; symbol: string } | null
+  /**
+   * For a pattern's tile opened to edit (pattern editing mode): the document
+   * it's in and its id. Its repeat goes back there as it's drawn (app/patternEdit.ts).
+   */
+  patternOf: { key: string; pattern: string } | null
 }
 
 export interface DocsState {
@@ -116,7 +127,7 @@ class DocumentStore {
    * matches its file as it arrives: a file just opened does, a new
    * document doesn't, and a restored one says which it was.
    */
-  add(o: { key?: string; doc: Doc; file: FileRef | null; saved: boolean; folded?: NodeId[]; label?: string; parent?: OpenDoc['parent']; symbolOf?: OpenDoc['symbolOf'] }): string {
+  add(o: { key?: string; doc: Doc; file: FileRef | null; saved: boolean; folded?: NodeId[]; drawInto?: NodeId | null; label?: string; parent?: OpenDoc['parent']; symbolOf?: OpenDoc['symbolOf']; patternOf?: OpenDoc['patternOf'] }): string {
     const key = o.key ?? newId('d')
     const entry: OpenDoc = {
       key,
@@ -126,11 +137,15 @@ class DocumentStore {
       selected: null,
       others: [],
       folded: new Set(o.folded ?? []),
+      autoOpened: new Set(),
+      keepFolded: new Set(),
+      drawInto: o.drawInto ?? null,
       maskTarget: false,
       quickMask: false,
       lastSelection: null,
       parent: o.parent ?? null,
       symbolOf: o.symbolOf ?? null,
+      patternOf: o.patternOf ?? null,
     }
     this.set({ docs: [...this.state.docs, entry], active: key })
     return key
@@ -163,11 +178,13 @@ class DocumentStore {
     const last = this.lastCommit
     const fold = !!o.coalesce && !!last && last.doc === key && last.key === o.coalesce && now - last.at < COALESCE_MS
     this.update(key, (d) => {
-      const next = fn(d.history.present)
-      if (next === d.history.present) return d
+      const made = fn(d.history.present)
+      if (made === d.history.present) return d
+      // New layers in a labelled group take its colour label, and the numbers their names took aren't given again.
+      const next = noteNumbers(d.history.present, adoptTags(d.history.present, made))
       const label = o.label ?? describeEdit(d.history.present, next)
-      // A selected layer that the edit removed is no longer selected.
-      return { ...d, history: commitHistory(d.history, next, fold, fold ? undefined : label), ...stillSelected(d, d.history.present, next) }
+      // A selected layer that the edit removed is no longer selected; a folded group a new layer went into opens.
+      return { ...d, history: commitHistory(d.history, next, fold, fold ? undefined : label), ...stillSelected(d, d.history.present, next), ...revealNew(d, d.history.present, next) }
     })
     this.lastCommit = o.coalesce ? { doc: key, key: o.coalesce, at: now } : null
   }
@@ -248,14 +265,73 @@ class DocumentStore {
     this.update(key, (d) => ((Object.keys(patch) as (keyof typeof patch)[]).every((k) => d[k] === patch[k]) ? d : { ...d, ...patch }))
   }
 
+  /** Folds or unfolds a layer by hand. A group the panel opened by itself and folded again here is folded on purpose, and stays so. */
   toggleFolded(id: NodeId, key = this.state.active) {
     if (!key) return
     this.update(key, (d) => {
       const folded = new Set(d.folded)
-      if (!folded.delete(id)) folded.add(id)
-      return { ...d, folded }
+      const keepFolded = new Set(d.keepFolded)
+      if (folded.delete(id)) keepFolded.delete(id)
+      else {
+        folded.add(id)
+        if (d.autoOpened.has(id)) keepFolded.add(id)
+      }
+      return { ...d, folded, keepFolded }
     })
   }
+
+  /** Every fold at once (Collapse All, Expand All, Collapse Others): `folded` is the new set. */
+  setFolded(folded: Iterable<NodeId>, key = this.state.active) {
+    if (!key) return
+    this.update(key, (d) => ({ ...d, folded: new Set(folded), keepFolded: new Set() }))
+  }
+
+  /** Pins a group for new layers to go into (Draw Into), or unpins with null. */
+  setDrawInto(id: NodeId | null, key = this.state.active) {
+    if (!key) return
+    this.update(key, (d) => (d.drawInto === id ? d : { ...d, drawInto: id }))
+  }
+}
+
+/** What, besides the key layer, decides where a document's new layers go (doc/tree.ts' whereNew): the pinned group and the other layers selected. */
+export const placing = (d: OpenDoc): NewPlaceOptions => ({ pinned: d.drawInto, others: d.others })
+
+/** The layers `next` has that `prev` didn't, among the panel's rows. */
+function newLayers(prev: Doc, next: Doc): NodeId[] {
+  if (prev.nodes === next.nodes) return []
+  const out: NodeId[] = []
+  for (const id in next.nodes) if (!prev.nodes[id] && placeOf(next, id)?.slot === 'children') out.push(id)
+  return out
+}
+
+/** New layers made inside a group with a colour label, and without one of their own, take the group's. */
+function adoptTags(prev: Doc, next: Doc): Doc {
+  let nodes: Record<NodeId, DocNode> | null = null
+  for (const id of newLayers(prev, next)) {
+    const n = next.nodes[id]
+    const parent = next.nodes[placeOf(next, id)!.parent]
+    if (n.tag || !parent?.tag || parent.id === next.root) continue
+    nodes ??= { ...next.nodes }
+    nodes[id] = { ...n, tag: parent.tag } as DocNode
+  }
+  return nodes ? { ...next, nodes } : next
+}
+
+/**
+ * Folded groups a new layer went into open, so it doesn't land out of
+ * sight, unless they were folded again by hand after opening that way.
+ */
+function revealNew(d: OpenDoc, prev: Doc, next: Doc): Partial<OpenDoc> {
+  if (!d.folded.size) return {}
+  let folded: Set<NodeId> | null = null
+  let autoOpened: Set<NodeId> | null = null
+  for (const id of newLayers(prev, next))
+    for (let at = placeOf(next, id)?.parent; at && at !== next.root; at = placeOf(next, at)?.parent) {
+      if (!d.folded.has(at) || d.keepFolded.has(at)) continue
+      ;(folded ??= new Set(d.folded)).delete(at)
+      ;(autoOpened ??= new Set(d.autoOpened)).add(at)
+    }
+  return folded ? { folded, autoOpened: autoOpened! } : {}
 }
 
 /** Every selected layer: the key layer first, then the others. */

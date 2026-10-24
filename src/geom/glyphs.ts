@@ -11,6 +11,14 @@
  */
 import { cubicBounds, evalCubic, flattenPath, linesFor, pathBounds, subpathFromCubics, unionBox, type Box, type Cubic, type FillRule, type Mat, type PathData, type Polyline, type Subpath } from './path'
 import { compose } from './affine'
+import type { Paint } from '../doc/vector'
+
+/** Characters' own fill and stroke (colour per character, doc/text.ts CharProps): what replaces the text's bottom fill and stroke. */
+export interface CharPaint {
+  fill: Paint | null
+  stroke: Paint | null
+  strokeWidth: number
+}
 
 export interface GlyphSet {
   kind: 'glyphs'
@@ -21,6 +29,20 @@ export interface GlyphSet {
   outlines: number[][]
   /** Where each is set: outline index, then the affine a b c d e f into the node's coordinates; seven numbers each. */
   placements: number[]
+  /**
+   * Colour per character: the paints of the characters that have their own,
+   * and for each placement which of them (−1 for the text's own). Absent
+   * when no character has one.
+   */
+  paints?: CharPaint[]
+  paintOf?: number[]
+}
+
+/** The placements whose paint `keep` says yes to (by index into `paints`, −1 for the text's own), as a glyph set of their own. */
+export function glyphSubset(g: GlyphSet, keep: (paint: number) => boolean): GlyphSet {
+  const placements: number[] = []
+  for (let i = 0, k = 0; i < g.placements.length; i += 7, k++) if (keep(g.paintOf?.[k] ?? -1)) for (let j = 0; j < 7; j++) placements.push(g.placements[i + j])
+  return { kind: 'glyphs', outlines: g.outlines, placements }
 }
 
 export const EMPTY_GLYPHS: GlyphSet = { kind: 'glyphs', outlines: [], placements: [] }

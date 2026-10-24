@@ -9,13 +9,25 @@
  * 2. Bidi levels (UAX #9) and scripts split the paragraph into items of one
  *    font, size, direction and script, each shaped by HarfBuzz with the
  *    whole paragraph as context.
- * 3. Line break opportunities (UAX #14) cut it into segments, and a
- *    composer picks the breaks: single-line takes each line as full as it
- *    goes; every-line weighs the whole paragraph (Knuth and Plass), for
- *    even justified spacing or the least ragged edge.
+ * 3. Line break opportunities (UAX #14), with soft hyphens and, when the
+ *    paragraph hyphenates, the places its language's patterns allow
+ *    (text/hyphenate.ts), cut it into segments, and a composer picks the
+ *    breaks: single-line takes each line as full as it goes; every-line
+ *    weighs the whole paragraph (Knuth and Plass), for even justified
+ *    spacing or the least ragged edge. A line ending inside a word gets a
+ *    hyphen, within the paragraph's hyphenation settings.
  * 4. Each line is put in visual order (bidi's rule L2), aligned or
  *    justified, and its glyphs placed: on baselines down the frame for area
  *    text, from the origin for point text, or along the path for path text.
+ *    Spaces, letters and glyphs take the paragraph's wanted spacing and
+ *    scaling; a justified line stretches or shrinks its word spaces within
+ *    their range first, then its letter spacing, then its glyphs' width
+ *    (Photoshop's Justification). A tab moves to the next tab stop, lining
+ *    the text after it up as the stop says, with its leader in the gap.
+ *
+ * Each glyph keeps the paint its characters have of their own, if any
+ * (colour per character): the glyph set says which, for the outline
+ * builder (vector/outline.ts).
  *
  * What comes out is a glyph set the vector pipeline draws, and for editing,
  * each line's caret positions and characters' boxes.
@@ -27,7 +39,9 @@ import bidiFactory from 'bidi-js'
 import { DEFAULT_FONT, leadingOf, paragraphText, resolveChar, resolvePara, type CharProps, type ParaProps, type Paragraph, type TextContent, type TextStyles } from '../doc/text'
 import type { Face, Font, ShapedGlyph } from './hb'
 import type { Box, PathData } from '../geom/path'
-import { glyphsBounds, type GlyphSet } from '../geom/glyphs'
+import { glyphsBounds, type CharPaint, type GlyphSet } from '../geom/glyphs'
+import type { Hyphenator } from './hyphenate'
+import type { TabStop } from '../doc/text'
 import { distanceAlong, pathPolys } from './framePath'
 
 export { distanceAlong }
@@ -42,6 +56,8 @@ export interface FontProvider {
   fallbacks(script: string): Face[]
   /** The face to use when a font is missing altogether. */
   defaultFace(): { face: Face; coords: Record<string, number> }
+  /** Whether a font face() gave nothing for is known and still loading: not missing, only not here yet. */
+  pending?(family: string, style: string): boolean
   /**
    * Moves on whenever what the provider gives changes (a font arrives).
    * Given, paragraphs' shaping is kept between layouts (paraCache); a
@@ -57,6 +73,8 @@ export interface LayoutInput {
   /** Area text's frame or path text's path, in the node's coordinates. */
   frame: PathData | null
   pathOffset?: number
+  /** Where words may break, for paragraphs that hyphenate; none, and they don't. */
+  hyphenator?: Hyphenator
 }
 
 /** One laid-out line, for editing: where it is and where each position falls. */
@@ -87,6 +105,8 @@ export interface TextLayout {
   overflow: boolean
   /** Fonts the text asks for that aren't available, as "family style". */
   missing: string[]
+  /** Fonts it asks for that are known but still loading (drawn in the default meanwhile). */
+  pending: string[]
   /** Path text: where on the path each line's x is measured (arc length = x + this). */
   pathStart?: number
 }
@@ -122,7 +142,9 @@ export function scriptOf(ch: string): string {
 }
 
 const isMark = (ch: string) => /\p{M}/u.test(ch)
-const isSpace = (code: number) => code === 0x20 || code === 0xa0 || code === 0x3000 || code === 0x09
+/** Word spaces: what justification stretches. Tabs aren't (they go to their stops). */
+const isSpace = (code: number) => code === 0x20 || code === 0xa0 || code === 0x3000
+const TAB = 0x09
 
 // --- per paragraph ---------------------------------------------------------------------------------
 
@@ -134,6 +156,17 @@ interface Item {
   upem: number
   rtl: boolean
   script: string
+  /** Added after each cluster: tracking and the paragraph's wanted letter spacing, in pixels. */
+  track: number
+  /** The paragraph's wanted glyph scaling, as a factor (spaces aren't scaled; they take word spacing). */
+  glyphScale: number
+  /** The font's space at this size, unscaled: what word and letter spacing are shares of. */
+  spaceAdv: number
+  /** Its characters' own paint (colour per character), and a key for it; null for the text's. */
+  paint: CharPaint | null
+  paintKey: string | null
+  /** The hyphen a line ending in it gets, made when first wanted. */
+  hyphen?: { gid: number; ax: number }
 }
 
 /** A glyph as shaped, in pixels, by the character it belongs to. */
@@ -163,12 +196,45 @@ interface Shaped {
   /** Each character's settings. */
   charProps: CharProps[]
   missing: Set<string>
+  pending: Set<string>
+  /** Offsets a line may end at with a hyphen: soft hyphens and, hyphenating, the patterns' places. */
+  hyphens: Set<number>
+  /** The paragraph's space width at 100%: what letter spacing's percentages are of. */
+  spaceUnit: number
+}
+
+/** The font's space, in font units, found once per font. */
+const spaceUnits = new WeakMap<Font, number>()
+function spaceOf(font: Font, upem: number): number {
+  let v = spaceUnits.get(font)
+  if (v === undefined) {
+    v = font.shape(' ', 0, 1, 'ltr', '', '', [])[0]?.ax || upem / 4
+    spaceUnits.set(font, v)
+  }
+  return v
+}
+
+/** A character's own paint, and a key that's the same for the same paint. */
+function charPaint(p: CharProps): { paint: CharPaint | null; key: string | null } {
+  if (!p.fill && !p.stroke) return { paint: null, key: null }
+  const paint: CharPaint = { fill: p.fill, stroke: p.stroke, strokeWidth: p.strokeWidth }
+  return { paint, key: JSON.stringify(paint) }
+}
+
+/** The hyphen a line ending in an item's text gets: the font's own, at the item's size and scaling. */
+function hyphenOf(it: Item): { gid: number; ax: number } {
+  if (!it.hyphen) {
+    const g = it.font.shape('-', 0, 1, 'ltr', it.script, it.props.language, [])[0]
+    it.hyphen = { gid: g?.gid ?? 0, ax: g ? g.ax * (it.props.size / it.upem) * (it.props.horizontalScale / 100) * it.glyphScale : it.props.size / 3 }
+  }
+  return it.hyphen
 }
 
 /** Characters' fonts: the run's, or a fallback that has the character. */
 function shapeParagraph(text: string, runs: { start: number; end: number; props: CharProps }[], para: ParaProps, fonts: FontProvider): Shaped {
   const N = text.length
   const missing = new Set<string>()
+  const pending = new Set<string>()
   const charProps: CharProps[] = new Array(N)
   for (const r of runs) for (let i = r.start; i < r.end; i++) charProps[i] = r.props
 
@@ -201,7 +267,8 @@ function shapeParagraph(text: string, runs: { start: number; end: number; props:
     const key = `${p.font}\u0000${p.style}`
     if (!faceCache.has(key)) {
       const got = fonts.face(p.font, p.style)
-      if (!got) missing.add(`${p.font} ${p.style}`)
+      // A font still loading isn't missing: the default stands in until it arrives, and nothing is said.
+      if (!got) (fonts.pending?.(p.font, p.style) ? pending : missing).add(`${p.font} ${p.style}`.trim())
       faceCache.set(key, got)
     }
     return faceCache.get(key) ?? fonts.defaultFace()
@@ -241,7 +308,24 @@ function shapeParagraph(text: string, runs: { start: number; end: number; props:
     while (j < N && faces[j] === faces[i] && charProps[j] === charProps[i] && levels[j] === levels[i] && scripts[j] === scripts[i]) j++
     const p = charProps[i]
     const f = faces[i]
-    items.push({ start: i, end: j, props: p, font: f.face.font({ ...f.coords, ...p.variations }), upem: f.face.info.upem, rtl: levels[i] % 2 === 1, script: scripts[i] })
+    const font = f.face.font({ ...f.coords, ...p.variations })
+    const upem = f.face.info.upem
+    const spaceAdv = spaceOf(font, upem) * (p.size / upem) * (p.horizontalScale / 100)
+    const cp = charPaint(p)
+    items.push({
+      start: i,
+      end: j,
+      props: p,
+      font,
+      upem,
+      rtl: levels[i] % 2 === 1,
+      script: scripts[i],
+      track: (p.tracking / 1000) * p.size + (para.letterSpacing[1] / 100) * spaceAdv,
+      glyphScale: para.glyphScaling[1] / 100,
+      spaceAdv,
+      paint: cp.paint,
+      paintKey: cp.key,
+    })
     i = j
   }
 
@@ -257,7 +341,12 @@ function shapeParagraph(text: string, runs: { start: number; end: number; props:
     const shaped: ShapedGlyph[] = it.font.shape(text, it.start, it.end - it.start, it.rtl ? 'rtl' : 'ltr', it.script, p.language, features)
     const s = p.size / it.upem
     const hs = p.horizontalScale / 100
-    const list: PGlyph[] = shaped.map((g) => ({ item: it, gid: g.gid, cluster: g.cluster, ax: g.ax * s * hs, dx: g.dx * s * hs, dy: g.dy * s }))
+    const wordSpace = para.wordSpacing[1] / 100
+    // Spaces at the wanted word spacing, everything else at the wanted glyph scaling.
+    const list: PGlyph[] = shaped.map((g) => {
+      const k = isSpace(text.charCodeAt(g.cluster)) ? wordSpace : it.glyphScale
+      return { item: it, gid: g.gid, cluster: g.cluster, ax: g.ax * s * hs * k, dx: g.dx * s * hs * k, dy: g.dy * s }
+    })
     glyphs.push(list)
     // Clusters in logical order: each starts at its smallest offset.
     const starts = [...new Set(list.map((g) => g.cluster))].sort((a, b) => a - b)
@@ -269,26 +358,28 @@ function shapeParagraph(text: string, runs: { start: number; end: number; props:
         clusterEnd[q] = c1
       }
     }
-    const track = (p.tracking / 1000) * p.size
     for (const g of list) adv[g.cluster] += g.ax
-    for (const c0 of starts) adv[c0] += track
+    for (const c0 of starts) adv[c0] += it.track
   }
   for (let i = 0; i < N; i++) {
     if (clusterOf[i] < 0) {
       clusterOf[i] = i
       clusterEnd[i] = i + 1
     }
+    // A tab's width depends on where it falls (placeLine); for breaking, a default stop's worth.
+    if (text.charCodeAt(i) === TAB) adv[i] = para.tabInterval || charProps[i].size * 4
   }
-  return { text, items, glyphs, adv, clusterOf, clusterEnd, levels, baseRtl, para, charProps, missing }
+  const spaceUnit = items[0]?.spaceAdv ?? (charProps[0]?.size ?? 12) / 4
+  return { text, items, glyphs, adv, clusterOf, clusterEnd, levels, baseRtl, para, charProps, missing, pending, hyphens: new Set(), spaceUnit }
 }
 
-/** Break opportunities (UAX #14): offsets a line may end at, and the ones it must. */
-function breaks(text: string): { at: number; required: boolean }[] {
-  const out: { at: number; required: boolean }[] = []
-  if (!text) return [{ at: 0, required: true }]
+/** Break opportunities (UAX #14): offsets a line may end at, the ones it must, and those after a soft hyphen. */
+function breaks(text: string): { at: number; required: boolean; hyphen: boolean }[] {
+  const out: { at: number; required: boolean; hyphen: boolean }[] = []
+  if (!text) return [{ at: 0, required: true, hyphen: false }]
   const lb = new LineBreaker(text)
-  for (let b = lb.nextBreak(); b; b = lb.nextBreak()) out.push({ at: b.position, required: b.required })
-  if (!out.length || out[out.length - 1].at !== text.length) out.push({ at: text.length, required: true })
+  for (let b = lb.nextBreak(); b; b = lb.nextBreak()) out.push({ at: b.position, required: b.required, hyphen: !b.required && text.charCodeAt(b.position - 1) === 0xad })
+  if (!out.length || out[out.length - 1].at !== text.length) out.push({ at: text.length, required: true, hyphen: false })
   return out
 }
 
@@ -304,29 +395,78 @@ interface Segment {
   /** How wide its spaces are, not counting trailing ones: what can stretch and shrink. */
   spaceWidth: number
   required: boolean
+  /** The hyphen's width when a line ends here inside a word; 0 for a break between words. */
+  hyphen: number
+  /** Its letters (clusters that aren't spaces) and their width: what letter spacing and glyph scaling work on. */
+  letters: number
+  glyphWidth: number
 }
 
-function segments(sh: Shaped): Segment[] {
+/**
+ * A paragraph's segments: from break to break, the breaks being UAX #14's,
+ * soft hyphens, and (hyphenating) the places the patterns allow in each
+ * word long enough, kept clear of its ends; capitalized words only when
+ * the paragraph says so. A word whose language's patterns aren't loaded
+ * yet doesn't break (they're asked for, and text is laid out again).
+ */
+function segments(sh: Shaped, hyph?: Hyphenator): Segment[] {
+  const bs = breaks(sh.text)
+  const hy = sh.para.hyphenation
+  if (sh.para.hyphenate && hyph && sh.text) {
+    const extra: number[] = []
+    for (const m of sh.text.matchAll(/\p{L}[\p{L}\p{M}]*/gu)) {
+      const word = m[0]
+      const start = m.index ?? 0
+      if (word.length <= hy.minWord || (!hy.caps && /^\p{Lu}/u.test(word))) continue
+      const pts = hyph.points(word, sh.charProps[start]?.language ?? 'en')
+      if (!pts) continue
+      for (const p of pts) if (p >= hy.minBefore && word.length - p >= hy.minAfter) extra.push(start + p)
+    }
+    if (extra.length) {
+      const have = new Set(bs.map((b) => b.at))
+      for (const at of extra) if (!have.has(at)) bs.push({ at, required: false, hyphen: true })
+      bs.sort((a, b) => a.at - b.at)
+    }
+  }
   const out: Segment[] = []
   let prev = 0
-  for (const b of breaks(sh.text)) {
+  for (const b of bs) {
     if (b.at <= prev && b.at !== 0) continue
-    out.push(measure(sh, prev, b.at, b.required))
+    if (b.hyphen) sh.hyphens.add(b.at)
+    out.push(measure(sh, prev, b.at, b.required, b.hyphen ? hyphenWidth(sh, b.at) : 0))
     prev = b.at
   }
   return out
 }
 
+/** The item a character is set in. */
+function itemAt(sh: Shaped, i: number): Item | undefined {
+  for (const it of sh.items) if (i >= it.start && i < it.end) return it
+  return undefined
+}
+
+/** How wide the hyphen is for a line ending at `at`: the font's of the character before it. */
+function hyphenWidth(sh: Shaped, at: number): number {
+  const it = itemAt(sh, at - 1)
+  return it ? hyphenOf(it).ax : 0
+}
+
 /** A stretch of a paragraph [start, end) as a segment: its widths and spaces. */
-function measure(sh: Shaped, start: number, end: number, required: boolean): Segment {
+function measure(sh: Shaped, start: number, end: number, required: boolean, hyphen = 0): Segment {
   let width = 0
   let spaces = 0
   let spaceWidth = 0
+  let letters = 0
+  let glyphWidth = 0
   for (let i = start; i < end; i++) {
     width += sh.adv[i]
-    if (isSpace(sh.text.charCodeAt(i))) {
+    const code = sh.text.charCodeAt(i)
+    if (isSpace(code)) {
       spaces++
       spaceWidth += sh.adv[i]
+    } else if (code !== TAB && sh.clusterOf[i] === i && sh.adv[i] > 0) {
+      letters++
+      glyphWidth += sh.adv[i]
     }
   }
   let trail = 0
@@ -338,7 +478,7 @@ function measure(sh: Shaped, start: number, end: number, required: boolean): Seg
       spaceWidth -= sh.adv[i]
     }
   }
-  return { start, end, width: width - trail, trail, spaces, trailSpaces, spaceWidth, required }
+  return { start, end, width: width - trail, trail, spaces, trailSpaces, spaceWidth, required, hyphen, letters, glyphWidth }
 }
 
 /** Where a too-long segment can be cut: at cluster boundaries. */
@@ -355,7 +495,7 @@ function splitSegment(sh: Shaped, seg: Segment, width: number): Segment[] {
     }
     w += a
   }
-  out.push(measure(sh, s, seg.end, seg.required))
+  out.push(measure(sh, s, seg.end, seg.required, seg.hyphen))
   return out
 }
 
@@ -364,78 +504,124 @@ function segmentsFrom(sh: Shaped, segs: Segment[], from: number): Segment[] {
   const out: Segment[] = []
   for (const g of segs) {
     if (g.end <= from) continue
-    out.push(g.start < from ? measure(sh, from, g.end, g.required) : g)
+    out.push(g.start < from ? measure(sh, from, g.end, g.required, g.hyphen) : g)
   }
   return out
 }
 
-/** Single-line composer: each line as full as it will go. Returns each line's end offset. */
-function composeGreedy(sh: Shaped, segs: Segment[], widthAt: (line: number) => number): number[] {
+/**
+ * Single-line composer: each line as full as it will go. Returns each
+ * line's end offset. A line ends at the last break that fits: a hyphen
+ * only where the hyphen fits too, not more lines in a row than the
+ * paragraph's limit, and (with a hyphenation zone) not when the line
+ * already reaches within the zone of its end without it.
+ */
+function composeGreedy(sh: Shaped, input: Segment[], widthAt: (line: number) => number): number[] {
+  const hy = sh.para.hyphenation
+  const segs = input.slice()
   const ends: number[] = []
   let line = 0
-  let w = 0
-  let pendingTrail = 0
-  let started = false
-  for (let k = 0; k < segs.length; k++) {
-    let seg = segs[k]
+  let run = 0
+  let k = 0
+  while (k < segs.length) {
     const avail = widthAt(line)
-    if (started && w + pendingTrail + seg.width > avail + 1e-6) {
-      ends.push(seg.start)
-      line++
-      w = 0
-      pendingTrail = 0
-      started = false
-    }
-    // A segment too long for a whole line is cut where it must be.
-    if (!started && seg.width > widthAt(line) + 1e-6 && seg.end - seg.start > 1) {
-      const parts = splitSegment(sh, seg, widthAt(line))
-      for (const p of parts.slice(0, -1)) {
-        ends.push(p.end)
-        line++
+    let w = 0
+    let trail = 0
+    let started = false
+    let wordEnd = -1
+    let wordW = 0
+    let hyphEnd = -1
+    let j = k
+    let forced = false
+    for (; j < segs.length; j++) {
+      const seg = segs[j]
+      // A segment too long for a whole line is cut where it must be.
+      if (!started && seg.width > avail + 1e-6 && seg.end - seg.start > 1) {
+        const parts = splitSegment(sh, seg, avail)
+        if (parts.length > 1) segs.splice(j, 1, ...parts)
       }
-      seg = parts[parts.length - 1]
+      const s = segs[j]
+      const nw = (started ? w + trail : 0) + s.width
+      if (started && nw > avail + 1e-6) break
+      w = nw
+      trail = s.trail
+      started = true
+      if (s.hyphen > 0) {
+        if (nw + s.hyphen <= avail + 1e-6) hyphEnd = j
+      } else {
+        wordEnd = j
+        wordW = nw
+      }
+      if (s.required) {
+        forced = true
+        j++
+        break
+      }
     }
-    w += pendingTrail + seg.width
-    pendingTrail = seg.trail
-    started = true
-    if (seg.required && k < segs.length - 1) {
-      ends.push(seg.end)
+    if (forced || j >= segs.length) {
+      ends.push(segs[j - 1].end)
+      run = 0
       line++
-      w = 0
-      pendingTrail = 0
-      started = false
+      k = j
+      continue
     }
+    // Past the line's end at segment j: end at the latest break allowed.
+    const hyphenOk = hyphEnd > wordEnd && (hy.limit === 0 || run < hy.limit) && (hy.zone <= 0 || wordEnd < k || avail - wordW > hy.zone)
+    let end = hyphenOk ? hyphEnd : wordEnd
+    if (end < k) end = hyphEnd >= k ? hyphEnd : Math.max(k, j - 1)
+    ends.push(segs[end].end)
+    run = segs[end].hyphen > 0 ? run + 1 : 0
+    line++
+    k = end + 1
   }
-  ends.push(sh.text.length)
+  if (!ends.length) ends.push(sh.text.length)
   return ends
 }
 
 /**
  * Every-line composer (Knuth and Plass): the breaks that make the whole
- * paragraph best. Justified, lines are scored by how far their spaces
- * stretch or shrink; otherwise by the square of the space left at their end,
- * the least ragged edge. The last line is free.
+ * paragraph best. Justified, lines are scored by how far they must stretch
+ * or shrink, against what their word spaces, letter spacing and glyph
+ * scaling may give within the paragraph's ranges; otherwise by the square of
+ * the space left at their end, the least ragged edge. A line ending in a
+ * hyphen costs more, two in a row more again, and more in a row than the
+ * limit aren't allowed. The last line is free.
  */
-function composeOptimal(segs: Segment[], width: number, justified: boolean, firstIndent: number): number[] | null {
+function composeOptimal(sh: Shaped, segs: Segment[], width: number, justified: boolean, firstIndent: number): number[] | null {
   const n = segs.length
   if (n > 3000) return null
+  const para = sh.para
+  const [wMin, wDes, wMax] = para.wordSpacing
+  const [lMin, lDes, lMax] = para.letterSpacing
+  const [gMin, gDes, gMax] = para.glyphScaling
+  const unit = sh.spaceUnit
+  const limit = para.hyphenation.limit
+  const hyphenCost = justified ? 2500 : (width * 0.15) ** 2
   const best = new Float64Array(n + 1).fill(Infinity)
   const from = new Int32Array(n + 1).fill(-1)
+  const run = new Int32Array(n + 1)
   best[0] = 0
   // Required breaks split the problem: a line never runs past one.
   for (let i = 0; i < n; i++) {
     if (best[i] === Infinity) continue
     let w = 0
     let spaceW = 0
+    let letters = 0
+    let glyphW = 0
     const avail = width - (i === 0 ? firstIndent : 0)
     for (let j = i; j < n; j++) {
       const s = segs[j]
-      const natural = w + s.width
+      const last = j === n - 1 || s.required
+      const hy = !last && s.hyphen > 0 ? s.hyphen : 0
+      const natural = w + s.width + hy
       // The spaces between this line's segments (the trailing ones of all but its last) and inside them.
       const inner = spaceW + s.spaceWidth
-      const last = j === n - 1 || s.required
+      letters += s.letters
+      glyphW += s.glyphWidth
+      const gaps = Math.max(0, letters - 1)
+      const stretch = (inner * (wMax - wDes)) / Math.max(1, wDes) + (gaps * unit * (lMax - lDes)) / 100 + (glyphW * (gMax - gDes)) / Math.max(1, gDes)
+      const shrink = justified ? (inner * (wDes - wMin)) / Math.max(1, wDes) + (gaps * unit * (lDes - lMin)) / 100 + (glyphW * (gDes - gMin)) / Math.max(1, gDes) : 0
       const slack = avail - natural
-      const shrink = justified ? inner / 3 : 0
       let cost: number
       if (natural - shrink > avail + 1e-6) {
         // Too long: allowed only for a line of one segment, which can't be helped.
@@ -443,17 +629,21 @@ function composeOptimal(segs: Segment[], width: number, justified: boolean, firs
         cost = 1e6
       } else if (last) cost = slack < 0 ? 100 : 0
       else if (justified) {
-        const r = slack >= 0 ? slack / Math.max(1e-6, inner / 2) : slack / Math.max(1e-6, shrink)
-        const bad = 100 * Math.min(Math.abs(r), 10) ** 3
+        // A line with nothing to stretch (one word) is as bad as a line can be, worse than any loose line with spaces.
+        const r = Math.abs(slack) < 1e-6 ? 0 : slack > 0 ? (stretch > 1e-6 ? slack / stretch : 100) : shrink > 1e-6 ? slack / shrink : -100
+        const bad = 100 * Math.min(Math.abs(r), 100) ** 3
         cost = (1 + bad) ** 2
       } else cost = slack * slack
+      const allowed = !hy || limit === 0 || run[i] < limit
+      if (hy) cost += hyphenCost + (run[i] ? 3000 : 0)
       const total = best[i] + cost
-      if (total < best[j + 1]) {
+      if (allowed && total < best[j + 1]) {
         best[j + 1] = total
         from[j + 1] = i
+        run[j + 1] = hy ? run[i] + 1 : 0
       }
       if (s.required && j < n - 1) break
-      w = natural + s.trail
+      w = natural - hy + s.trail
       spaceW = inner + s.trail
     }
   }
@@ -469,21 +659,39 @@ function composeOptimal(segs: Segment[], width: number, justified: boolean, firs
 // --- lines into glyphs ----------------------------------------------------------------------------
 
 interface Placed {
-  glyphs: { outline: number[]; m: number[] }[]
+  glyphs: { outline: number[]; m: number[]; item: Item }[]
   boxes: [number, number][]
   charRtl: boolean[]
   width: number
 }
 
+/** What a justified line adds: after each inner word space, after each letter but the last, and to glyphs' width (a share). */
+interface Just {
+  space: number
+  letter: number
+  scale: number
+}
+const NO_JUST: Just = { space: 0, letter: 0, scale: 0 }
+
+/** A paragraph's tab stops for one line: `offset` is how far the line starts from where they're measured (the first line's indent). */
+interface Tabs {
+  stops: TabStop[]
+  interval: number
+  offset: number
+}
+
 /**
  * One line of a paragraph, [s, e), laid out left to right from x = 0:
- * its pieces in visual order (rule L2), glyphs placed on baseline 0 (y down),
- * `extra` added after each inner space when justified.
+ * its pieces in visual order (rule L2), glyphs placed on baseline 0 (y
+ * down), justified by `just`, tabs moved to their stops, a hyphen at its
+ * end when it breaks a word.
  */
-function placeLine(sh: Shaped, s: number, e: number, extra: number): Placed {
+function placeLine(sh: Shaped, s: number, e: number, just: Just, hyphen: boolean, tabs: Tabs | null): Placed {
   // Trailing spaces hang: drawn, but not counted in the line's width.
   let contentEnd = e
   while (contentEnd > s && (isSpace(sh.text.charCodeAt(contentEnd - 1)) || sh.text.charCodeAt(contentEnd - 1) === 0x2028)) contentEnd--
+  // The last letter's cluster: no letter spacing after it.
+  const lastCluster = contentEnd > s ? sh.clusterOf[contentEnd - 1] : -1
   const pieces: { item: number; glyphs: PGlyph[]; level: number }[] = []
   sh.items.forEach((it, k) => {
     if (it.end <= s || it.start >= e) return
@@ -507,27 +715,72 @@ function placeLine(sh: Shaped, s: number, e: number, extra: number): Placed {
   }
   const boxes: [number, number][] = Array.from({ length: e - s }, () => [0, 0] as [number, number])
   const charRtl: boolean[] = Array.from({ length: e - s }, (_, i) => sh.levels[s + i] % 2 === 1)
-  const glyphs: { outline: number[]; m: number[] }[] = []
+  const glyphs: Placed['glyphs'] = []
+  const k = 1 + just.scale
   let x = 0
+  /** A tab at `x`: where the text after it starts, its leader drawn in the gap. */
+  const tabTo = (it: Item, cluster: number): number => {
+    let next = cluster + 1
+    while (next < contentEnd && sh.text.charCodeAt(next) !== TAB) next++
+    let after = 0
+    for (let q = cluster + 1; q < next; q++) after += sh.adv[q]
+    const stops = tabs!.stops
+    const stop = stops.find((t) => t.at - tabs!.offset > x + 0.5)
+    const interval = tabs!.interval || it.props.size * 4
+    const at = stop ? stop.at - tabs!.offset : (Math.floor((x + tabs!.offset) / interval + 1e-9) + 1) * interval - tabs!.offset
+    let start = at
+    if (stop?.align === 'right') start = at - after
+    else if (stop?.align === 'centre') start = at - after / 2
+    else if (stop?.align === 'decimal') {
+      let upTo = 0
+      for (let q = cluster + 1; q < next && sh.text[q] !== stop.char; q++) upTo += sh.adv[q]
+      start = at - upTo
+    }
+    start = Math.max(start, x)
+    if (stop?.leader && start > x) {
+      // The leader repeated across the gap, on a grid from the stop so leaders line up from line to line.
+      const lg = it.font.shape(stop.leader, 0, stop.leader.length, 'ltr', it.script, it.props.language, [])
+      const scale = it.props.size / it.upem
+      const hs = it.props.horizontalScale / 100
+      const lw = lg.reduce((n, g) => n + g.ax, 0) * scale * hs
+      if (lw > 0.01) {
+        for (let p = at - Math.floor((at - x) / lw) * lw; p + lw <= start + 1e-6; p += lw) {
+          let gx = p
+          for (const g of lg) {
+            const o = it.font.outline(g.gid)
+            if (o.length) glyphs.push({ outline: o, m: [scale * hs, 0, 0, -(scale * it.props.verticalScale) / 100, gx + g.dx * scale * hs, -g.dy * scale - it.props.baselineShift], item: it })
+            gx += g.ax * scale * hs
+          }
+        }
+      }
+    }
+    return start
+  }
   for (const piece of pieces) {
     const it = sh.items[piece.item]
     const p = it.props
     const scale = p.size / it.upem
     const hs = p.horizontalScale / 100
     const vs = p.verticalScale / 100
-    const track = (p.tracking / 1000) * p.size
     // Each cluster's span on screen, as its glyphs go by.
     const spans = new Map<number, [number, number]>()
     for (let gi = 0; gi < piece.glyphs.length; gi++) {
       const g = piece.glyphs[gi]
-      const outline = it.font.outline(g.gid)
-      if (outline.length) glyphs.push({ outline, m: [scale * hs, 0, 0, -scale * vs, x + g.dx, -g.dy - p.baselineShift] })
+      const code = sh.text.charCodeAt(g.cluster)
+      const tab = code === TAB
+      const space = isSpace(code)
+      // Justification's glyph scaling: letters only.
+      const gk = space || tab ? 1 : k
+      const outline = tab ? [] : it.font.outline(g.gid)
+      if (outline.length) glyphs.push({ outline, m: [scale * hs * (space ? 1 : it.glyphScale) * gk, 0, 0, -scale * vs, x + g.dx * gk, -g.dy - p.baselineShift], item: it })
       const begin = x
-      x += g.ax
+      if (tab && tabs && !it.rtl) x = tabTo(it, g.cluster)
+      else x += g.ax * gk
       // A cluster's last glyph (in visual order, where the next one's cluster differs) takes the tracking and any justification.
       if (piece.glyphs[gi + 1]?.cluster !== g.cluster) {
-        x += track
-        if (extra && isSpace(sh.text.charCodeAt(g.cluster)) && g.cluster < contentEnd) x += extra
+        if (!tab) x += it.track
+        if (just.space && space && g.cluster < contentEnd) x += just.space
+        if (just.letter && !space && !tab && g.cluster !== lastCluster && g.cluster < contentEnd) x += just.letter
       }
       const span = spans.get(g.cluster)
       spans.set(g.cluster, span ? [Math.min(span[0], begin), Math.max(span[1], x)] : [begin, x])
@@ -546,6 +799,17 @@ function placeLine(sh: Shaped, s: number, e: number, extra: number): Placed {
   // The width that counts: up to the last character that isn't a trailing space.
   let width = 0
   for (let q = s; q < contentEnd; q++) width = Math.max(width, boxes[q - s][1])
+  // A word broken at the line's end: its hyphen, after it.
+  if (hyphen && !sh.baseRtl && e > s) {
+    const it = itemAt(sh, e - 1)
+    if (it) {
+      const h = hyphenOf(it)
+      const scale = it.props.size / it.upem
+      const o = it.font.outline(h.gid)
+      if (o.length) glyphs.push({ outline: o, m: [scale * (it.props.horizontalScale / 100) * it.glyphScale, 0, 0, -scale * (it.props.verticalScale / 100), width, -it.props.baselineShift], item: it })
+      width += h.ax
+    }
+  }
   return { glyphs, boxes, charRtl, width }
 }
 
@@ -600,7 +864,7 @@ function lineMetrics(sh: Shaped, s: number, e: number): { ascent: number; descen
     const k = (it.props.size / it.upem) * (it.props.verticalScale / 100)
     ascent = Math.max(ascent, m.ascender * k + Math.max(0, it.props.baselineShift))
     descent = Math.max(descent, -m.descender * k - Math.min(0, it.props.baselineShift))
-    leading = Math.max(leading, leadingOf(it.props))
+    leading = Math.max(leading, leadingOf(it.props, sh.para.autoLeading))
   }
   if (!seen.size) {
     // An empty line: the settings typing there would get.
@@ -608,7 +872,7 @@ function lineMetrics(sh: Shaped, s: number, e: number): { ascent: number; descen
     if (p) {
       ascent = p.size * 0.8
       descent = p.size * 0.2
-      leading = leadingOf(p)
+      leading = leadingOf(p, sh.para.autoLeading)
     }
   }
   return { ascent, descent, leading }
@@ -628,6 +892,8 @@ function lineMetrics(sh: Shaped, s: number, e: number): { ascent: number; descen
 interface ParaCache {
   fonts: FontProvider
   version: number
+  /** The hyphenator's version: patterns arriving break words anew. */
+  hyph: number
   styles: TextStyles | undefined
   sh: Shaped
   segs: Segment[]
@@ -646,9 +912,25 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
   const placements: number[] = []
   const lines: Line[] = []
   const missing = new Set<string>()
+  const pending = new Set<string>()
   let overflow = false
+  const hyphVersion = input.hyphenator?.version ?? 0
+  // Colour per character: each glyph's paint by index, the paints in order of first use.
+  const paints: CharPaint[] = []
+  const paintIndex = new Map<string, number>()
+  const paintOf: number[] = []
+  const paintOfItem = (it: Item | null): number => {
+    if (!it?.paintKey) return -1
+    let k = paintIndex.get(it.paintKey)
+    if (k === undefined) {
+      k = paints.length
+      paints.push(it.paint!)
+      paintIndex.set(it.paintKey, k)
+    }
+    return k
+  }
 
-  const place = (outline: number[], m: number[]) => {
+  const place = (outline: number[], m: number[], it: Item | null) => {
     let k = outlineIndex.get(outline)
     if (k === undefined) {
       k = outlines.length
@@ -656,11 +938,12 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
       outlineIndex.set(outline, k)
     }
     placements.push(k, ...m)
+    paintOf.push(paintOfItem(it))
   }
   const UNIT_SQUARE = [0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 4]
   // A bar from x0 to x1, h thick about yc: an underline or a strikethrough, as a unit square placed.
-  const rect = (x0: number, x1: number, yc: number, h: number) => {
-    if (x1 > x0 && h > 0) place(UNIT_SQUARE, [x1 - x0, 0, 0, h, x0, yc - h / 2])
+  const rect = (x0: number, x1: number, yc: number, h: number, it: Item) => {
+    if (x1 > x0 && h > 0) place(UNIT_SQUARE, [x1 - x0, 0, 0, h, x0, yc - h / 2], it)
   }
 
   // The frame: area text's polygon and box; path text's polyline.
@@ -701,7 +984,7 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
     // Path text's paragraph is made afresh each time (above), so there's nothing to keep.
     const keep = !onPath && fonts.version !== undefined
     let cached = keep ? paraCache.get(p) : undefined
-    if (cached && (cached.fonts !== fonts || cached.version !== fonts.version || cached.styles !== styles)) cached = undefined
+    if (cached && (cached.fonts !== fonts || cached.version !== fonts.version || cached.styles !== styles || cached.hyph !== hyphVersion)) cached = undefined
     if (!cached) {
       const runs: { start: number; end: number; props: CharProps }[] = []
       let at = 0
@@ -712,11 +995,12 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
       // An empty paragraph still has its run's settings, for its line's height.
       const shaped = shapeParagraph(text, runs.length ? runs : [{ start: 0, end: 0, props: resolveChar({ style: null, props: {} }, p, styles) }], para, fonts)
       if (!text.length) shaped.charProps[0] = runs[0]?.props ?? resolveChar({ style: null, props: {} }, p, styles)
-      cached = { fonts, version: fonts.version ?? 0, styles, sh: shaped, segs: segments(shaped), set: new Map() }
+      cached = { fonts, version: fonts.version ?? 0, hyph: hyphVersion, styles, sh: shaped, segs: segments(shaped, input.hyphenator), set: new Map() }
       if (keep) paraCache.set(p, cached)
     }
     const { sh, segs } = cached
     for (const m of sh.missing) missing.add(m)
+    for (const m of sh.pending) pending.add(m)
     if (!first) y += para.spaceBefore
 
     // Line widths: area text's frame (less indents); point and path text don't wrap.
@@ -726,11 +1010,13 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
     const widthAt = (line: number) => (area ? fullWidth - (line === 0 ? para.indentFirst : 0) : Infinity)
     // Kept with the paragraph, by what they depend on; a shaped frame's are worked out below, line by line, where they fall.
     const composeKey = !area ? 'free' : rectFrame ? `${fullWidth}|${para.indentFirst}|${para.composer}|${para.align}` : null
+    // Tab stops are measured from the paragraph's start edge: the first line starts its indent along.
+    const tabsFor = (li: number): Tabs => ({ stops: para.tabs, interval: para.tabInterval, offset: area && li === 0 ? para.indentFirst : 0 })
     let ends: number[]
     let kept = composeKey !== null ? cached.set.get(composeKey) : undefined
     if (kept) ends = kept.ends
     else if (!area) ends = composeGreedy(sh, segs, () => Infinity)
-    else if (rectFrame && para.composer === 'every') ends = composeOptimal(segs, fullWidth, para.align === 'justify' || para.align === 'justify-all', para.indentFirst) ?? composeGreedy(sh, segs, widthAt)
+    else if (rectFrame && para.composer === 'every') ends = composeOptimal(sh, segs, fullWidth, para.align === 'justify' || para.align === 'justify-all', para.indentFirst) ?? composeGreedy(sh, segs, widthAt)
     else ends = area && !rectFrame ? [] : composeGreedy(sh, segs, widthAt)
     if (composeKey !== null && !kept) {
       kept = { ends, placed: new Map() }
@@ -738,11 +1024,13 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
       if (cached.set.size > WIDTHS_KEPT) cached.set.delete(cached.set.keys().next().value!)
     }
     // A line placed, kept with the ends it was broken at; a shaped frame's lines are placed each time.
-    const placedLine = (from: number, to: number, extra: number): Placed => {
-      if (!kept) return placeLine(sh, from, to, extra)
-      const k = `${from}|${to}|${extra}`
+    const placedLine = (from: number, to: number, just: Just, li: number): Placed => {
+      const hyphen = sh.hyphens.has(to) && to < text.length
+      const tabs = tabsFor(li)
+      if (!kept) return placeLine(sh, from, to, just, hyphen, tabs)
+      const k = `${from}|${to}|${just.space}|${just.letter}|${just.scale}|${hyphen}|${tabs.offset}`
       let p = kept.placed.get(k)
-      if (!p) kept.placed.set(k, (p = placeLine(sh, from, to, extra)))
+      if (!p) kept.placed.set(k, (p = placeLine(sh, from, to, just, hyphen, tabs)))
       return p
     }
 
@@ -806,20 +1094,19 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
         x0 = span[0] + (sh.baseRtl ? indentEnd : indentStart + (li === 0 ? para.indentFirst : 0))
         x1 = span[1] - (sh.baseRtl ? indentStart + (li === 0 ? para.indentFirst : 0) : indentEnd)
       }
-      const natural = placedLine(s, e, 0)
-      let extra = 0
+      const natural = placedLine(s, e, NO_JUST, li)
+      let just = NO_JUST
+      let oneWord = false
       const justify = area && (para.align === 'justify-all' || (para.align === 'justify' && !lastLine))
       if (justify) {
-        let inner = 0
-        let contentEnd = e
-        while (contentEnd > s && isSpace(text.charCodeAt(contentEnd - 1))) contentEnd--
-        for (let q = s; q < contentEnd; q++) if (isSpace(text.charCodeAt(q))) inner++
-        // Negative where the composer chose to tighten the spaces.
-        if (inner) extra = (x1 - x0 - natural.width) / inner
+        // Negative where the composer chose to tighten the line.
+        const stats = lineStats(sh, s, e)
+        oneWord = stats.spaces === 0
+        just = justification(para, x1 - x0 - natural.width, stats, sh.spaceUnit)
       }
-      const placed = extra ? placedLine(s, e, extra) : natural
-      // Where the line starts: by alignment, in the frame or about the origin.
-      const align = para.align === 'justify' || para.align === 'justify-all' ? (sh.baseRtl ? 'right' : 'left') : para.align
+      const placed = just !== NO_JUST ? placedLine(s, e, just, li) : natural
+      // Where the line starts: by alignment, in the frame or about the origin; a justified line of one word as the paragraph says.
+      const align = oneWord && para.singleWord !== 'full' ? para.singleWord : para.align === 'justify' || para.align === 'justify-all' ? (sh.baseRtl ? 'right' : 'left') : para.align
       const startSide = sh.baseRtl ? (align === 'left' ? 'right' : align === 'right' ? 'left' : align) : align
       let ox: number
       if (area) ox = startSide === 'left' ? x0 : startSide === 'right' ? x1 - placed.width : (x0 + x1 - placed.width) / 2
@@ -828,7 +1115,7 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
         x0 = ox
         x1 = ox + placed.width
       }
-      for (const g of placed.glyphs) place(g.outline, [g.m[0], g.m[1], g.m[2], g.m[3], g.m[4] + ox, g.m[5] + baseline])
+      for (const g of placed.glyphs) place(g.outline, [g.m[0], g.m[1], g.m[2], g.m[3], g.m[4] + ox, g.m[5] + baseline], g.item)
       // Underline and strikethrough, run by run.
       for (const it of sh.items) {
         if (it.end <= s || it.start >= e || !(it.props.underline || it.props.strikethrough)) continue
@@ -841,8 +1128,8 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
         }
         const mt = it.font.metrics()
         const k = it.props.size / it.upem
-        if (it.props.underline) rect(l + ox, r + ox, baseline - mt.underlineOffset * k, Math.max(1e-3, mt.underlineSize * k))
-        if (it.props.strikethrough) rect(l + ox, r + ox, baseline - mt.strikeOffset * k, Math.max(1e-3, mt.strikeSize * k))
+        if (it.props.underline) rect(l + ox, r + ox, baseline - mt.underlineOffset * k, Math.max(1e-3, mt.underlineSize * k), it)
+        if (it.props.strikethrough) rect(l + ox, r + ox, baseline - mt.strikeOffset * k, Math.max(1e-3, mt.strikeSize * k), it)
       }
       lines.push({
         para: pi,
@@ -874,7 +1161,7 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
     if (overflow) break
   }
 
-  let glyphs: GlyphSet = { kind: 'glyphs', outlines, placements }
+  let glyphs: GlyphSet = paints.length ? { kind: 'glyphs', outlines, placements, paints, paintOf } : { kind: 'glyphs', outlines, placements }
   let pathStart: number | undefined
   if (onPath) {
     const r = alongPath(glyphs, lines, framePolys[0], input.pathOffset ?? 0, input.content.paragraphs[0] ? resolvePara(input.content.paragraphs[0], styles).align : 'left')
@@ -882,7 +1169,64 @@ export function layoutText(input: LayoutInput, fonts: FontProvider): TextLayout 
     overflow = r.overflow
     pathStart = r.start
   }
-  return { glyphs, lines, bounds: glyphsBounds(glyphs), overflow, missing: [...missing], pathStart }
+  return { glyphs, lines, bounds: glyphsBounds(glyphs), overflow, missing: [...missing], pending: [...pending], pathStart }
+}
+
+/** What a line has to justify with: its inner word spaces and their width, its letters and theirs. */
+function lineStats(sh: Shaped, s: number, e: number): { spaces: number; spaceWidth: number; letters: number; glyphWidth: number } {
+  let contentEnd = e
+  while (contentEnd > s && (isSpace(sh.text.charCodeAt(contentEnd - 1)) || sh.text.charCodeAt(contentEnd - 1) === 0x2028)) contentEnd--
+  let spaces = 0
+  let spaceWidth = 0
+  let letters = 0
+  let glyphWidth = 0
+  for (let q = s; q < contentEnd; q++) {
+    const code = sh.text.charCodeAt(q)
+    if (isSpace(code)) {
+      spaces++
+      spaceWidth += sh.adv[q]
+    } else if (code !== TAB && sh.clusterOf[q] === q && sh.adv[q] > 0) {
+      letters++
+      glyphWidth += sh.adv[q]
+    }
+  }
+  return { spaces, spaceWidth, letters, glyphWidth }
+}
+
+/**
+ * How a justified line takes up `slack` (negative to tighten): word
+ * spaces within their least and most first, then letter spacing within
+ * its, then glyphs' width within theirs; what's left goes to the word
+ * spaces past their limits (or, with no spaces, the letters), as Photoshop
+ * does. A line of one word is spread across its letters.
+ */
+function justification(para: ParaProps, slack: number, st: { spaces: number; spaceWidth: number; letters: number; glyphWidth: number }, unit: number): Just {
+  const gaps = Math.max(0, st.letters - 1)
+  if (!st.spaces) return para.singleWord === 'full' && gaps ? { space: 0, letter: slack / gaps, scale: 0 } : NO_JUST
+  const [wMin, wDes, wMax] = para.wordSpacing
+  const [lMin, lDes, lMax] = para.letterSpacing
+  const [gMin, gDes, gMax] = para.glyphScaling
+  const base = st.spaceWidth / Math.max(0.01, wDes / 100)
+  let rest = slack
+  let sp = 0
+  let le = 0
+  let sc = 0
+  const take = (cap: number) => {
+    const u = rest >= 0 ? Math.min(rest, Math.max(0, cap)) : Math.max(rest, -Math.max(0, cap))
+    rest -= u
+    return u
+  }
+  if (rest >= 0) {
+    sp += take((base * (wMax - wDes)) / 100)
+    le += take((gaps * unit * (lMax - lDes)) / 100)
+    sc += take((st.glyphWidth * (gMax - gDes)) / Math.max(1, gDes))
+  } else {
+    sp += take((base * (wDes - wMin)) / 100)
+    le += take((gaps * unit * (lDes - lMin)) / 100)
+    sc += take((st.glyphWidth * (gDes - gMin)) / Math.max(1, gDes))
+  }
+  sp += rest
+  return { space: sp / st.spaces, letter: gaps ? le / gaps : 0, scale: st.glyphWidth ? sc / st.glyphWidth : 0 }
 }
 
 /** Whether a frame is an upright rectangle: then every line is as wide as the next. */
@@ -935,6 +1279,7 @@ function alongPath(flat: GlyphSet, lines: Line[], pts: number[], offset: number,
     return { x: ax + (bx - ax) * t, y: ay + (by - ay) * t, a: Math.atan2(by - ay, bx - ax) }
   }
   const placements: number[] = []
+  const paintOf: number[] = []
   let overflow = false
   const p = flat.placements
   for (let i = 0; i < p.length; i += 7) {
@@ -965,8 +1310,10 @@ function alongPath(flat: GlyphSet, lines: Line[], pts: number[], offset: number,
     const lx = e - mid
     const ly = f
     placements.push(p[i], cos * a - sin * b, sin * a + cos * b, cos * c - sin * d, sin * c + cos * d, pos.x + cos * lx - sin * ly, pos.y + sin * lx + cos * ly)
+    paintOf.push(flat.paintOf?.[i / 7] ?? -1)
   }
-  return { glyphs: { kind: 'glyphs', outlines: flat.outlines, placements }, overflow, start }
+  const glyphs: GlyphSet = flat.paints ? { kind: 'glyphs', outlines: flat.outlines, placements, paints: flat.paints, paintOf } : { kind: 'glyphs', outlines: flat.outlines, placements }
+  return { glyphs, overflow, start }
 }
 
 /** The default font a document asks for, for messages. */

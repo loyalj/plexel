@@ -38,6 +38,7 @@ import { builtinBrushes } from '../src/vector/brushLibrary'
 import { readBrush, type ArtBrush, type PatternBrush, type ScatterBrush } from '../src/doc/vectorBrush'
 import { appearanceReach } from '../src/vector/outline'
 import { deepEqual } from '../src/lib/equal'
+import { freeformAt, gridSpline, invBilinear, meshLocate, meshPointAt, newMesh, resizeMesh, splitMesh } from '../src/vector/mesh'
 import { MAX_SHARE, addWidthPoint, deleteWidthPoints, flipAcross, flipAlong, measurePath, moveWidthPoint, nearestPlace, placeAt, sameProfile, setWidthPoint, shownPoints, sideOf, slideRange, tidyProfile } from '../src/geom/width'
 import { anchorsIn, breakAt, closeSubpath, convertAnchor, curvatureAnchor, deleteAnchors, hitAnchor, hitSegment, insertAnchor, joinSubpaths, moveAnchors, moveHandle, recurve, separate } from '../src/geom/edit'
 import { readAppearance, readGeometry, readPaint, appearanceIn, geometryPath } from '../src/doc/vector'
@@ -1207,6 +1208,58 @@ console.log('\nstroke features: profiles, arrowheads, dashes aligned to corners'
   const dent = fitFreehand(Array.from({ length: 41 }, (_, i) => [30 + i, 15 * Math.sin((i / 40) * Math.PI)] as Pt), 0.5, false).anchors
   const sqRe = spliceSubpath(sq, nearestOnSubpath(sq, 30, 0)!, nearestOnSubpath(sq, 70, 0)!, dent)
   check('a closed path redrawn stays closed, its other sides kept', sqRe.closed && [[100, 100], [0, 100], [0, 0], [100, 0]].every(([x, y]) => sqRe.anchors.some((a) => Math.hypot(a.p[0] - x, a.p[1] - y) < 1e-6)) && nearestOnSubpath(sqRe, 50, 15)!.dist < 1, JSON.stringify(sqRe.anchors.map((a) => a.p)))
+}
+
+// --- gradient meshes and freeform gradients (vector/mesh.ts) ------------------------------------
+console.log('\ngradient meshes and freeform gradients')
+{
+  // A skewed patch: a point placed by the bilinear map comes back to where it was.
+  const a: Pt = [10, 10]
+  const b: Pt = [110, 30]
+  const c: Pt = [130, 140]
+  const d: Pt = [0, 120]
+  let worst = 0
+  for (const [u, v] of [[0.1, 0.2], [0.5, 0.5], [0.9, 0.3], [0.25, 0.95], [0, 0], [1, 1]]) {
+    const x = a[0] * (1 - u) * (1 - v) + b[0] * u * (1 - v) + c[0] * u * v + d[0] * (1 - u) * v
+    const y = a[1] * (1 - u) * (1 - v) + b[1] * u * (1 - v) + c[1] * u * v + d[1] * (1 - u) * v
+    const r = invBilinear(x, y, a, b, c, d)
+    worst = Math.max(worst, Math.abs(r.u - u), Math.abs(r.v - v), r.out)
+  }
+  check('a patch’s bilinear map inverts: each point back to its u, v', worst < 1e-9, worst.toExponential(1))
+  const par = invBilinear(60, 40, [0, 0], [100, 0], [120, 80], [20, 80])
+  check('a parallelogram (no quadratic term) too', Math.abs(par.u - 0.5) < 1e-9 && Math.abs(par.v - 0.5) < 1e-9, JSON.stringify(par))
+  check('a point outside says how far', invBilinear(200, 40, a, b, c, d).out > 0)
+  const m = newMesh([0, 0, 300, 200], 3, 2, (u, v) => ({ colour: [u, v, 0], alpha: 1 }))
+  const at = meshLocate(m, 150, 50)
+  check('a mesh finds the patch a point is in', at.i === 1 && at.j === 0 && Math.abs(at.u - 0.5) < 1e-9 && Math.abs(at.v - 0.5) < 1e-9, JSON.stringify(at))
+  // The spline through the points' colours: exact at each point, and a linear ramp stays linear.
+  const col = (gu: number, gv: number) => gridSpline(m.cols, m.rows, (i, j) => m.nodes[j * (m.cols + 1) + i].colour, gu, gv, 3)
+  check('the colour is the point’s at each point', Math.abs(col(2, 1)[0] - 2 / 3) < 1e-12 && Math.abs(col(2, 1)[1] - 0.5) < 1e-12)
+  check('a ramp across the grid runs on linearly through the patches', Math.abs(col(1.5, 0.5)[0] - 0.5) < 1e-9 && Math.abs(col(0.75, 0)[0] - 0.25) < 0.02, JSON.stringify(col(0.75, 0)))
+  // A row and a column added through a point: the old points kept, the new ones on the old patches' edges.
+  const split = splitMesh(m, 1.5, 0.25, true, true)
+  check('a split adds a column and a row', split.cols === 4 && split.rows === 3 && split.nodes.length === 20)
+  const kept = [0, 1, 2, 3].every((i) => deepEqual(m.nodes[i], split.nodes[[0, 1, 3, 4][i]]))
+  check('the old points stay as they were', kept)
+  const mid = meshPointAt(m, 1.5, 0.25)
+  check('the new crossing is where it was asked for', split.nodes.some((n) => Math.hypot(n.p[0] - mid[0], n.p[1] - mid[1]) < 1e-9), JSON.stringify(mid))
+  check('split only one way on a line', splitMesh(m, 1.5, 1, true, false).cols === 4 && splitMesh(m, 1.5, 1, true, false).rows === 2)
+  const bigger = resizeMesh(m, 6, 4)
+  check('made again finer, the mesh keeps its corners and its colours there', bigger.nodes.length === 35 && deepEqual(bigger.nodes[0].p, [0, 0]) && Math.abs(bigger.nodes[34].colour[0] - 1) < 1e-9)
+  // Freeform: exact at a point, between them a blend; spread reaches further.
+  const pts = [
+    { p: [0, 0] as Pt, colour: [1, 0, 0], alpha: 1, spread: 1 },
+    { p: [100, 0] as Pt, colour: [0, 0, 1], alpha: 1, spread: 1 },
+  ]
+  const ff = (x: number, q = pts) => freeformAt(q, x, 0, (p) => p.colour).colour
+  check('a freeform gradient is each point’s colour at it', ff(0)[0] > 0.999 && ff(100)[2] > 0.999)
+  check('half way, half each', Math.abs(ff(50)[0] - 0.5) < 1e-9)
+  check('a wider spread reaches further', ff(50, [pts[0], { ...pts[1], spread: 2 }])[2] > 0.8)
+  // Files: a mesh whose points don't add up is read as its first colour, flat.
+  const bad = readPaint({ kind: 'mesh', cols: 2, rows: 2, nodes: m.nodes.slice(0, 5) })
+  check('a mesh that doesn’t add up is read as a colour', bad.kind === 'solid')
+  check('a mesh and a freeform gradient read back whole', deepEqual(readPaint(JSON.parse(JSON.stringify(m))), m) && deepEqual(readPaint({ kind: 'freeform', points: pts }), { kind: 'freeform', points: pts }))
+  check('a gradient along a stroke reads back', (readPaint({ kind: 'gradient', type: 'linear', stops: [], angle: 0, scale: 100, reverse: false, stroke: 'along' }) as { stroke?: string }).stroke === 'along')
 }
 
 console.log(`\n${failures === 0 ? 'all clear' : `${failures} failure(s)`}`)

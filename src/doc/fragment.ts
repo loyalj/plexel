@@ -33,7 +33,10 @@ function usedPatterns(nodes: Iterable<DocNode>): Set<string> {
   for (const n of nodes) {
     if (n.kind === 'vector' || n.kind === 'boolean' || n.kind === 'text') for (const it of n.props.appearance) paint(it.paint)
     if (n.kind === 'fill') paint(n.props.paint)
-    for (const f of n.fx) if (f.kind === 'pattern-overlay' && typeof f.params.pattern === 'string') out.add(f.params.pattern)
+    for (const f of n.fx) {
+      if (f.kind === 'pattern-overlay' && typeof f.params.pattern === 'string') out.add(f.params.pattern)
+      if (f.kind === 'pattern-overlay' && typeof f.params.image === 'string') out.add(f.params.image)
+    }
   }
   return out
 }

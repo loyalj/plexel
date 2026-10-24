@@ -678,7 +678,7 @@ export function duplicateLayer() {
 }
 
 /** "Name copy", then "Name copy 2" and on, as Photoshop names duplicates. */
-function copyName(doc: Doc, name: string): string {
+export function copyName(doc: Doc, name: string): string {
   const base = `${name.replace(/ copy( \d+)?$/, '')} copy`
   const used = new Set(Object.values(doc.nodes).map((n) => n.name))
   if (!used.has(base)) return base

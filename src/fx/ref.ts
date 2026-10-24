@@ -15,6 +15,7 @@ import { boxesFor, type Region } from '../filters/defs'
 import type { GradientStop } from '../doc/params'
 import { FX_BY_KIND, type FxKind } from './defs'
 import { PATTERN_BY_ID, patternValue } from '../vector/patterns'
+import { patternSample, type PatternImage } from '../vector/paint'
 import { clamp01 as clamp } from '../lib/num'
 
 export type Plane = Float64Array
@@ -27,6 +28,8 @@ export interface FxContext {
   bounds: [number, number, number, number]
   /** Where the region's top left is in the document, in document pixels: patterns are laid in the document's space. */
   origin?: [number, number]
+  /** The document's patterns made from pixels, for Pattern Overlay. */
+  pattern?: (id: string) => PatternImage | undefined
 }
 
 /** One effect's contribution: colour times coverage and coverage (premultiplied), where it goes, how it blends. */
@@ -251,6 +254,27 @@ export function fxLayers(body: Region, list: { kind: string; v: Record<string, u
         break
       }
       case 'pattern-overlay': {
+        // A pattern of the document's: its own colours, premultiplied, at its size times the scale.
+        const img = typeof v.image === 'string' && v.image ? ctx.pattern?.(v.image) : undefined
+        if (img) {
+          const a = ((v.angle as number) * Math.PI) / 180
+          const kk = 100 / (v.imageScale as number)
+          const cs = Math.cos(a) * kk
+          const sn = Math.sin(a) * kk
+          const [ox, oy] = ctx.origin ?? [0, 0]
+          const data = new Float64Array(size * size * stride)
+          for (let i = 0; i < size * size; i++) {
+            const [x, y] = at(i)
+            const dx = (x + 0.5) * s + ox
+            const dy = (y + 0.5) * s + oy
+            const p = patternSample(img, cs * dx + sn * dy, -sn * dx + cs * dy, s * kk)
+            const al = alpha(i)
+            for (let k2 = 0; k2 < stride - 1; k2++) data[i * stride + k2] = (p.c[k2] ?? 0) * al
+            data[i * stride + stride - 1] = p.a * al
+          }
+          px = { size, stride, data }
+          break
+        }
         const fg = col()
         const bg = col('background')
         const ba = (v.backgroundOpacity as number) / 100

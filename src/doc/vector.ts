@@ -43,7 +43,20 @@ export type Paint =
    * instead: a linear or reflected gradient runs from start to end, the
    * others centre on the start with the end on their rim.
    */
-  | { kind: 'gradient'; type: GradientType; stops: PaintStop[]; angle: number; scale: number; reverse: boolean; line?: GradientLine }
+  | { kind: 'gradient'; type: GradientType; stops: PaintStop[]; angle: number; scale: number; reverse: boolean; line?: GradientLine; stroke?: StrokeGradient }
+  /**
+   * Illustrator's freeform gradient: colour points anywhere in the shape (its
+   * own coordinates), each spreading its colour by `spread` (1 is as far as
+   * its neighbours'); between them the colours blend smoothly
+   * (vector/mesh.ts, freeformAt).
+   */
+  | { kind: 'freeform'; points: FreeformPoint[] }
+  /**
+   * A gradient mesh: a grid of `cols` × `rows` patches, its (cols + 1) ×
+   * (rows + 1) points in rows (the shape's own coordinates), each with a
+   * colour; the colour runs smoothly across the patches (vector/mesh.ts).
+   */
+  | { kind: 'mesh'; cols: number; rows: number; nodes: MeshNode[] }
   /**
    * A pattern: one of vector/patterns.ts's formulas in two colours, or a
    * pattern of the document's made from pixels (Doc.patterns, by id), whose
@@ -53,6 +66,33 @@ export type Paint =
 
 /** A gradient's start and end, x0, y0, x1, y1. */
 export type GradientLine = [number, number, number, number]
+
+/**
+ * A gradient on a stroke, as Illustrator's: along the stroke (start to end
+ * of each subpath) or across it (one edge to the other); absent, within it,
+ * laid like a fill's.
+ */
+export type StrokeGradient = 'along' | 'across'
+
+/** A freeform gradient's colour point. */
+export interface FreeformPoint {
+  p: Pt
+  colour: ParamColour
+  alpha: number
+  /** How far its colour reaches: 1 as far as any point's, more further. */
+  spread: number
+}
+
+/** A point of a gradient mesh. */
+export interface MeshNode {
+  p: Pt
+  colour: ParamColour
+  alpha: number
+}
+
+/** The most colour points a freeform gradient has, and patches a mesh has a side. */
+export const MAX_FREEFORM = 64
+export const MAX_MESH = 24
 
 export type StrokeAlign = 'centre' | 'inside' | 'outside'
 
@@ -261,7 +301,30 @@ export function readPaint(raw: unknown): Paint {
       reverse: r.reverse === true,
     }
     const line = Array.isArray(r.line) && r.line.length === 4 && r.line.every(finite) ? (r.line.map((v) => num(v, 0, -LIMIT, LIMIT)) as GradientLine) : null
-    return line ? { ...g, line } : g
+    const stroke = r.stroke === 'along' || r.stroke === 'across' ? { stroke: r.stroke as StrokeGradient } : {}
+    return line ? { ...g, line, ...stroke } : { ...g, ...stroke }
+  }
+  if (r.kind === 'freeform') {
+    const points: FreeformPoint[] = []
+    for (const q of Array.isArray(r.points) ? r.points.slice(0, MAX_FREEFORM) : []) {
+      const p = isObject(q) ? readPt(q.p) : null
+      if (p) points.push({ p, colour: rawColour((q as Record<string, unknown>).colour, [0, 0, 0]), alpha: num((q as Record<string, unknown>).alpha, 1, 0, 1), spread: num((q as Record<string, unknown>).spread, 1, 0.1, 10) })
+    }
+    return { kind: 'freeform', points }
+  }
+  if (r.kind === 'mesh') {
+    const cols = Math.round(num(r.cols, 1, 1, MAX_MESH))
+    const rows = Math.round(num(r.rows, 1, 1, MAX_MESH))
+    const raw = Array.isArray(r.nodes) ? r.nodes : []
+    const nodes: MeshNode[] = []
+    for (const q of raw) {
+      const p = isObject(q) ? readPt(q.p) : null
+      if (!p) break
+      nodes.push({ p, colour: rawColour((q as Record<string, unknown>).colour, [0, 0, 0]), alpha: num((q as Record<string, unknown>).alpha, 1, 0, 1) })
+    }
+    // A grid that doesn't add up can't be drawn: its first colour, flat.
+    if (nodes.length !== (cols + 1) * (rows + 1)) return { kind: 'solid', colour: nodes[0]?.colour ?? [0, 0, 0] }
+    return { kind: 'mesh', cols, rows, nodes }
   }
   if (r.kind === 'pattern') {
     return {
@@ -345,7 +408,55 @@ export function paintIn(p: Paint, mode: ColourMode): Paint {
       return { ...p, stops: p.stops.map((s, i) => ({ ...s, colour: colourIn(s.colour, mode, i ? 'white' : 'black') })) }
     case 'pattern':
       return { ...p, colour: colourIn(p.colour, mode), background: colourIn(p.background, mode, 'white') }
+    case 'freeform':
+      return { ...p, points: p.points.map((q) => ({ ...q, colour: colourIn(q.colour, mode) })) }
+    case 'mesh':
+      return { ...p, nodes: p.nodes.map((q) => ({ ...q, colour: colourIn(q.colour, mode) })) }
   }
+}
+
+/** Every colour a paint holds, in order: a colour, a pattern's two, a gradient's stops, a freeform's points, a mesh's points. */
+export function paintColours(p: Paint): ParamColour[] {
+  switch (p.kind) {
+    case 'solid':
+      return [p.colour]
+    case 'gradient':
+      return p.stops.map((s) => s.colour)
+    case 'pattern':
+      return [p.colour, p.background]
+    case 'freeform':
+      return p.points.map((q) => q.colour)
+    case 'mesh':
+      return p.nodes.map((q) => q.colour)
+  }
+}
+
+/** A paint's colours each passed through `fn`, nothing else changed. */
+export function mapPaintColours(p: Paint, fn: (c: ParamColour) => ParamColour): Paint {
+  switch (p.kind) {
+    case 'solid':
+      return { ...p, colour: fn(p.colour) }
+    case 'gradient':
+      return { ...p, stops: p.stops.map((s) => ({ ...s, colour: fn(s.colour) })) }
+    case 'pattern':
+      return { ...p, colour: fn(p.colour), background: fn(p.background) }
+    case 'freeform':
+      return { ...p, points: p.points.map((q) => ({ ...q, colour: fn(q.colour) })) }
+    case 'mesh':
+      return { ...p, nodes: p.nodes.map((q) => ({ ...q, colour: fn(q.colour) })) }
+  }
+}
+
+/** The colour a paint shows most: what a file that can't hold it draws it in, and its chip's colour. */
+export const mainColour = (p: Paint): ParamColour => paintColours(p)[0] ?? [0, 0, 0]
+
+/** Whether a paint is see-through anywhere (beyond its item's opacity). */
+export function paintTranslucent(p: Paint): boolean {
+  if (p.kind === 'gradient') return p.stops.some((s) => s.alpha < 1)
+  if (p.kind === 'freeform') return p.points.some((q) => q.alpha < 1) || !p.points.length
+  if (p.kind === 'mesh') return p.nodes.some((q) => q.alpha < 1)
+  if (p.kind === 'pattern') return p.backgroundAlpha < 1
+  return false
 }
 
 /** An appearance stack with every colour in the document's mode. */

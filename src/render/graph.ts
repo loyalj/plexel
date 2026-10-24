@@ -956,7 +956,7 @@ export class Graph {
   }
 
   /** One effects-kernel dispatch. */
-  private fxPass(job: TileJob, entry: 'shape' | 'pbox' | 'jfa_init' | 'jfa_step' | 'layer' | 'over', p: FxParams, b: { body?: GPUBuffer; plane?: GPUBuffer; seedsOut?: GPUBuffer; seedsIn?: GPUBuffer; out?: GPUBuffer; stops?: Float32Array; next?: GPUBuffer }, groups: number) {
+  private fxPass(job: TileJob, entry: 'shape' | 'pbox' | 'jfa_init' | 'jfa_step' | 'layer' | 'over', p: FxParams, b: { body?: GPUBuffer; plane?: GPUBuffer; seedsOut?: GPUBuffer; seedsIn?: GPUBuffer; out?: GPUBuffer; stops?: Float32Array; stopsBuffer?: GPUBuffer; next?: GPUBuffer }, groups: number) {
     const pipeline = this.kernels.fxPipeline(job.format, entry)
     const params = new ArrayBuffer(FX_PARAMS_BYTES)
     writeFxParams(params, p)
@@ -967,7 +967,8 @@ export class Graph {
     if (b.seedsOut) entries.push({ binding: 3, resource: { buffer: b.seedsOut } })
     if (b.seedsIn) entries.push({ binding: 4, resource: { buffer: b.seedsIn } })
     if (b.out) entries.push({ binding: 5, resource: { buffer: b.out } })
-    if (b.stops) {
+    if (b.stopsBuffer) entries.push({ binding: 6, resource: { buffer: b.stopsBuffer } })
+    else if (b.stops) {
       const st = this.storage.put(b.stops)
       entries.push({ binding: 6, resource: { buffer: st.buffer, offset: st.offset, size: st.size } })
     }
@@ -1041,9 +1042,9 @@ export class Graph {
     const dummyPlane = this.kernels.dummy
     type Made = { place: 'below' | 'on' | 'over'; buf: GPUBuffer; blend: BlendModeId; k: number }
     const made: Made[] = []
-    const layer = (kind: number, p: Omit<FxParams, 'size'>, b: { plane?: GPUBuffer; seedsOut?: GPUBuffer; seedsIn?: GPUBuffer; stops?: Float32Array }) => {
+    const layer = (kind: number, p: Omit<FxParams, 'size'>, b: { plane?: GPUBuffer; seedsOut?: GPUBuffer; seedsIn?: GPUBuffer; stops?: Float32Array; stopsBuffer?: GPUBuffer }) => {
       const out = this.regionBuffer(job, size)
-      this.fxPass(job, 'layer', { ...p, size, kind }, { body: R, plane: b.plane ?? dummyPlane, seedsOut: b.seedsOut ?? dummyPlane, seedsIn: b.seedsIn ?? dummyPlane, out, stops: b.stops ?? new Float32Array(8) }, px)
+      this.fxPass(job, 'layer', { ...p, size, kind }, { body: R, plane: b.plane ?? dummyPlane, seedsOut: b.seedsOut ?? dummyPlane, seedsIn: b.seedsIn ?? dummyPlane, out, stops: b.stops ?? new Float32Array(8), stopsBuffer: b.stopsBuffer }, px)
       return out
     }
     const bounds = job.scene.contentBounds(n, false)
@@ -1111,6 +1112,21 @@ export class Graph {
           break
         }
         case 'pattern-overlay': {
+          // A pattern of the document's, in its own colours: region pixels to its pixels, turned by −angle.
+          const img = typeof v.image === 'string' && v.image ? this.patternImage(job.scene, v.image) : undefined
+          const buffer = img && this.patternBuffers.get(img)
+          if (img && buffer) {
+            const a = ((v.angle as number) * Math.PI) / 180
+            const kk = 100 / (v.imageScale as number)
+            const cs = Math.cos(a) * kk
+            const sn = Math.sin(a) * kk
+            const ox = (originX(job) - M) * scale
+            const oy = (originY(job) - M) * scale
+            const f1: [number, number, number, number] = [cs * scale, -sn * scale, sn * scale, cs * scale]
+            const f2: [number, number, number, number] = [cs * ox + sn * oy, -sn * ox + cs * oy, scale * kk, 0]
+            made.push({ place: def.place, buf: layer(FX_INDEX['pattern-image'], { f1, f2 }, { stopsBuffer: buffer }), blend, k })
+            break
+          }
           const a = ((v.angle as number) * Math.PI) / 180
           const cs = Math.cos(a) / (v.scale as number)
           const sn = Math.sin(a) / (v.scale as number)
@@ -2032,7 +2048,7 @@ export class Graph {
       }
     }
     const buf = this.take(job, false)
-    this.paint(job, buf, cover, paintParams(it.item.paint, mode, toNode, pathBox, (id) => this.patternImage(job.scene, id)))
+    this.paint(job, buf, cover, paintParams(it.item.paint, mode, toNode, pathBox, (id) => this.patternImage(job.scene, id), it.centre))
     this.give(cover)
     return buf
   }
@@ -2128,13 +2144,15 @@ export class Graph {
     const st = this.storage.put(p.stops)
     const pipeline = this.kernels.paintPipeline(job.format)
     this.noPattern ??= this.device.createBuffer({ label: 'no pattern', size: 16, usage: GPUBufferUsage.STORAGE })
+    // A stroke gradient's, a freeform's or a mesh's field is read where a pattern's pixels would be.
+    const field = p.field ? this.storage.put(p.field) : null
     const pat = (p.image && this.patternBuffers.get(p.image)) || this.noPattern
     this.encode(job, 'vector paint', pipeline, [
       { binding: 0, resource: { buffer: pu.buffer, offset: pu.offset, size: PAINT_PARAMS_BYTES } },
       { binding: 1, resource: { buffer: cover, offset: 0, size: COVER_BYTES } },
       { binding: 2, resource: { buffer: st.buffer, offset: st.offset, size: st.size } },
       { binding: 3, resource: { buffer: out } },
-      { binding: 4, resource: { buffer: pat } },
+      { binding: 4, resource: field ? { buffer: field.buffer, offset: field.offset, size: field.size } : { buffer: pat } },
     ], TILE / 16, TILE / 16)
   }
 

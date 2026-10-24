@@ -37,6 +37,8 @@ export interface BrushState {
   user: UserPreset[]
   /** Protect Texture: a preset chosen with a texture of its own takes the one the tool has instead, at its scale. */
   protectTexture: boolean
+  /** How worn each tool's erodible tip is, 0..1, until Sharpen Tip (brush/special.ts). */
+  wear: Partial<Record<PaintTool, number>>
 }
 
 const KEY = 'plexel.brushes.v1'
@@ -55,6 +57,7 @@ const defaults = (): BrushState => ({
   sample: 1,
   user: [],
   protectTexture: false,
+  wear: {},
 })
 
 function load(): BrushState {
@@ -76,6 +79,7 @@ function load(): BrushState {
       preset: { brush: preset('brush'), eraser: preset('eraser'), mixer: preset('mixer'), smudge: preset('smudge'), clone: preset('clone'), heal: preset('heal'), spot: preset('spot') },
       sample: [1, 3, 5].includes(raw.sample) ? raw.sample : 1,
       protectTexture: raw.protectTexture === true,
+      wear: Object.fromEntries(PAINT_TOOLS.filter((t) => typeof raw.wear?.[t] === 'number' && raw.wear[t] >= 0 && raw.wear[t] <= 1).map((t) => [t, raw.wear[t] as number])),
       user: Array.isArray(raw.user)
         ? raw.user
             .filter((u: unknown) => u && typeof u === 'object' && typeof (u as UserPreset).id === 'string' && typeof (u as UserPreset).name === 'string')
@@ -114,6 +118,11 @@ class BrushStore {
     this.set({ ...this.state, [tool]: { ...this.state[tool], ...patch }, preset: { ...this.state.preset, [tool]: null } })
   }
 
+  /** A tool's brush replaced whole (a tool preset chosen); it matches no brush preset. */
+  replace(tool: PaintTool, settings: BrushSettings) {
+    this.set({ ...this.state, [tool]: settings, preset: { ...this.state.preset, [tool]: null }, wear: { ...this.state.wear, [tool]: 0 } })
+  }
+
   /** Takes a preset's settings, keeping the size the tool had if the preset doesn't say one. */
   choose(tool: PaintTool, id: string) {
     const builtin = BRUSH_PRESETS.find((p) => p.id === id)
@@ -122,7 +131,18 @@ class BrushStore {
     if (!settings) return
     const had = this.state[tool].texture
     if (this.state.protectTexture && had && settings.texture) settings.texture = { ...settings.texture, id: had.id, scale: had.scale }
-    this.set({ ...this.state, [tool]: settings, preset: { ...this.state.preset, [tool]: id } })
+    // A preset chosen is a new tip: an erodible one comes sharp.
+    this.set({ ...this.state, [tool]: settings, preset: { ...this.state.preset, [tool]: id }, wear: { ...this.state.wear, [tool]: 0 } })
+  }
+
+  /** An erodible tip's wear after a stroke. */
+  setWear(tool: PaintTool, wear: number) {
+    this.set({ ...this.state, wear: { ...this.state.wear, [tool]: Math.min(1, Math.max(0, wear)) } })
+  }
+
+  /** Sharpen Tip: the tool's erodible tip as new. */
+  sharpen(tool: PaintTool) {
+    this.setWear(tool, 0)
   }
 
   setProtectTexture(on: boolean) {

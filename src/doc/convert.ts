@@ -21,7 +21,8 @@ import { FILTER_BY_ID } from '../filters/defs'
 import { FX_BY_KIND } from '../fx/defs'
 import { readParamValues, type GradientStop, type ParamDef } from './params'
 import type { ColourMode, Depth, Doc, DocNode, LayerFx, ProfileRef } from './types'
-import { appearanceIn, brushIn, paintIn, type AppearanceItem, type Paint } from './vector'
+import { appearanceIn, brushIn, mapPaintColours, paintIn, type AppearanceItem, type Paint } from './vector'
+import type { CharProps } from './text'
 import { mapBrushPaints } from './vectorBrush'
 import { deepEqual } from '../lib/equal'
 
@@ -45,12 +46,23 @@ export function pixelSets(doc: Doc): string[] {
   const visit = (d: Doc) => {
     for (const n of Object.values(d.nodes)) {
       if (n.kind === 'pixel' && n.props.tiles) out.add(n.props.tiles)
+      if (n.kind === 'text' && n.props.stand) out.add(n.props.stand.tiles)
       if (n.kind === 'embedded' && n.props.content) visit(n.props.content)
     }
-    for (const p of d.patterns ?? []) out.add(p.tiles)
+    for (const p of d.patterns ?? []) {
+      out.add(p.tiles)
+      if (p.art) visit(p.art.content)
+    }
+    for (const s of d.symbols ?? []) visit(s.content)
   }
   visit(doc)
   return [...out]
+}
+
+/** Characters' own fill and stroke (colour per character) converted; the rest of their settings as they are. */
+function convertCharPaints(c: Partial<CharProps>, from: ColourMode, fn: ColourFn): Partial<CharProps> {
+  if (!c.fill && !c.stroke) return c
+  return { ...c, ...(c.fill ? { fill: convertPaint(paintIn(c.fill, from), fn) } : {}), ...(c.stroke ? { stroke: convertPaint(paintIn(c.stroke, from), fn) } : {}) }
 }
 
 function convertPaint(p: Paint, fn: ColourFn): Paint {
@@ -59,10 +71,8 @@ function convertPaint(p: Paint, fn: ColourFn): Paint {
       return { ...p, colour: fn(p.colour) }
     case 'gradient':
       return { ...p, stops: p.stops.map((s) => ({ ...s, colour: fn(s.colour) })) }
-    case 'pattern':
-      return { ...p, colour: fn(p.colour), background: fn(p.background) }
     default:
-      return p
+      return mapPaintColours(p, fn)
   }
 }
 
@@ -124,9 +134,15 @@ function convertNode(n: DocNode, from: ColourMode, to: ColourMode, fn: ColourFn,
       if (m.props.tiles && !t) warn('A layer’s pixels couldn’t be converted, so the layer is empty')
       return { ...m, props: { ...m.props, tiles: t } }
     }
+    case 'text': {
+      // Its stand-in pixels converted with the rest, or let go.
+      const st = m.props.stand ? sets.get(m.props.stand.tiles) : undefined
+      const { stand: _s, ...props } = m.props
+      const content = { paragraphs: m.props.content.paragraphs.map((p) => ({ ...p, runs: p.runs.map((r) => ({ ...r, props: convertCharPaints(r.props, from, fn) })) })) }
+      return { ...m, props: { ...props, content, ...(m.props.stand && st ? { stand: { ...m.props.stand, tiles: st } } : {}), appearance: convertAppearance(m.props.appearance, from, fn) } } as DocNode
+    }
     case 'vector':
     case 'boolean':
-    case 'text':
       return { ...m, props: { ...m.props, appearance: convertAppearance(m.props.appearance, from, fn) } } as DocNode
     case 'fill':
       return { ...m, props: { ...m.props, paint: convertPaint(paintIn(m.props.paint, from), fn) } }
@@ -155,14 +171,20 @@ export function convertDocColours(doc: Doc, target: ConvertTarget, fn: ColourFn,
   for (const [id, n] of Object.entries(doc.nodes)) nodes[id] = convertNode(n, doc.mode, target.mode, fn, sets, target, warn)
   const out: Doc = { ...doc, mode: target.mode, profile: target.profile, depth: target.depth, nodes }
   if (doc.graphicStyles?.length) out.graphicStyles = doc.graphicStyles.map((g) => ({ ...g, appearance: convertAppearance(g.appearance, doc.mode, fn) }))
+  if (doc.textStyles) {
+    const ts = doc.textStyles
+    out.textStyles = { character: ts.character.map((c) => ({ ...c, char: convertCharPaints(c.char, doc.mode, fn) })), paragraph: ts.paragraph.map((p) => ({ ...p, char: convertCharPaints(p.char, doc.mode, fn) })) }
+  }
   if (doc.vectorBrushes?.length) out.vectorBrushes = doc.vectorBrushes.map((b) => mapBrushPaints(brushIn(b, doc.mode), (p) => convertPaint(p, fn), fn))
   if (doc.patterns?.length) {
     out.patterns = doc.patterns.flatMap((p) => {
       const tiles = sets.get(p.tiles)
       if (!tiles) warn('A pattern’s pixels couldn’t be converted, so it was left out')
-      return tiles ? [{ ...p, tiles }] : []
+      return tiles ? [{ ...p, tiles, ...(p.art ? { art: { ...p.art, content: convertDocColours(p.art.content, target, fn, sets, warn) } } : {}) }] : []
     })
   }
+  // Symbols' contents go with the document, as smart objects' do.
+  if (doc.symbols?.length) out.symbols = doc.symbols.map((s) => ({ ...s, content: convertDocColours(s.content, target, fn, sets, warn) }))
   return out
 }
 

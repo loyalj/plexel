@@ -28,7 +28,7 @@ import type { View } from '../render/view'
 import type { Overlay } from '../render/overlay'
 import { addProfile, colour } from './colourHost'
 import { exportImage, importImage, optimizeImage } from './imageHost'
-import { bakeEffects, rasterizeNode, readPixels8, renderSmall, samplePoint, shrink } from '../render/readback'
+import { bakeEffects, mergeNodes, rasterizeNode, readPixels8, renderSmall, samplePoint, shrink } from '../render/readback'
 import { alphaBounds, valueAt } from '../tiles/coverage'
 import { encodePng } from '../io/png'
 import { selectHandlers } from './selectHost'
@@ -428,6 +428,7 @@ const handlers: { [M in keyof EngineCalls]: Handler<M> } = {
     // Kept until the page has committed it.
     return held(await rasterizeNode(await renderer(), store, key, node))
   },
+  'render.merge': async ({ key, nodes }) => held(await mergeNodes(await renderer(), store, key, nodes)),
   'stroke.end': async ({ id }) => (await renderer()).endStroke(id),
   'render.sample': async ({ key, x, y, size }) => samplePoint(await renderer(), key, x, y, size),
   'render.idle': async () => {

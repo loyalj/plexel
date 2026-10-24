@@ -12,7 +12,7 @@
  * Ids are the caller's to make, so edits stay repeatable in the checks.
  */
 import { blendAllowed, isEffectKind, isLayerKind, makeNode, nodeDef } from './nodes'
-import { freshName, isWithin, placeOf, subtree } from './tree'
+import { freshName, isWithin, outermost, placeOf, subtree } from './tree'
 import { mapGuides } from './guides'
 import type { AppearanceItem, Geometry, Paint } from './vector'
 import type { TextContent, TextStyles } from './text'
@@ -26,6 +26,7 @@ import {
   type Affine,
   type BlendModeId,
   type BoolOp,
+  type ColourTag,
   type ColourMode,
   type Depth,
   type Doc,
@@ -356,6 +357,132 @@ export function moveNode(doc: Doc, id: NodeId, parent: NodeId, index: number): D
 }
 
 /**
+ * Moves several layers together (a drag of everything selected in the
+ * Layers panel): they land at `index` among `parent`'s children, counted
+ * once they've all left their places, keeping their order, bottom one
+ * lowest. A layer inside another of them goes with that one. Refused, as a
+ * whole, if any of them can't go there.
+ */
+export function moveNodes(doc: Doc, ids: readonly NodeId[], parent: NodeId, index: number): Doc {
+  const moving = outermost(doc, ids)
+  const target = doc.nodes[parent]
+  if (!moving.length || !target?.children) return doc
+  if (moving.length === 1) return moveNode(doc, moving[0], parent, index)
+  for (const id of moving) {
+    const node = doc.nodes[id]
+    if (isWithin(doc, parent, id) || !nodeDef(target.kind).accepts?.(node.kind)) return doc
+    if (node.kind === 'group' && node.props.artboard && parent !== doc.root) return doc
+  }
+  const gone = new Set(moving)
+  const nodes = { ...doc.nodes }
+  for (const id of moving) {
+    const from = placeOf(doc, id)!.parent
+    if (from !== parent) nodes[from] = { ...nodes[from], children: nodes[from].children!.filter((x) => !gone.has(x)) } as DocNode
+  }
+  const children = target.children.filter((x) => !gone.has(x))
+  children.splice(Math.max(0, Math.min(index, children.length)), 0, ...moving)
+  if (children.length === target.children.length && children.every((x, i) => x === target.children![i])) return doc
+  nodes[parent] = { ...target, children } as DocNode
+  return { ...doc, nodes }
+}
+
+/**
+ * Merge Layers: the layers `ids` become one pixel layer, `tiles` (what they
+ * draw together, worked out by the engine), in the top one's place and
+ * with its name (or `name`). Everything under them (masks, effects,
+ * clipped layers) went into the picture and goes with them. One layer
+ * alone is a group merged (Merge Group).
+ */
+export function mergeLayers(doc: Doc, ids: readonly NodeId[], mergedId: NodeId, tiles: string | null, name?: string): Doc {
+  const layers = outermost(doc, ids)
+  if (!layers.length || doc.nodes[mergedId]) return doc
+  const topId = layers[layers.length - 1]
+  const place = placeOf(doc, topId)!
+  const merged = makeNode('pixel', mergedId, name ?? doc.nodes[topId].name, { tiles })
+  merged.tag = doc.nodes[topId].tag
+  // In the top one's place: its parent's list with the merged layer for it, the others taken out.
+  const parent = doc.nodes[place.parent]
+  if (!nodeDef(parent.kind).accepts?.('pixel')) return doc
+  let out: Doc = { ...doc, nodes: { ...doc.nodes, [mergedId]: merged, [place.parent]: { ...parent, children: parent.children!.map((c) => (c === topId ? mergedId : c)) } as DocNode } }
+  for (const id of layers.slice(0, -1)) out = removeNode(out, id)
+  const nodes = { ...out.nodes }
+  for (const n of subtree(doc, topId)) delete nodes[n]
+  return { ...out, nodes }
+}
+
+/**
+ * Group Layers: the layers `ids` go into a new group `groupId`, in the
+ * top one's place, keeping their order. Refused if any of them can't go in
+ * a group (an artboard).
+ */
+export function groupLayers(doc: Doc, ids: readonly NodeId[], groupId: NodeId, name: string): Doc {
+  const layers = outermost(doc, ids)
+  if (!layers.length || doc.nodes[groupId]) return doc
+  const top = placeOf(doc, layers[layers.length - 1])!
+  const parent = doc.nodes[top.parent]
+  if (parent.kind === 'boolean') return doc
+  const withGroup = insertNode(doc, makeNode('group', groupId, name), top.parent, top.index + 1)
+  if (withGroup === doc) return doc
+  const moved = moveNodes(withGroup, layers, groupId, 0)
+  return moved === withGroup ? doc : moved
+}
+
+/**
+ * Ungroup: each group in `ids` lets its layers out into its place, in their
+ * order, and goes, as Photoshop's Ungroup Layers does (the group's own
+ * opacity, mask and style go with it). Artboards stay: Release Artboard
+ * is theirs.
+ */
+export function ungroupLayers(doc: Doc, ids: readonly NodeId[]): Doc {
+  let out = doc
+  for (const id of ids) {
+    const g = out.nodes[id]
+    const place = placeOf(out, id)
+    if (g?.kind !== 'group' || g.props.artboard || !place || place.slot !== 'children') continue
+    const parent = out.nodes[place.parent]
+    const list = [...parent.children!]
+    list.splice(place.index, 1, ...(g.children ?? []))
+    const nodes = { ...out.nodes, [place.parent]: { ...parent, children: list } as DocNode }
+    for (const k of [...g.masks, ...g.effects]) for (const d of subtree(out, k)) delete nodes[d]
+    delete nodes[id]
+    out = { ...out, nodes }
+  }
+  return out
+}
+
+/** Several layers renamed at once (Rename Layers): a name for each id; empty names and ids not there are passed over. */
+export function renameMany(doc: Doc, names: ReadonlyMap<NodeId, string>): Doc {
+  let out = doc
+  for (const [id, name] of names) out = renameNode(out, id, name)
+  return out
+}
+
+/** A layer's colour label, or none. */
+export const setTag = (doc: Doc, id: NodeId, tag: ColourTag | null) => updateNode(doc, id, (n) => (n.tag === tag ? n : ({ ...n, tag } as DocNode)))
+
+/**
+ * Combine into One Shape: the shapes `ids` become one shape whose path is
+ * all of theirs (`path`, worked out by the caller in document pixels),
+ * each part kept as it was, open strokes open: not a Pathfinder union. It
+ * takes the top one's place, name and appearance.
+ */
+export function combineIntoOne(doc: Doc, ids: readonly NodeId[], path: PathData): Doc {
+  const layers = outermost(doc, ids)
+  if (layers.length < 2) return doc
+  const topId = layers[layers.length - 1]
+  const top = doc.nodes[topId]
+  if (top.kind !== 'vector' && top.kind !== 'boolean') return doc
+  let out = doc
+  for (const id of layers.slice(0, -1)) out = removeNode(out, id)
+  // The top one becomes the whole: a compound's shapes go, and it's a plain shape now.
+  const nodes = { ...out.nodes }
+  if (top.kind === 'boolean') for (const k of top.children ?? []) for (const d of subtree(out, k)) delete nodes[d]
+  const { props: _p, kind: _k, ...base } = top
+  nodes[topId] = { ...base, kind: 'vector', transform: [...IDENTITY], children: top.kind === 'vector' ? top.children : [], props: { geometry: { kind: 'path', path }, appearance: top.props.appearance, graphicStyle: top.props.graphicStyle ?? null } } as DocNode
+  return { ...out, nodes }
+}
+
+/**
  * One step up or down in painting order (+1 is towards the top), within
  * the node's own parent. At either end it stays where it is.
  */
@@ -444,6 +571,7 @@ export function dropLostSets(doc: Doc, lost: ReadonlySet<string>): Doc {
   let out = doc
   for (const n of Object.values(doc.nodes)) {
     if ((n.kind === 'pixel' || n.kind === 'mask') && n.props.tiles && lost.has(n.props.tiles)) out = setTiles(out, n.id, null)
+    if (n.kind === 'text' && n.props.stand && lost.has(n.props.stand.tiles)) out = updateNode(out, n.id, (x) => ({ ...x, props: withoutStand((x as typeof n).props) }) as DocNode)
     if (n.kind === 'embedded' && n.props.content) {
       const inner = dropLostSets(n.props.content, lost)
       if (inner !== n.props.content) out = updateNode(out, n.id, (x) => ({ ...x, props: { ...(x as typeof n).props, content: inner } }) as DocNode)
@@ -455,6 +583,14 @@ export function dropLostSets(doc: Doc, lost: ReadonlySet<string>): Doc {
       return content === s.content ? s : { ...s, content }
     })
     if (symbols.some((s, i) => s !== out.symbols![i])) out = { ...out, symbols }
+  }
+  if (out.patterns?.some((p) => p.art)) {
+    const patterns = out.patterns.map((p) => {
+      if (!p.art) return p
+      const content = dropLostSets(p.art.content, lost)
+      return content === p.art.content ? p : { ...p, art: { ...p.art, content } }
+    })
+    if (patterns.some((p, i) => p !== out.patterns![i])) out = { ...out, patterns }
   }
   if (out.selection && lost.has(out.selection.tiles)) out = { ...out, selection: null }
   if (out.patterns?.some((p) => lost.has(p.tiles))) out = { ...out, patterns: out.patterns.filter((p) => !lost.has(p.tiles)) }
@@ -469,11 +605,12 @@ export function tileSetsOf(doc: Doc): string[] {
     out = []
     for (const n of Object.values(doc.nodes)) {
       if ((n.kind === 'pixel' || n.kind === 'mask') && n.props.tiles) out.push(n.props.tiles)
+      if (n.kind === 'text' && n.props.stand) out.push(n.props.stand.tiles)
       if (n.kind === 'embedded' && n.props.content) out.push(...tileSetsOf(n.props.content))
     }
     setsCache.set(doc.nodes, out)
   }
-  const extra = [...(doc.patterns ?? []).map((p) => p.tiles), ...(doc.channels ?? []).flatMap((c) => (c.tiles ? [c.tiles] : [])), ...(doc.selection ? [doc.selection.tiles] : []), ...(doc.symbols ?? []).flatMap((s) => tileSetsOf(s.content))]
+  const extra = [...(doc.patterns ?? []).map((p) => p.tiles), ...(doc.channels ?? []).flatMap((c) => (c.tiles ? [c.tiles] : [])), ...(doc.selection ? [doc.selection.tiles] : []), ...(doc.symbols ?? []).flatMap((s) => tileSetsOf(s.content)), ...(doc.patterns ?? []).flatMap((p) => (p.art ? tileSetsOf(p.art.content) : []))]
   return extra.length ? [...out, ...extra] : out
 }
 
@@ -819,12 +956,19 @@ export function addVectorMask(doc: Doc, id: NodeId, maskId: NodeId, outside: num
 
 /** A text node's content replaced. */
 export function setTextContent(doc: Doc, id: NodeId, content: TextContent): Doc {
-  return updateNode(doc, id, (n) => (n.kind === 'text' && n.props.content !== content ? ({ ...n, props: { ...n.props, content } } as DocNode) : n))
+  return updateNode(doc, id, (n) => (n.kind === 'text' && n.props.content !== content ? ({ ...n, props: { ...withoutStand(n.props), content } } as DocNode) : n))
 }
 
 /** A text node's kind of text, frame or start along its path. */
 export function setTextProps(doc: Doc, id: NodeId, patch: Partial<Pick<KindProps['text'], 'mode' | 'frame' | 'pathOffset'>>): Doc {
-  return updateNode(doc, id, (n) => (n.kind === 'text' ? ({ ...n, props: { ...n.props, ...patch } } as DocNode) : n))
+  return updateNode(doc, id, (n) => (n.kind === 'text' ? ({ ...n, props: { ...withoutStand(n.props), ...patch } } as DocNode) : n))
+}
+
+/** A text layer's props without the stand-in pixels: an edited text is drawn as Plexel lays it out. */
+function withoutStand(p: KindProps['text']): KindProps['text'] {
+  if (!p.stand) return p
+  const { stand: _s, ...rest } = p
+  return rest
 }
 
 /** The document's character and paragraph styles replaced. */

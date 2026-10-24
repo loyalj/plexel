@@ -109,6 +109,8 @@ function fakeContext(): Recorded {
   let units: 'px' | 'in' | 'cm' | 'mm' | 'pt' = 'px'
   let alignTo: 'layers' | 'key' | 'canvas' | 'selection' = 'layers'
   let split = false
+  let pinned = false
+  let tag: string | null = null
   const call = (name: string) => () => void rec.calls.push(name)
   const rec: Recorded = {
     dialogs: [],
@@ -193,6 +195,31 @@ function fakeContext(): Recorded {
       canClip: () => true,
       toggleClip: call('toggleClip'),
       rasterize: call('rasterize'),
+      mergeMode: () => null,
+      canMerge: () => false,
+      mergeLayers: call('mergeLayers'),
+      mergeVisible: call('mergeVisible'),
+      stampVisible: call('stampVisible'),
+      selectionCount: () => 1,
+      groupLayers: call('groupLayers'),
+      canUngroup: () => false,
+      ungroupLayers: call('ungroupLayers'),
+      groupForSelect: () => null,
+      selectInGroup: call('selectInGroup'),
+      foldAll: call('foldAll'),
+      foldOthers: call('foldOthers'),
+      drawIntoState: () => ({ target: 'g', pinned: pinned ? 'g' : null, pinnedName: pinned ? 'Home' : null }),
+      toggleDrawInto: () => {
+        pinned = !pinned
+        rec.calls.push('toggleDrawInto')
+      },
+      colourTag: () => tag,
+      setColourTag: (t) => {
+        tag = t
+        rec.calls.push('setColourTag')
+      },
+      canCombineOne: () => false,
+      combineOne: call('combineOne'),
       cropToSelection: call('cropToSelection'),
       canCombine: () => true,
       combine: (op) => void rec.calls.push(`combine:${op}`),
@@ -254,6 +281,7 @@ function fakeContext(): Recorded {
       symbol: (a: string) => void rec.calls.push(`symbol ${a}`),
       canMakeSymbol: () => true,
       instanceSelected: () => true,
+      makePattern: () => undefined,
       construct: (k) => void rec.calls.push(`construct ${k}`),
       canFilter: () => true,
       hasLiveFilters: () => true,

@@ -654,9 +654,10 @@ mip level.*
   any zoom, and nothing goes through a pixel intermediate at a fixed
   resolution.
 - **Paint servers** turn coverage into colour: solid, linear, radial,
-  angular and diamond gradients, and patterns, in one kernel. Freeform
-  gradients, gradient meshes and image patterns come later, as more kinds
-  in the same kernel.
+  angular, reflected and diamond gradients, patterns (formulas and
+  images), gradients along and across a stroke, freeform gradients and
+  gradient meshes, in one kernel. The last three read a *field* cut to the
+  tile from the binding images use (see "Fills, gradients and patterns").
 - **Final output.** Each finished composite tile goes through the display
   LUT into a display atlas (RGBA f16). The screen pass draws the
   pasteboard, the checkerboard and the display tiles through the view
@@ -949,6 +950,36 @@ when it can, where a point goes (`forward`).
   angular and diamond centred on the start and turned to the line. One
   matrix per paint maps a tile pixel to gradient space; the kernel and
   `vector/paint.ts` do the same sums.
+- **Gradients along or across a stroke** (`Paint.stroke`) take their
+  position from the stroke's centre line: the outline builder keeps the
+  path flattened in the shape's coordinates (`StrokeCentre`: each segment's
+  ends, how far along its subpath they are, the width each side from the
+  profile, and which side shows for an inside or outside stroke, found by
+  asking the fill). Per tile, the segments within the stroke's reach go to
+  the kernel; each pixel takes its nearest segment: along is the distance
+  along the subpath over its length, across the signed distance (its
+  magnitude, so a corner's outside runs on smoothly) between the two
+  edges.
+- **Freeform gradients** blend colour points by inverse distance,
+  (spread² / d²)^1.5 each, premultiplied. **Gradient meshes** are grids of
+  points with colours, patches with straight sides: a pixel is found in its
+  patch by inverting the bilinear map (the root nearer the patch), and its
+  colour is a Catmull–Rom spline through the points' colours over the grid,
+  smooth across patch edges; past the mesh's edge the nearest patch's
+  colour carries on. Per tile the field holds the patches that meet it and
+  those round the mesh's edge. `vector/mesh.ts` has the arithmetic (and the
+  edits: splitting a mesh through a point so it looks the same, making it
+  again finer or coarser); check:gpu holds the kernel to it.
+- **Editing on the canvas** (`app/gradientEdit.ts`): the Gradient tool and
+  the Mesh tool draw the selected layer's gradient as overlay shapes (the
+  line, its stops beside it, freeform points, the mesh's grid) and turn a
+  press on them into a drag that previews through the engine and commits
+  one step. Which paint is edited is the item open in Properties
+  (`paintFocus`) when it can be, else the top fill, else the top stroke.
+- **Files**: SVG, PDF and EPS have no freeform gradients, meshes or
+  stroke gradients that match, so a shape with one goes as an image of
+  itself (`io/flat.ts`), as angular and diamond gradients already do; PSD
+  keeps them in the layer's pixels, with a warning.
 - **Patterns made from pixels** (`Doc.patterns`) are tile sets in the
   document's mode and depth, one repeat at the origin, at most 1,024
   pixels a side, saved, converted and collected like pixel layers. A paint
@@ -962,6 +993,34 @@ when it can, where a point goes (`forward`).
   first time a tile needs it (the tile waits, NotReady, while it's read)
   and kept by tile set, which never changes; a document's patterns
   changing redraws it all.
+- **Patterns from artwork** (`DocPattern.art`, `doc/patterns.ts`) keep
+  their tile as a document of its own, as a symbol's contents, and a
+  layout (`PatternTile`: grid, brick by row or column with an offset of
+  ½ to ⅕, hex by column or row; spacing). The pattern's `tiles` are still
+  one repeat, so every consumer is unchanged: `repeatOf` says where each
+  copy of the tile lies in a repeat (a brick row offset by 1/n makes the
+  repeat n rows high; hexagons' columns are ¾ of a tile apart), and the
+  engine's `fill.repeat` lays the tile's pixels there, wrapping, later
+  over earlier. Saved, read (`readPatternTile`), collected, converted
+  (`pixelSets` and `convertDocColours` go into the artwork, and now into
+  symbols' contents too) and copied with the pattern.
+- **Pattern editing mode** (`app/patternEdit.ts`) opens the tile in a tab
+  (`OpenDoc.patternOf`), a tiled document along the axes where the layout
+  repeats a tile exactly (`editTiling`), so the tab's copies and seamless
+  painting are Tiled View's. A moment after each change in the tab, its
+  merged pixels (`clip.pixels`) are laid out by `fill.repeat` and the
+  pattern takes the repeat and the artwork in one coalesced step in its
+  document; a change there (an undo) comes back into the tab. Cancel puts
+  back the pattern the tab opened with. Make Pattern copies the selected
+  layers (`patternContent`, their exact pixel bounds) and opens a tab for a
+  pattern that exists in the document from its first repeat; a pattern
+  from pixels opens as one pixel layer (`pixelContent`) and gains artwork
+  only when something's drawn.
+- **Pattern Overlay** with a document pattern (`image`, `imageScale`)
+  samples the pattern's pyramid on the GPU as the paint kernel does, the
+  pyramid's buffer bound where gradient stops go (`pattern_image` over
+  `stops`, layer kind 11); fx/ref.ts does the same sums with
+  `patternSample`.
 - **Filling pixels** (`tiles/fill.ts`): a paint or an image laid on a
   layer's tiles through coverage, each layer pixel looked up through the
   layer's transform, composited by the reference's `over` (or `atop`, for
@@ -1064,21 +1123,64 @@ set through the vector pipeline.
   fallback list by script; a version that moves when a font arrives.
   Sources: built in (Inter Variable and italic, Noto Sans Arabic and
   Devanagari as fallbacks, served from `public/fonts`), added by the user
-  (kept in OPFS by hash), the computer's through Local Font Access, and a
-  document's own (from its file or the journal).
+  (kept in OPFS by hash), the computer's through Local Font Access (listed
+  without a click when the permission is already granted), and a
+  document's own (from its file or the journal). `resolve` finds a font by
+  family and style, then by PostScript name (a Photoshop file's runs have
+  no style until found), a guess from one, a full or loosely written name,
+  and the family's nearest style; a system font keeps the browser's names
+  after its file is read, the file's own kept as aliases the menu doesn't
+  list. A font known but not read is `pending`, which layout reports apart
+  from `missing`; missing-font warnings wait for the system's fonts to be
+  listed and are said only for fonts still missing then.
+- **Stand-ins** (`KindProps['text'].stand`): a PSD text layer keeps
+  Photoshop's pixels as a tile set placed in the text's coordinates; while
+  any of its fonts is missing or pending, the page hands the engine a
+  pixel node with them instead of glyphs (`app/text.ts`, decorate). Edits
+  to the text drop it; it's saved, converted and collected with the
+  document's tiles.
+- **The font menu** (`ui/FontPicker.tsx`, `app/fontMenu.ts`): families
+  drawn in their own faces (a system font by name, others from their bytes
+  as a FontFace), a list that renders only rows in view, favourites and
+  recent in local storage, kinds from names.
 - **Layout** (`text/layout.ts`), per paragraph: bidi levels (bidi-js,
   UAX #9), runs split by level, script, font (with a fallback for each
   character the font lacks) and settings, each shaped in the paragraph's
   context; break opportunities (linebreak, UAX #14) make segments with
-  their widths, stretch and shrink. The every-line composer is Knuth-Plass
-  (justified text by its demerits, ragged text by squared slack); the
-  single-line composer is greedy. Each line is put in visual order by rule
-  L2, aligned or justified (word spaces may shrink), then placed: point
+  their widths, stretch and shrink. Hyphenating paragraphs add break
+  opportunities where their language's Knuth–Liang patterns allow
+  (`text/hyphenate.ts`, the hyphen package's TeX patterns, each language
+  loaded when first wanted; a `Hyphenator` the layout asks synchronously,
+  its version keying paragraphs' caches), and soft hyphens are always ones;
+  a segment ending at one carries the hyphen's width. The paragraph's
+  wanted word spacing, letter spacing and glyph scaling are applied as
+  items are shaped; a line's stretch and shrink are what its word spaces,
+  letter gaps and glyph widths may give within the ranges. The every-line
+  composer is Knuth-Plass (justified text by its demerits, a hyphen's
+  penalty and more for two in a row, the hyphen limit enforced on the best
+  path; ragged text by squared slack; a line with nothing to stretch is the
+  worst); the single-line composer is greedy, ending a line at its last
+  allowed break (a hyphen only where it fits, within the limit and outside
+  the zone). Each line is put in visual order by rule L2, justified
+  (`justification`: word spaces within their range, then letters, then
+  glyph scaling, the rest to the spaces; one word spread or aligned), its
+  tabs moved to their stops (left, centre, right, decimal; leaders on a grid
+  from the stop), a hyphen drawn after a broken word, then placed: point
   text from its origin, area text through its frame's width at each line's
   band (bands too narrow for the next word are skipped), path text along
   the flattened path, each glyph at its middle's distance and turned to the
   path there. The result is a glyph set, the lines (for the caret,
-  selection and hit tests), bounds, overflow and the missing fonts.
+  selection and hit tests), bounds, overflow and the missing fonts. Each
+  glyph keeps the paint its characters have of their own (`CharProps.fill`,
+  `stroke`): the glyph set's `paints` and `paintOf`, which the outline
+  builder splits the text's bottom fill and stroke by (`perCharacter`), and
+  files and Create Outlines draw as a path per paint (`characterGroups`).
+- **The Glyphs panel** (`text/glyphs.ts`, `ui/GlyphsPanel.tsx`): the face's
+  cmap read from its file (`Face.tableBytes`; formats 12 and 4), a
+  character's alternates found by shaping it with each alternate feature
+  (aalt=n, salt, swsh, ssNN, cvNN, figures, small caps…), glyphs drawn as
+  SVG paths from their outlines, rows drawn only in view; inserting goes
+  through the type session (`insertGlyph`), an alternate with its feature.
 - **Glyph sets** (`geom/glyphs.ts`): each glyph's outline once, in font
   units, and seven numbers per glyph set: the outline and the affine into
   the node's coordinates. The vector pipeline takes either a path or a glyph
@@ -1142,6 +1244,24 @@ set through the vector pipeline.
   texture depth, colour, hue, saturation, brightness), with a minimum.
   `readBrush` reads any saved or imported settings defensively. Presets are
   entries in `BRUSH_PRESETS`.
+- **Bristle, erodible and airbrush tips** (`BrushSettings.special`) are
+  footprints made per dab (`brush/special.ts`): the stroke builder picks,
+  for each dab, a generated image tip named by the tip's settings and a
+  level (`gen:b:…` how deep a bristle brush is pressed, from pressure and
+  tilt; `gen:e:…` how worn a square or triangle is; `gen:a:…` which of
+  eight spray variants), and sets the dab's size, roundness, angle and
+  centre from the pen (an airbrush leans and stretches by its tilt; an
+  erodible point grows with wear and pressure and draws with its side when
+  tilted). The images are made from their names wherever they're asked
+  for (page, worker, checks), so the stamp kernel and its CPU reference
+  are unchanged and nothing is sent. Bristles are hairs with a length (a
+  pointed brush's middle ones longest): a hair touches once the depth
+  passes its length and splays outward as it's pressed further, by length
+  and less for stiffness; close dabs draw each hair as a line. Erodible
+  wear (`Wear`) grows with distance in diameters × pressure × softness;
+  `StrokeStart.wear` gives a stroke its starting wear, and the page counts
+  the same from the samples it sends and keeps it per tool until Sharpen
+  Tip (or a preset is chosen).
 - **Tips are images by id**: the round tip is computed; the rest (built-in
   Chalk, Spatter and Bristle at 256 px, and tips defined or imported, up to
   1,024 px a side) are grey images with a mip chain, named by a hash of
@@ -1163,7 +1283,9 @@ set through the vector pipeline.
   brush uses.
 - **Pen samples go straight to the worker.** The page's pointer handler
   takes every coalesced sample (position in document pixels, pressure
-  through the user's response curve, tilt, twist, time) and writes it into
+  through the user's response curve, tilt, twist, the airbrush wheel
+  (`tangentialPressure`, 0..1; a pen that has never turned one reads full
+  on), time) and writes it into
   a SharedArrayBuffer ring (`input/penRing.ts`), which the worker drains at
   the start of each frame. Without cross-origin isolation, samples go as
   messages.
@@ -1218,6 +1340,27 @@ set through the vector pipeline.
   fixed records, and 6 to 10's tagged sections (`samp` tips, `patt`
   patterns, `desc` presets through the PSD descriptor reader). Presets map
   onto Plexel's settings section by section; what can't come over is named.
+  A bristle tip is class `dBrush`, an erodible or airbrush one `dTips`,
+  each with its shape as `Shp ` (its place in Photoshop's menu; `dTips` 5
+  is the airbrush); their other settings' keys aren't published, so they're
+  found by name and otherwise defaulted, said. **Written** (`io/abrWrite.ts`)
+  as version 6.2: every image tip and texture pattern the brushes use, and
+  each preset under Photoshop's keys (one straight control per property, a
+  special tip as a sampled image of its footprint) plus the settings whole
+  under `plexelBrush`, which the reader takes first, so Plexel's round trip
+  is exact.
+- **Tool presets** (`app/toolPresets.ts`) are a tool and options taken from
+  that tool's own store: each tool with options has a source that takes
+  them and gives them back (the brushes and the Mixer's, Smudge's and the
+  Clone Stamp's settings; the selection, fill, shape, freehand, type and
+  Move tools' stores). Given back, a preset's values are laid over the
+  tool's only where they're the same kind of value (`overlay`). Kept in
+  the browser. Photoshop's TPL files (`io/tpl.ts`) are "8BTP", then ABR's
+  tagged sections: `tppa` patterns, `samp` tips, `tpsh` shapes and
+  `tpst` styles (left out), and `tptp`, each preset a name and a
+  descriptor whose class is the tool (`paintbrushTool`, `GrTl`…); a
+  painting tool's is a brush preset with its options beside it. Each comes
+  in as a patch over the tool's options.
 - **The cursor** is the tip's outline, traced once per tip by marching
   squares at a level about 64 texels across and thinned, then turned,
   squashed and flipped as the dab is and drawn as overlay lines; a round
@@ -1403,7 +1546,8 @@ preview.png         a flattened composite, so other tools can show something
 ### Storage
 
 - **Open and save in place** use the File System Access API in Chromium. File
-  handles go in IndexedDB for the recent-files list. Other browsers open
+  handles go in IndexedDB for the recent-files list, each with its
+  thumbnail.png beside it (a `pictures` store) for the start page. Other browsers open
   through a file input and save as a download.
 - **Autosave** goes to OPFS as a journal: the doc JSON plus content-addressed
   tile packs, so each save writes only new tiles. It is debounced and flushed
@@ -1677,7 +1821,7 @@ subset fonts is a later step.
 | `check:static` | fast | types (tsc); the lint (eslint.config.js: promises not waited for or misused, the rules of hooks, type-only imports marked); dependencies (.dependency-cruiser.cjs: no runtime import cycles, doc/ tiles/ color/ geom/ text/ lib/ never importing the app, interface, engine or renderer); unused files and packages (knip.json) |
 | `check:artboards` | fast | artboards made, moved (carrying their layers), sized (not), kept at the top level; the canvas grown round them and the shift reported; the pasteboard's area; one artboard as a document; symbols made, placed, edited, renamed, replaced, broken and deleted, nested; both expanded into plain layers and kept as the same objects; files read back; instances copied with their symbols; where a new layer goes |
 | `check:commands` | fast | the command registry, menus, shortcuts and your own keys (giving, taking, refusing, recording, reading), palette search, the layout (icons, stacked windows, whole-window moves), workspace files, view-state loading |
-| `check:doc` | fast | edits, history, coalescing, normalize, describeEdit, save round trip, migrations |
+| `check:doc` | fast | edits, history, coalescing, normalize, describeEdit, save round trip, migrations; patterns from artwork: layouts and their repeats, the edit tab’s tiling, Make Pattern’s contents, saved, collected and converted with the document |
 | `check:snap` | fast | snapping points and boxes to lines, the grid and equal spacing, and the smart guides reported; align and distribute; guide edits, layouts, Crop and Canvas Size moving guides, saving them; the settings read defensively; the overlay's guides and grids; shortcuts on ; and ' |
 | `check:flow` | browser | a filter dialog undimmed, the canvas only panning under it, the dialog moved, reopened where it was, put back, closed by Esc wherever the focus is; a control marked off its default and reset by a double-click; Zoom to Selection, a thumbnail double-clicked; the colour picker at the pointer, its colour kept or put back by Esc; shortcut sets chosen, saved, recognised; the toolbar edited (a slot off and in the … slot, moved, two columns, Restore Defaults); Tiled View's frame and its way back; content-aware fill's job bar, its progress, and Esc cancelling it with nothing changed |
 | `check:boards` | browser | New Document with an artboard, the pasteboard, New Artboard, the Artboard tool drawing, moving and sizing one, its name dragged, a shape drawn going onto its artboard and clipped (and not, Clip off), the Move tool carrying a layer onto another artboard, exporting every artboard (a zip) and the selected one, Release Artboard; New Symbol, placing from the panel, editing in the symbol's tab with every instance following, undo followed by the tab, Break Link, Rasterize |
@@ -1699,7 +1843,7 @@ subset fonts is a later step.
 | `check:images` | fast | the image codecs against images built byte by byte in every variant |
 | `check:io` | fast | codec round trips, ICC preservation, `.pxll` round trip, defensive loading |
 | `check:text` | fast | HarfBuzz on the bundled fonts, the font library, the text model's edits and styles, layout (breaking, bidi, both composers, alignment, frames, paths), glyph sets against their outlines, fonts carried in `.pxll` |
-| `check:type` | browser | the Type tool, editing, IME and the clipboard, the Character and Paragraph panels, styles, area and path text, Create Outlines, Rasterize, a missing font |
+| `check:type` | browser | the Type tool, editing, IME and the clipboard, the Character and Paragraph panels, styles, area and path text, Create Outlines, Rasterize, a missing font; with Local Font Access granted, system fonts listed by themselves, loading without a warning, PSD fonts found, the font menu |
 | `check:print` | fast | proof tables against lcms chained, the gamut check, the display look's reference, CMYK adjustment tables, documents and tile sets converted, grid conversions against lcms, document swatches, ASE files |
 | `check:interchange` | fast | every PSD/PSB fixture parsed and mapped, files written back byte for byte, descriptors and EngineData round trips, PSD written from documents, the JPEG decoder against references, SVG read and written, PDF read back by pdf.js |
 | `check:interchange-browser` | browser | Photoshop's adjustment files against Photoshop's composites, resvg's cases against resvg's renders, PSD and PSB round trips drawn again, SVG drawn by Chrome, PDF read by pdf.js, CMYK JPEGs, the Export dialog |
@@ -1707,15 +1851,15 @@ subset fonts is a later step.
 | `check:segment` | fast | Quick Selection's graph cut and the Magnetic Lasso's wire on images made to test them, with timings |
 | `check:matte` | fast | Select and Mask's edge band and refinement against images with a known alpha, decontamination, timings |
 | `check:retouch` | fast | content-aware fill continuing stripes, gradients and textures, its source region, soft holes, every mode, timings; healing (tone from round, texture from the source, no seam) and pull-push |
-| `check:fills` | browser | Edit → Fill, Define Pattern, fill layers, the Gradient tool, the Paint Bucket, content-aware fill, Quick Selection, the Magnetic Lasso, Colour Range, Grow, Border, Smooth, Transform Selection, alpha channels and Select and Mask's edge, through the real UI |
+| `check:fills` | browser | Edit → Fill, Define Pattern, fill layers, the Gradient tool, the Paint Bucket, content-aware fill, Quick Selection, the Magnetic Lasso, Colour Range, Grow, Border, Smooth, Transform Selection, alpha channels and Select and Mask's edge, through the real UI; Make Pattern, pattern editing mode (layouts, edits going back, Done, Cancel, Save a Copy, a pattern from pixels opened), Pattern Overlay with the pattern |
 | `check:proof` | browser | Mode and Convert to Profile, Proof Setup, Proof Colours and the Gamut Warning on screen, the Separations panel, spot swatches linked at a tint, an ASE library loaded |
 | `check:manual` | fast | *not built yet*: manual tutorials and parameter tables against the registries |
 | `check:theme` | fast | full token sets, contrast pairs |
 | `check:engine` | browser | the device, drawing, theme and size changes, idling, the no-WebGPU page |
 | `check:shell` | browser | menus, palette, shortcuts, dialogs, the dock, view state across reloads |
-| `check:gpu` | browser | each GPU kernel against its CPU reference, every mode × depth |
-| `check:brush` | fast | dab placement, dynamics, seeded jitter, dabs on transformed layers, flow and opacity in the stroke buffer |
-| `check:paint` | browser | strokes from mouse and pen, flow and opacity, the eraser, refusals, the picker, the panels, undo and the history cap |
+| `check:gpu` | browser | each GPU kernel against its CPU reference, every mode × depth; bristle, erodible and airbrush strokes; Pattern Overlay with a document pattern |
+| `check:brush` | fast | dab placement, dynamics, seeded jitter, dabs on transformed layers, flow and opacity in the stroke buffer; bristle, erodible and airbrush footprints, wear, the leaning spray, the stylus wheel and Initial Rotation; ABR special tips read, brushes written and read back; TPL files |
+| `check:paint` | browser | strokes from mouse and pen, flow and opacity, the eraser, refusals, the picker, the panels, undo and the history cap; the new tips in Brush Settings, Sharpen Tip, Export, Tool Presets and a TPL file imported |
 | `check:canvas` | browser | what's drawn, from screenshots; pan, zoom, rotate and the view tools; layer drag and drop; imports, exports and big files |
 | `check:files` | browser | open, save, autosave and recovery in OPFS |
 | `check:ux` | browser | tool cards, disabled commands' reasons, key hints, sizing the brush on the canvas, the context menu, the Layers panel's actions, solo, peek and drag label, workspaces, docking, tab groups and floating panels by real drags, columns folded to icons, windows of stacked groups and their grip, workspaces of your own, exporting and importing a workspace, your own keyboard shortcuts, Tab and the screen modes, the interface settings |

@@ -15,10 +15,10 @@
  *   the rest      embedded PNGs, each layer's opacity and blend mode kept
  */
 import type { NodeImage } from '../../engine/nodeImage'
-import { brushAsPaths, strokeAsPath } from '../../vector/outline'
+import { brushAsPaths, characterGroups, strokeAsPath } from '../../vector/outline'
 import { strokeNeedsOutline } from '../../doc/vector'
 import { flattenCount, asVector, groupAsGroup } from '../flat'
-import { geometryPath, type AppearanceItem, type Paint } from '../../doc/vector'
+import { geometryPath, mainColour, type AppearanceItem, type Paint } from '../../doc/vector'
 import { glyphsToPath } from '../../geom/glyphs'
 import type { PathData } from '../../geom/path'
 import { n4, pathD } from './pathData'
@@ -73,7 +73,7 @@ export async function docToSvg(doc: Doc, host: SvgHost): Promise<{ svg: string; 
 
   const paintRef = (p: Paint, n: DocNode, box: [number, number, number, number] | null): string => {
     if (p.kind === 'solid') return host.colour(p.colour)
-    if (p.kind !== 'gradient') return host.colour(p.kind === 'pattern' ? p.colour : [0, 0, 0])
+    if (p.kind !== 'gradient') return host.colour(mainColour(p))
     const id = uid('g')
     const b = box ?? [0, 0, 1, 1]
     const cx = (b[0] + b[2]) / 2
@@ -168,7 +168,10 @@ export async function docToSvg(doc: Doc, host: SvgHost): Promise<{ svg: string; 
       warnings.add('Text whose fonts hadn’t loaded was left out')
       return ''
     }
-    if (host.textAsOutlines) return paintPath(n, glyphsToPath(l.glyphs), n.props.appearance, n.transform, null)
+    if (host.textAsOutlines) {
+      const groups = characterGroups(l.glyphs, n.props.appearance)
+      return groups.length === 1 ? paintPath(n, glyphsToPath(groups[0].glyphs), groups[0].appearance, n.transform, null) : `<g>${groups.map((g) => paintPath(n, glyphsToPath(g.glyphs), g.appearance, n.transform, null)).join('')}</g>`
+    }
     const fill = n.props.appearance.find((a) => a.enabled && a.kind === 'fill')
     const colour = fill?.paint.kind === 'solid' ? host.colour(fill.paint.colour) : fill ? host.colour([0, 0, 0]) : 'none'
     if (n.props.appearance.some((a) => a.enabled && a.kind === 'stroke')) warnings.add('Strokes on text are kept only in outlines; choose Text as outlines to keep them')
@@ -180,7 +183,9 @@ export async function docToSvg(doc: Doc, host: SvgHost): Promise<{ svg: string; 
       for (const r of p.runs) {
         const c = resolveChar(r, p, doc.textStyles)
         const weight = /black|heavy/i.test(c.style) ? 900 : /extra ?bold/i.test(c.style) ? 800 : /semi ?bold|demi/i.test(c.style) ? 600 : /bold/i.test(c.style) ? 700 : /medium/i.test(c.style) ? 500 : /light/i.test(c.style) ? 300 : /thin/i.test(c.style) ? 100 : 400
-        const style = [`font-family:'${c.font.replace(/'/g, '')}'`, `font-size:${n4(c.size)}px`, weight !== 400 ? `font-weight:${weight}` : '', /italic|oblique/i.test(c.style) ? 'font-style:italic' : '', c.tracking ? `letter-spacing:${n4((c.tracking / 1000) * c.size)}px` : '', c.underline || c.strikethrough ? `text-decoration:${[c.underline ? 'underline' : '', c.strikethrough ? 'line-through' : ''].join(' ').trim()}` : ''].filter(Boolean).join(';')
+        // Colour per character: a run's own fill (its first colour, where it isn't one) over the text's.
+        if (c.stroke) warnings.add('Strokes on text are kept only in outlines; choose Text as outlines to keep them')
+        const style = [c.fill ? `fill:${host.colour(mainColour(c.fill))}` : '', `font-family:'${c.font.replace(/'/g, '')}'`, `font-size:${n4(c.size)}px`, weight !== 400 ? `font-weight:${weight}` : '', /italic|oblique/i.test(c.style) ? 'font-style:italic' : '', c.tracking ? `letter-spacing:${n4((c.tracking / 1000) * c.size)}px` : '', c.underline || c.strikethrough ? `text-decoration:${[c.underline ? 'underline' : '', c.strikethrough ? 'line-through' : ''].join(' ').trim()}` : ''].filter(Boolean).join(';')
         spans.push({ start: pos, end: pos + r.text.length, style })
         pos += r.text.length
       }

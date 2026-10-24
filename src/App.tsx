@@ -11,18 +11,18 @@
  */
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Autosave } from './app/autosave'
-import { documents, isDirty, newId, selectedIds } from './app/documents'
+import { documents, isDirty, newId, placing, selectedIds } from './app/documents'
 import { guidePrefs } from './app/guidePrefs'
 import { alignLayers, alignWhy, distributeLayers, distributeWhy, guidesFromShape } from './app/align'
 import { clearGuides } from './doc/guides'
-import { closeIfClean, exportDoc, newDocument, openDialog as openFileDialog, openFile, openImage, openRecent, placeDialog, placeImage, save, saveAs } from './app/files'
-import { COMMANDS, MENUS, adjustmentMenu, commandById, contextMenu, rulerMenu, runtimeCommands, shortcutsOf, type CommandContext, type CommandDef, type DialogId, type ScreenMode } from './commands'
+import { closeIfClean, exportDoc, newDocument, newFromPreset, openDialog as openFileDialog, openFile, openImage, openRecent, placeDialog, placeImage, save, saveAs } from './app/files'
+import { COMMANDS, MENUS, adjustmentMenu, commandById, contextMenu, layersMenu, rulerMenu, runtimeCommands, shortcutsOf, type CommandContext, type CommandDef, type DialogId, type ScreenMode } from './commands'
 import {
   addGroup,
   clipToBelow,
   insertNode,
   releaseClip,
-  moveNode,
+  moveNodes,
   removeNode,
   renameDoc,
   renameNode,
@@ -44,7 +44,8 @@ import {
 import { makeNode } from './doc/nodes'
 import { colours } from './app/colours'
 import * as selection from './app/selection'
-import { cropToSelection, nudge, rasterize, sessions, transformBy } from './app/canvasTools'
+import { canMerge, cropToSelection, mergeMode, mergeSelected, mergeVisible, nudge, rasterize, sessions, stampVisible, transformBy } from './app/canvasTools'
+import * as layerOps from './app/layerActions'
 import { beginFreeTransform, beginTransformSelection } from './app/freeTransform'
 import { beginLiquify } from './app/liquify'
 import * as construct from './app/construct'
@@ -57,13 +58,16 @@ import './app/freehand'
 import './app/artboardTool'
 import { freehand } from './app/freehand'
 import { deleteSelectedWidthPoints, widthEditing } from './app/widthTool'
+import { deleteSelectedGradientPart } from './app/gradientEdit'
 import { selectTools } from './app/selectTools'
 import * as clipboard from './app/clipboard'
 import * as typing from './app/typing'
 import { addFontFiles, loadSystemFonts } from './app/fonts'
 import { CharacterPanel, ParagraphPanel } from './ui/TypePanels'
+import { GlyphsPanel } from './ui/GlyphsPanel'
 import { SeparationsPanel } from './ui/SeparationsPanel'
 import { ChannelsPanel, PatternsPanel } from './ui/ChannelsPanel'
+import { ToolPresetsPanel } from './ui/ToolPresetsPanel'
 import { channels, channelTarget } from './app/channels'
 import * as channelActions from './app/channelActions'
 import { GraphicStylesPanel } from './ui/GraphicStylesPanel'
@@ -75,6 +79,7 @@ import { ColourPanel } from './ui/ColourPanel'
 import { convertDepth, convertDocument, convertMode } from './app/convert'
 import { proofing } from './app/proofing'
 import { freshName, placeOf, whereNew } from './doc/tree'
+import { layerName } from './app/naming'
 import { engine } from './engine/EngineHost'
 import { matches, parseShortcut } from './input/shortcuts'
 import { canSaveInPlace, downloadAs, pickExportFile, writeToHandle } from './io/files'
@@ -109,7 +114,7 @@ import { Tooltips } from './ui/Tooltips'
 import { interfacePrefs } from './ui/interface'
 import { springTools } from './app/springTools'
 import { Icon } from './ui/Icon'
-import { tilingOf, type NodeId } from './doc/types'
+import { tilingOf, type ColourTag, type NodeId } from './doc/types'
 import { notify } from './app/notices'
 import { views } from './app/views'
 import { zoomToLayer, zoomToSelection } from './app/zoomTo'
@@ -127,9 +132,10 @@ import { isImageName } from './io/raster'
 import { hasPageSelection, isTyping } from './input/guard'
 import { docPoint } from './render/view'
 
-import { GuideLayoutDialog, GuideSettingsDialog, NewGuideDialog, OffsetPathDialog, SimplifyDialog, BorderDialog, ColourRangeDialog, FeatherDialog, GrowDialog, LoadSelectionDialog, SaveSelectionDialog, SelectMaskDialog, DefinePatternDialog, FillDialog, AdjustDialog, FilterDialog, LayerStyleDialog, AssignProfileDialog, ColourSettingsDialog, ConvertProfileDialog, ProofSetupDialog, ShortcutsDialog, ImportWorkspaceDialog, ManageWorkspacesDialog, NewWorkspaceDialog, InterfaceDialog, ToolbarDialog, DefineBrushDialog, PenDialog, ExportDialog, NewSpotChannelDialog, ChannelOptionsDialog, WidthPointDialog, BrushOptionsDialog, SaveForWebDialog, ImageTraceDialog, preloadDialogs } from './ui/lazyDialogs'
+import { GuideLayoutDialog, GuideSettingsDialog, NewGuideDialog, OffsetPathDialog, SimplifyDialog, BorderDialog, ColourRangeDialog, FeatherDialog, GrowDialog, LoadSelectionDialog, SaveSelectionDialog, SelectMaskDialog, DefinePatternDialog, FillDialog, AdjustDialog, FilterDialog, LayerStyleDialog, AssignProfileDialog, ColourSettingsDialog, ConvertProfileDialog, ProofSetupDialog, ShortcutsDialog, ImportWorkspaceDialog, ManageWorkspacesDialog, NewWorkspaceDialog, InterfaceDialog, ToolbarDialog, DefineBrushDialog, PenDialog, ExportDialog, NewSpotChannelDialog, ChannelOptionsDialog, WidthPointDialog, BrushOptionsDialog, SaveForWebDialog, ImageTraceDialog, MoveToGroupDialog, RenameLayersDialog, preloadDialogs } from './ui/lazyDialogs'
 import * as artboards from './app/artboards'
 import * as symbols from './app/symbols'
+import { makePatternFromSelection } from './app/patternEdit'
 
 
 /**
@@ -236,7 +242,7 @@ export default function App() {
   /** Whether Full Screen Mode put the browser into full screen, so leaving it takes it out again. */
   const ownFullscreen = useRef(false)
   /** A menu at a point: the canvas's context menu, a ruler's, or the Layers panel's adjustment layers. */
-  const [menuAt, setMenuAt] = useState<{ x: number; y: number; kind?: 'ruler' | 'adjustment' } | null>(null)
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number; kind?: 'ruler' | 'adjustment' | 'layers' } | null>(null)
   const closeMenu = useCallback(() => setMenuAt(null), [])
   /** Per document: the layer shown alone by an Alt-click, and how every layer was before. */
   const solos = useRef(new Map<string, { id: NodeId; saved: Map<NodeId, boolean> }>())
@@ -522,9 +528,9 @@ export default function App() {
       newPixelLayer: () => {
         const d = store.active()
         if (!d) return
-        const { parent, index } = whereNew(d.history.present, d.selected)
+        const { parent, index } = whereNew(d.history.present, d.selected, null, placing(d))
         const id = newId('n')
-        store.commit((x) => insertNode(x, makeNode('pixel', id, freshName(x, 'Layer')), parent, index))
+        store.commit((x) => insertNode(x, makeNode('pixel', id, layerName(x, parent, 'Layer')), parent, index))
         store.select(id)
         showLayers()
       },
@@ -536,7 +542,11 @@ export default function App() {
         const d = store.active()
         if (!d) return
         // Above the selected layer, in its group (into the artboard, one being selected); otherwise at the top.
-        const { parent, index } = whereNew(d.history.present, d.selected)
+        // A group selected gets the new one beside it: groups in groups are made on purpose, by a drag.
+        const doc = d.history.present
+        const sel = d.selected ? doc.nodes[d.selected] : null
+        const beside = sel?.kind === 'group' && !sel.props.artboard ? placeOf(doc, sel.id) : null
+        const { parent, index } = beside?.slot === 'children' ? { parent: beside.parent, index: beside.index + 1 } : whereNew(doc, d.selected)
         const id = newId('n')
         store.commit((x) => addGroup(x, id, freshName(x, 'Group'), parent, index))
         store.select(id)
@@ -648,7 +658,7 @@ export default function App() {
         const d = store.active()
         if (!d) return
         // Direct Selection or the Pen with points selected: those points go; the Width tool's width points too.
-        if (vectors.deleteSelectedAnchors() || deleteSelectedWidthPoints()) return
+        if (vectors.deleteSelectedAnchors() || deleteSelectedWidthPoints() || deleteSelectedGradientPart()) return
         // A channel targeted is cleared whole when nothing is selected, never a layer deleted from under it.
         if ((d.history.present.selection && selection.canFill(d)) || channelTarget(d)) void selection.clearTarget()
         else if (!d.history.present.selection && d.selected) {
@@ -702,6 +712,41 @@ export default function App() {
         store.commit((x) => (clipped ? releaseClip(x, id) : clipToBelow(x, id)), { label: clipped ? 'Release Clipping Mask' : 'Create Clipping Mask' })
       },
       rasterize: () => void rasterize(),
+      mergeMode: () => mergeMode(store.active()),
+      canMerge: () => canMerge(store.active()),
+      mergeLayers: () => void mergeSelected(),
+      mergeVisible: () => void mergeVisible(),
+      stampVisible: () => void stampVisible(),
+      selectionCount: () => {
+        const d = store.active()
+        return d ? selectedIds(d).length : 0
+      },
+      groupLayers: layerOps.groupSelected,
+      canUngroup: () => layerOps.canUngroup(store.active()),
+      ungroupLayers: layerOps.ungroupSelected,
+      groupForSelect: () => {
+        const d = store.active()
+        const g = layerOps.groupFor(d)
+        return g && d ? d.history.present.nodes[g].name : null
+      },
+      selectInGroup: () => layerOps.selectInGroup(),
+      foldAll: layerOps.foldAll,
+      foldOthers: layerOps.foldOthers,
+      drawIntoState: () => {
+        const d = store.active()
+        const pinned = layerOps.pinnedGroup(d)
+        return { target: layerOps.drawIntoTarget(d), pinned, pinnedName: pinned && d ? d.history.present.nodes[pinned].name : null }
+      },
+      toggleDrawInto: () => {
+        const d = store.active()
+        const s = layerOps.drawIntoTarget(d)
+        // On the pinned group, or with a pin elsewhere and no group selected: unpin.
+        layerOps.toggleDrawInto(s ?? layerOps.pinnedGroup(d))
+      },
+      colourTag: () => layerOps.tagOf(store.active()),
+      setColourTag: (tag) => layerOps.tagSelected(tag as ColourTag | null),
+      canCombineOne: () => layerOps.canCombineOne(store.active()),
+      combineOne: layerOps.combineSelected,
       cropToSelection: () => void cropToSelection(),
 
       canCombine: () => vectors.canCombine(store.active()),
@@ -739,6 +784,7 @@ export default function App() {
       },
       canMakeSymbol: () => symbols.canMakeSymbol(store.active()),
       instanceSelected: () => !!symbols.selectedSymbol(store.active()),
+      makePattern: () => void makePatternFromSelection().then((id) => id && setLayout((l) => (isOpen(l, 'patterns') ? l : openPanel(l, 'patterns')))),
       isLivePaint: () => {
         const d = store.active()
         return construct.isLivePaint(d?.selected ? d.history.present.nodes[d.selected] : undefined)
@@ -1005,7 +1051,12 @@ export default function App() {
     onDeleteLayer: (id) => documents().commit((x) => removeNode(x, id)),
     onToggleFold: (id) => documents().toggleFolded(id),
     onRename: (id, name) => documents().commit((x) => renameNode(x, id, name)),
-    onMove: (id, parent, index) => documents().commit((x) => moveNode(x, id, parent, index)),
+    onMove: (ids, parent, index) => documents().commit((x) => moveNodes(x, ids, parent, index), ids.length > 1 ? { label: 'Move Layers' } : {}),
+    onCopy: (ids, parent, index) => layerOps.copyLayersTo(ids, parent, index),
+    onContextMenu: (x, y) => setMenuAt({ x, y, kind: 'layers' }),
+    onToggleDrawInto: (id) => layerOps.toggleDrawInto(id),
+    onSelectInGroup: (id) => layerOps.selectInGroup(id),
+    onFoldAll: (fold) => layerOps.foldAll(fold),
     onNewLayer: () => run('layer.new-pixel'),
     onNewAdjustment: (at) => setMenuAt({ x: at.x, y: at.y, kind: 'adjustment' }),
     onDuplicateSelected: () => run('layer.duplicate'),
@@ -1040,8 +1091,10 @@ export default function App() {
         swatches: <SwatchesPanel />,
         brushes: <BrushesPanel />,
         'brush-settings': <BrushSettingsPanel />,
+        'tool-presets': <ToolPresetsPanel />,
         character: <CharacterPanel />,
         paragraph: <ParagraphPanel />,
+        glyphs: <GlyphsPanel />,
         separations: <SeparationsPanel />,
         channels: <ChannelsPanel openDialog={setDialog} />,
         patterns: <PatternsPanel openDialog={setDialog} />,
@@ -1050,7 +1103,7 @@ export default function App() {
         symbols: <SymbolsPanel />,
         properties: <PropertiesPanel doc={active} {...propertyActions} />,
       }
-    : { colour: <ColourPanel doc={null} />, swatches: <SwatchesPanel />, brushes: <BrushesPanel />, 'brush-settings': <BrushSettingsPanel />, character: <CharacterPanel />, paragraph: <ParagraphPanel />, separations: <SeparationsPanel />, channels: <ChannelsPanel openDialog={setDialog} />, patterns: <PatternsPanel openDialog={setDialog} />, 'graphic-styles': <GraphicStylesPanel />, 'vector-brushes': <VectorBrushesPanel />, symbols: <SymbolsPanel /> }
+    : { colour: <ColourPanel doc={null} />, swatches: <SwatchesPanel />, brushes: <BrushesPanel />, 'brush-settings': <BrushSettingsPanel />, 'tool-presets': <ToolPresetsPanel />, character: <CharacterPanel />, paragraph: <ParagraphPanel />, glyphs: <GlyphsPanel />, separations: <SeparationsPanel />, channels: <ChannelsPanel openDialog={setDialog} />, patterns: <PatternsPanel openDialog={setDialog} />, 'graphic-styles': <GraphicStylesPanel />, 'vector-brushes': <VectorBrushesPanel />, symbols: <SymbolsPanel /> }
 
   const showDock = anyPanel && !panelsHidden && !dockHidden
   return (
@@ -1097,6 +1150,8 @@ export default function App() {
               active={!!active}
               canRecent={canSaveInPlace()}
               onNew={() => setDialog('new')}
+              onPreset={(p) => void newFromPreset(p).catch((e) => notify('error', 'The document couldn’t be made.', [String(e)]))}
+              onFromClipboard={() => void clipboard.newFromClipboard()}
               onOpen={() => void openFileDialog()}
               onOpenRecent={(r) => void openRecent(r.handleKey, r.name)}
               onContextMenu={(x, y) => setMenuAt({ x, y })}
@@ -1117,7 +1172,7 @@ export default function App() {
       <DropIndicator />
       {screen === 'standard' && <ViewStatus doc={doc} autosave={saveStatus} />}
       {palette && <CommandPalette ctx={ctx} onRun={run} onClose={() => setPalette(false)} />}
-      {menuAt && <ContextMenu items={menuAt.kind === 'ruler' ? rulerMenu() : menuAt.kind === 'adjustment' ? adjustmentMenu() : contextMenu(ctx)} up={menuAt.kind === 'adjustment'} ctx={ctx} x={menuAt.x} y={menuAt.y} onRun={run} onClose={closeMenu} />}
+      {menuAt && <ContextMenu items={menuAt.kind === 'ruler' ? rulerMenu() : menuAt.kind === 'adjustment' ? adjustmentMenu() : menuAt.kind === 'layers' ? layersMenu(ctx) : contextMenu(ctx)} up={menuAt.kind === 'adjustment'} ctx={ctx} x={menuAt.x} y={menuAt.y} onRun={run} onClose={closeMenu} />}
       <Tooltips />
       <Suspense fallback={null}>
       {dialog === 'interface' && <InterfaceDialog onClose={closeDialog} />}
@@ -1192,6 +1247,8 @@ export default function App() {
       {dialog === 'defineBrush' && <DefineBrushDialog onClose={closeDialog} />}
       {dialog === 'saveForWeb' && active && <SaveForWebDialog doc={active} onClose={closeDialog} />}
       {dialog === 'imageTrace' && active && <ImageTraceDialog onClose={closeDialog} />}
+      {dialog === 'moveToGroup' && active && <MoveToGroupDialog doc={active} onClose={closeDialog} />}
+      {dialog === 'renameLayers' && active && <RenameLayersDialog doc={active} onClose={closeDialog} />}
       {dialog === 'export' && doc && (
         <ExportDialog
           doc={doc}

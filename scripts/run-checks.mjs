@@ -56,7 +56,7 @@ const FAST = [
   ['theme', ['scripts/check-theme.mjs']],
 ]
 
-const BROWSER = [...['engine', 'shell', 'files', 'pixels', 'gpu', 'canvas', 'paint', 'tools', 'effects', 'vectors', 'type', 'proof', 'clipboard', 'fills', 'ux', 'guides', 'workflow', 'tiled', 'healing', 'warp', 'filters', 'appearance', 'construct', 'channels', 'panels', 'flow', 'boards'].map((n) => [n, [`scripts/check-${n}.mjs`]]), ['interchange-browser', ['scripts/check-interchange.mjs']]]
+const BROWSER = [...['engine', 'shell', 'files', 'pixels', 'gpu', 'canvas', 'paint', 'tools', 'effects', 'vectors', 'type', 'proof', 'clipboard', 'fills', 'ux', 'guides', 'workflow', 'tiled', 'healing', 'warp', 'filters', 'appearance', 'construct', 'channels', 'panels', 'flow', 'boards', 'layers'].map((n) => [n, [`scripts/check-${n}.mjs`]]), ['interchange-browser', ['scripts/check-interchange.mjs']]]
 
 const argv = process.argv.slice(2)
 const flag = (name) => argv.includes(name)

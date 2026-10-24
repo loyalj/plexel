@@ -206,6 +206,23 @@ export class Face {
     }
   }
 
+  /** A table of the face's file, whole (the Glyphs panel reads its cmap); null when the font hasn't one. */
+  tableBytes(tag: string): Uint8Array | null {
+    const m = this.hb.m
+    const read = (cap: number) => {
+      const buf = m._malloc(Math.max(1, cap))
+      try {
+        const len = m._px_face_table(this.ptr, tagNumber(tag), buf, cap)
+        return { len, bytes: m.HEAPU8.slice(buf, buf + Math.min(len, cap)) }
+      } finally {
+        m._free(buf)
+      }
+    }
+    const first = read(4096)
+    if (!first.len) return null
+    return first.len <= 4096 ? first.bytes : read(first.len).bytes
+  }
+
   /** The face at a set of variation coordinates (axes not given stay at their defaults), made once. */
   font(variations: Record<string, number> = {}): Font {
     const key = Object.entries(variations)

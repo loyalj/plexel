@@ -15,7 +15,7 @@ import { builtinsFor } from '../color/profiles'
 import { DEFAULT_PRESET, PRESETS, type Preset } from '../doc/presets'
 import { MAX_RESOLUTION, MAX_SIDE, MIN_RESOLUTION, type ColourMode, type Depth, type Doc } from '../doc/types'
 import { UNITS, formatLength, toPixels, type Unit } from '../doc/units'
-import { recentFiles, type RecentFile } from '../io/handles'
+import { onRecentChange, recentFiles, type RecentFile } from '../io/handles'
 import { Dialog } from './Dialog'
 import { Label } from './controls'
 import { Hint } from './controls'
@@ -379,19 +379,23 @@ export function RenameDocDialog({ doc, onApply, onClose }: { doc: Doc; onApply(n
 
 // --- Recent -----------------------------------------------------------------------------
 
-function useRecent(): RecentFile[] | null {
+/** The recent list, read again whenever it changes; null until it's been read. */
+export function useRecent(): RecentFile[] | null {
   const [list, setList] = useState<RecentFile[] | null>(null)
   useEffect(() => {
     let live = true
-    void recentFiles().then((r) => live && setList(r))
+    const read = () => void recentFiles().then((r) => live && setList(r))
+    read()
+    const off = onRecentChange(read)
     return () => {
       live = false
+      off()
     }
   }, [])
   return list
 }
 
-const ago = (at: number) => {
+export const ago = (at: number) => {
   const s = (Date.now() - at) / 1000
   if (s < 60) return 'just now'
   if (s < 3600) return `${Math.floor(s / 60)} min ago`

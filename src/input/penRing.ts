@@ -17,8 +17,8 @@
 import type { PenSample } from '../brush/stroke'
 
 const SLOTS = 2048
-/** Per sample: stroke id, x, y, pressure, tiltX, tiltY, twist, time. */
-const WIDTH = 8
+/** Per sample: stroke id, x, y, pressure, tiltX, tiltY, twist, wheel, time. */
+const WIDTH = 9
 
 export interface Ring {
   buffer: SharedArrayBuffer
@@ -43,7 +43,7 @@ export class RingWriter {
     const r = Atomics.load(this.v.head, 1)
     if (w - r >= SLOTS) return false
     const o = (w % SLOTS) * WIDTH
-    this.v.data.set([stroke, s.x, s.y, s.pressure, s.tiltX, s.tiltY, s.twist, s.t], o)
+    this.v.data.set([stroke, s.x, s.y, s.pressure, s.tiltX, s.tiltY, s.twist, s.wheel ?? 1, s.t], o)
     Atomics.store(this.v.head, 0, w + 1)
     return true
   }
@@ -63,7 +63,7 @@ export class RingReader {
     for (; r < w; r++) {
       const o = (r % SLOTS) * WIDTH
       const d = this.v.data
-      out.push({ stroke: d[o], sample: { x: d[o + 1], y: d[o + 2], pressure: d[o + 3], tiltX: d[o + 4], tiltY: d[o + 5], twist: d[o + 6], t: d[o + 7] } })
+      out.push({ stroke: d[o], sample: { x: d[o + 1], y: d[o + 2], pressure: d[o + 3], tiltX: d[o + 4], tiltY: d[o + 5], twist: d[o + 6], wheel: d[o + 7], t: d[o + 8] } })
     }
     Atomics.store(this.v.head, 1, r)
     return out

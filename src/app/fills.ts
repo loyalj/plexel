@@ -13,7 +13,7 @@ import { addPattern, insertNode, removePattern, renamePattern, setChannelTiles, 
 import { makeNode } from '../doc/nodes'
 import { freshName } from '../doc/tree'
 import { channelKind, type BlendModeId, type Doc, type DocNode, type NodeId } from '../doc/types'
-import { gradientPaint, solid, type Paint } from '../doc/vector'
+import { gradientPaint, mapPaintColours, solid, type Paint } from '../doc/vector'
 import { engine } from '../engine/EngineHost'
 import type { TileFormat } from '../tiles/format'
 import { MAX_PATTERN } from '../vector/paint'
@@ -78,16 +78,14 @@ function grayOfColour(doc: Doc, c: number[]): number {
 /** A paint in the document's terms made a mask's: its colours as grays. */
 function paintForMask(doc: Doc, p: Paint): Paint {
   if (p.kind === 'solid') return { kind: 'solid', colour: [grayOfColour(doc, p.colour)] }
-  if (p.kind === 'gradient') return { ...p, stops: p.stops.map((s) => ({ ...s, colour: [grayOfColour(doc, s.colour)] })) }
-  return { ...p, colour: [grayOfColour(doc, p.colour)], background: [grayOfColour(doc, p.background)] }
+  return mapPaintColours(p, (c) => [grayOfColour(doc, c)])
 }
 
 /** A gray paint as a spot channel's: black (0) is full ink (1). */
 function paintAsInk(p: Paint): Paint {
   const ink = (c: number[]) => c.map((v) => 1 - v)
   if (p.kind === 'solid') return { ...p, colour: ink(p.colour) }
-  if (p.kind === 'gradient') return { ...p, stops: p.stops.map((s) => ({ ...s, colour: ink(s.colour) })) }
-  return { ...p, colour: ink(p.colour), background: ink(p.background) }
+  return mapPaintColours(p, ink)
 }
 
 /** The target's tiles to fill into: a mask with none yet is its outside value everywhere, so that's made first. */

@@ -33,6 +33,8 @@ export interface InterfacePrefs {
   tabHides: boolean
   /** Holding a tool's key uses the tool until it's let go (app/springTools.ts). Off, a tool key always switches for good. */
   springTools: boolean
+  /** New layers numbered in three digits ("Home 007"), so they sort. */
+  padNumbers: boolean
 }
 
 export const SCALES = [0.8, 0.9, 1, 1.1, 1.25, 1.5]
@@ -46,6 +48,7 @@ export const DEFAULT_PREFS: InterfacePrefs = {
   keyHints: true,
   tabHides: true,
   springTools: true,
+  padNumbers: false,
 }
 
 const KEY = 'plexel.interface.v1'
@@ -76,7 +79,7 @@ export function readPrefs(text: string | null): InterfacePrefs {
   if (raw.density === 'compact' || raw.density === 'comfortable') p.density = raw.density
   if (raw.contrast === 'more' || raw.contrast === 'normal') p.contrast = raw.contrast
   if (raw.motion === 'reduce' || raw.motion === 'system') p.motion = raw.motion
-  for (const k of ['richTips', 'keyHints', 'tabHides', 'springTools'] as const) if (typeof raw[k] === 'boolean') p[k] = raw[k]
+  for (const k of ['richTips', 'keyHints', 'tabHides', 'springTools', 'padNumbers'] as const) if (typeof raw[k] === 'boolean') p[k] = raw[k]
   return p
 }
 

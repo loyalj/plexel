@@ -21,7 +21,7 @@
  * patterns, filters in a layer's effects) is in the layer's pixels and
  * said.
  */
-import { geometryPath, strokeNeedsOutline, type AppearanceItem, type Paint } from '../../doc/vector'
+import { geometryPath, mainColour, strokeNeedsOutline, type AppearanceItem, type Paint } from '../../doc/vector'
 import { transformPath, type PathData } from '../../geom/path'
 import { docPathOf } from '../../vector/shape'
 import { readParamValues, type CurvePoints, type GradientStop, type LevelsValue, type ParamColour } from '../../doc/params'
@@ -179,11 +179,13 @@ export async function docToPlan(doc: Doc, key: string, host: PsdOutHost, o: { ps
           ]),
         ),
       }
-    warn('Pattern fills are in their layers’ pixels; Photoshop’s patterns are images')
+    if (p.kind === 'freeform' || p.kind === 'mesh') warn('Freeform gradients and gradient meshes are in their layers’ pixels; Photoshop has neither')
+    else warn('Pattern fills are in their layers’ pixels; Photoshop’s patterns are images')
     return null
   }
   const strokeBlock = (s: Extract<AppearanceItem, { kind: 'stroke' }> | null, fill: boolean): PsdBlock => {
     const p = s?.paint
+    if (p?.kind === 'gradient' && p.stroke) warn('Gradients along or across a stroke are in their layers’ pixels; Photoshop’s stroke gradients lie across the shape')
     const content: DValue =
       p?.kind === 'gradient'
         ? D.obj('gradientLayer', [
@@ -681,7 +683,10 @@ export async function docToPlan(doc: Doc, key: string, host: PsdOutHost, o: { ps
     }
     const fill = n.props.appearance.find((a) => a.kind === 'fill' && a.paint.kind === 'solid')?.paint as Extract<Paint, { kind: 'solid' }> | undefined
     const fc = fill?.colour ?? (mode === 'cmyk' ? [0, 0, 0, 1] : mode === 'gray' ? [0] : [0, 0, 0])
-    const fillValues = mode === 'cmyk' ? [1, ...fc] : mode === 'gray' ? [1, fc[0]] : [1, ...fc]
+    const colourValues = (c: ParamColour) => (mode === 'cmyk' ? [1, ...c] : mode === 'gray' ? [1, c[0]] : [1, ...c])
+    const fillValues = colourValues(fc)
+    // Colour per character: a run's own fill and stroke (their first colour where they're not colours).
+    const charFill = (c: CharProps) => (c.fill ? colourValues(mainColour(c.fill)) : fillValues)
     const styleData = (c: CharProps): EValue => ({
       Font: fontIndex(c),
       FontSize: c.size,
@@ -706,13 +711,13 @@ export async function docToPlan(doc: Doc, key: string, host: PsdOutHost, o: { ps
       StyleRunAlignment: 2,
       Language: 0,
       NoBreak: false,
-      FillColor: { Type: 1, Values: fillValues },
-      StrokeColor: { Type: 1, Values: [1, 0, 0, 0] },
+      FillColor: { Type: 1, Values: charFill(c) },
+      StrokeColor: { Type: 1, Values: c.stroke ? colourValues(mainColour(c.stroke)) : [1, 0, 0, 0] },
       FillFlag: true,
-      StrokeFlag: false,
+      StrokeFlag: !!c.stroke,
       FillFirst: true,
       YUnderline: 1,
-      OutlineWidth: 1,
+      OutlineWidth: c.stroke ? c.strokeWidth : 1,
       CharacterDirection: 0,
       HindiNumbers: false,
       Kashida: 1,
@@ -726,16 +731,16 @@ export async function docToPlan(doc: Doc, key: string, host: PsdOutHost, o: { ps
       EndIndent: p.indentRight,
       SpaceBefore: p.spaceBefore,
       SpaceAfter: p.spaceAfter,
-      AutoHyphenate: false,
-      HyphenatedWordSize: 6,
-      PreHyphen: 2,
-      PostHyphen: 2,
-      ConsecutiveHyphens: 8,
-      Zone: 36,
-      WordSpacing: [0.8, 1, 1.33],
-      LetterSpacing: [0, 0, 0],
-      GlyphSpacing: [1, 1, 1],
-      AutoLeading: 1.2,
+      AutoHyphenate: p.hyphenate,
+      HyphenatedWordSize: p.hyphenation.minWord,
+      PreHyphen: p.hyphenation.minBefore,
+      PostHyphen: p.hyphenation.minAfter,
+      ConsecutiveHyphens: p.hyphenation.limit,
+      Zone: p.hyphenation.zone,
+      WordSpacing: p.wordSpacing.map((v) => v / 100),
+      LetterSpacing: p.letterSpacing.map((v) => v / 100),
+      GlyphSpacing: p.glyphScaling.map((v) => v / 100),
+      AutoLeading: p.autoLeading / 100,
       LeadingType: 0,
       Hanging: false,
       Burasagari: false,

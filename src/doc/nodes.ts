@@ -21,6 +21,7 @@ import {
   type NodeBase,
   type NodeId,
   type NodeKind,
+  type TextStand,
 } from './types'
 import { isObject, readBool, readNumber, readOneOf, readParams, readRef, readString, type Warn } from './read'
 import { readAppearance, readGeometry, readPaint } from './vector'
@@ -161,6 +162,7 @@ export const NODE_DEFS: { [K in NodeKind]: NodeDef<K> } = {
         pathOffset: readNumber(r.pathOffset, 0, -1e7, 1e7, 'path text’s start', warn),
         appearance: readAppearance(r.appearance, warn),
         ...(typeof r.graphicStyle === 'string' && r.graphicStyle ? { graphicStyle: r.graphicStyle } : {}),
+        ...readStand(r.stand),
       }
     },
   },
@@ -311,3 +313,11 @@ export const blendAllowed = (kind: NodeKind, blend: BlendModeId) => blend !== 'p
 export const isBlendMode = (v: unknown): v is BlendModeId => BLEND_MODES.includes(v as BlendModeId)
 
 export type { DocNode }
+
+/** A text layer's stand-in pixels, when they're whole: a tile set and a finite matrix. */
+function readStand(v: unknown): { stand?: TextStand } {
+  if (!v || typeof v !== 'object') return {}
+  const s = v as { tiles?: unknown; m?: unknown }
+  if (typeof s.tiles !== 'string' || !s.tiles || !Array.isArray(s.m) || s.m.length !== 6 || !s.m.every((x) => typeof x === 'number' && Number.isFinite(x))) return {}
+  return { stand: { tiles: s.tiles, m: s.m as TextStand['m'] } }
+}

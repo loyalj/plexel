@@ -234,7 +234,7 @@ function LayerProps({ node, doc, docKey, onOpacity, onFill, onBlend, onVisible, 
       {node.kind === 'symbol' && <InstanceProps node={node} doc={doc} />}
       {node.kind === 'fill' && (
         <div className="props-fill" data-props="fill">
-          <PaintEditor id="props-fill" hint="A fill layer covers the whole canvas; paint its mask, or add one from a selection, to shape it." doc={doc} paint={paintIn(node.props.paint, doc.mode)} onChange={(paint, key) => setFillLayerPaint(node.id, paint, `fill-paint:${node.id}:${key}`)} />
+          <PaintEditor id="props-fill" hint="A fill layer covers the whole canvas; paint its mask, or add one from a selection, to shape it." doc={doc} paint={paintIn(node.props.paint, doc.mode)} onChange={(paint, key) => setFillLayerPaint(node.id, paint, `fill-paint:${node.id}:${key}`)} layer={{ id: node.id, item: -1 }} />
         </div>
       )}
       {node.kind === 'embedded' && (

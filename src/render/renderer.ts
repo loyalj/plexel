@@ -1123,6 +1123,8 @@ export class Renderer {
         const [cx, cy] = applyM(vm, this.cursor.x, this.cursor.y)
         if (this.cursor.loops?.length) for (const loop of this.cursor.loops) cursorShapes.push({ kind: 'path', points: loop, closed: true, style: 'line' })
         else f.set([cx, cy, (this.cursor.size / 2) * view.zoom * this.canvas.dpr, 1], 20)
+        // Inside it, what the pen's pressure paints now.
+        if (this.cursor.inner) for (const loop of this.cursor.inner) cursorShapes.push({ kind: 'path', points: loop, closed: true, style: 'thin' })
       }
       const o = s.overlay
       const showSel = (!!doc.selection || o.quickMask || this.strokeOn.has(`${s.scene.key}|${SELECTION_NODE}`)) && (o.quickMask || !o.hideAnts)

@@ -74,6 +74,8 @@ export interface StrokeStart {
    * target): the others, and alpha, stay as they were. Absent is all.
    */
   planes?: boolean[]
+  /** How worn an erodible tip is as the stroke begins (brush/special.ts). */
+  wear?: number
 }
 
 /** The planes a stroke leaves alone, as bits (bit c for colour channel c): 0 when it paints them all. */
@@ -267,7 +269,7 @@ export class LiveStroke {
     this.base = target.set
     this.transform = [...target.transform]
     this.wrap = tileWraps(scene.doc?.tiled)
-    this.builder = new StrokeBuilder(start.settings, start.seed)
+    this.builder = new StrokeBuilder(start.settings, start.seed, { wear: start.wear })
     const work = (v: number[]) => (this.mode === 'cmyk' ? v.map((x) => 1 - x) : v)
     this.fg = work(start.fg)
     this.bg = work(start.bg)

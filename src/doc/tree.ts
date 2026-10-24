@@ -60,22 +60,36 @@ function artboardUnder(doc: Doc, x: number, y: number): NodeId | null {
   return null
 }
 
+/** What else decides where a new layer goes, beside the key layer: the group new layers are pinned to, and the other layers selected. */
+export interface NewPlaceOptions {
+  /** A group chosen with Draw Into: new layers go at its top, whatever's selected. */
+  pinned?: NodeId | null
+  /** The other selected layers: with several, a new layer goes above the topmost of them. */
+  others?: readonly NodeId[]
+}
+
 /**
- * Where a new layer goes: above the selected one, in its group (inside a
- * compound shape it's above the compound); into the artboard itself when
- * an artboard is selected; otherwise at the top. Drawn at a point (`at`)
+ * Where a new layer goes: at the top of the pinned group if there is one
+ * (`o.pinned`, Layer → Draw Into); above the selected one, in its group
+ * (with several selected, the topmost of them; inside a compound shape
+ * it's above the compound); at the top of a group (or an artboard) when
+ * that's what is selected, so shape after shape drawn with a group
+ * selected collects in it; otherwise at the top. Drawn at a point (`at`)
  * on an artboard the selected layer isn't in, it goes at the top of that
  * artboard instead, so a shape drawn on Artboard 2 isn't clipped away in
  * Artboard 1, as in Photoshop.
  */
-export function whereNew(doc: Doc, selected: NodeId | null, at?: [number, number] | null): { parent: NodeId; index: number } {
+export function whereNew(doc: Doc, selected: NodeId | null, at?: [number, number] | null, o: NewPlaceOptions = {}): { parent: NodeId; index: number } {
   const top = (parent: NodeId) => ({ parent, index: doc.nodes[parent]?.children?.length ?? 0 })
+  const pin = o.pinned ? doc.nodes[o.pinned] : null
+  if (pin?.kind === 'group' && placeOf(doc, pin.id)) return top(pin.id)
+  if (selected && o.others?.length) selected = outermost(doc, [selected, ...o.others]).pop() ?? selected
   if (at) {
     const under = artboardUnder(doc, at[0], at[1])
     if (under && (!selected || artboardHolding(doc, selected) !== under)) return top(under)
   }
   const sel = selected ? doc.nodes[selected] : null
-  if (sel?.kind === 'group' && sel.props.artboard) return top(sel.id)
+  if (sel?.kind === 'group') return top(sel.id)
   let place = selected ? placeOf(doc, selected) : null
   // Inside a compound shape, the new layer goes above the compound.
   while (place?.slot === 'children' && doc.nodes[place.parent]?.kind === 'boolean') place = placeOf(doc, place.parent)
@@ -143,8 +157,66 @@ export function layerRows(doc: Doc, folded: ReadonlySet<NodeId> = new Set()): { 
   return rows
 }
 
-/** A name not yet used in the document: "Group 1", "Group 2"... */
-export function freshName(doc: Doc, base: string): string {
-  const used = new Set(Object.values(doc.nodes).map((n) => n.name))
-  for (let i = 1; ; i++) if (!used.has(`${base} ${i}`)) return `${base} ${i}`
+/**
+ * A new name: "Group 1", "Group 2"..., numbered on from the highest number
+ * that base has had (in a layer's name now, or given before: `numbered`,
+ * which noteNumbers keeps), so a number freed by a deletion isn't given
+ * again and the newest is always the highest. `pad` writes the number
+ * with that many digits at least ("Home 007"), so names sort.
+ */
+export function freshName(doc: Doc, base: string, pad = 0): string {
+  const prefix = `${base} `
+  let high = doc.numbered?.[base] ?? 0
+  for (const n of Object.values(doc.nodes)) {
+    if (!n.name.startsWith(prefix)) continue
+    const rest = n.name.slice(prefix.length)
+    if (/^\d{1,9}$/.test(rest)) high = Math.max(high, Number(rest))
+  }
+  return `${prefix}${String(high + 1).padStart(pad, '0')}`
+}
+
+/** "Home 7" as its base and number, or null for a name that doesn't end in one. */
+const NUMBERED = /^(.+) (\d{1,9})$/
+
+/**
+ * `next` with the numbers its new layers' names took noted in `numbered`,
+ * so freshName won't give them again once those layers go. The edit path
+ * (app/documents.ts) runs it on every change that makes layers.
+ */
+export function noteNumbers(prev: Doc, next: Doc): Doc {
+  if (prev.nodes === next.nodes) return next
+  let out: Record<string, number> | null = null
+  for (const id in next.nodes) {
+    if (prev.nodes[id]) continue
+    const m = NUMBERED.exec(next.nodes[id].name)
+    if (!m) continue
+    const n = Number(m[2])
+    if (n > ((out ?? next.numbered)?.[m[1]] ?? 0)) (out ??= { ...next.numbered })[m[1]] = n
+  }
+  return out ? { ...next, numbered: out } : next
+}
+
+/**
+ * A new layer's name, going into `parent`: inside a group it's named after
+ * the group ("Home 1", "Home 2"...), so a group's layers say where they
+ * belong; elsewhere (the top level, an artboard) after `base`.
+ */
+export function nameIn(doc: Doc, parent: NodeId, base: string, pad = 0): string {
+  const p = doc.nodes[parent]
+  return freshName(doc, parent !== doc.root && p?.kind === 'group' && !p.props.artboard ? p.name : base, pad)
+}
+
+/**
+ * Layers to act on together, from a selection that may hold a group and
+ * layers inside it: those inside another of them are dropped (they go with
+ * it), and the rest come in painting order, bottom first, across groups.
+ */
+export function outermost(doc: Doc, ids: readonly NodeId[]): NodeId[] {
+  const set = new Set(ids.filter((id) => id !== doc.root && doc.nodes[id] && placeOf(doc, id)?.slot === 'children'))
+  const top = [...set].filter((id) => {
+    for (let at = placeOf(doc, id)?.parent; at; at = placeOf(doc, at)?.parent) if (set.has(at)) return false
+    return true
+  })
+  const order = new Map(layerRows(doc).map((r, i) => [r.node.id, -i]))
+  return top.sort((a, b) => order.get(a)! - order.get(b)!)
 }

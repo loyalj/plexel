@@ -41,6 +41,8 @@ export const WidthPointDialog = lazy(() => import('./widthDialog').then((m) => (
 export const BrushOptionsDialog = lazy(() => import('./brushOptions').then((m) => ({ default: m.BrushOptionsDialog })))
 export const SaveForWebDialog = lazy(() => import('./SaveForWebDialog').then((m) => ({ default: m.SaveForWebDialog })))
 export const ImageTraceDialog = lazy(() => import('./ImageTraceDialog').then((m) => ({ default: m.ImageTraceDialog })))
+export const MoveToGroupDialog = lazy(() => import('./layerDialogs').then((m) => ({ default: m.MoveToGroupDialog })))
+export const RenameLayersDialog = lazy(() => import('./layerDialogs').then((m) => ({ default: m.RenameLayersDialog })))
 export const ExportDialog = lazy(() => import('./ExportDialog').then((m) => ({ default: m.ExportDialog })))
 
 /**
@@ -52,6 +54,7 @@ export function preloadDialogs(): Promise<void> {
   return Promise.all(
     [
       () => import('./guideDialogs'),
+      () => import('./layerDialogs'),
       () => import('./constructDialogs'),
       () => import('./selectDialogs'),
       () => import('./fillDialogs'),

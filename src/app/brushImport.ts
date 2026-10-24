@@ -11,7 +11,8 @@ import { DEFAULT_BRUSH } from '../brush/defs'
 import { tipId } from '../brush/tips'
 import { engine } from '../engine/EngineHost'
 import { brushAssets } from './brushAssets'
-import { brushes } from './brushes'
+import { brushes, type PaintTool } from './brushes'
+import { downloadAs, pickExportFile } from '../io/files'
 import { documents } from './documents'
 import { notify } from './notices'
 
@@ -54,6 +55,36 @@ export async function importBrushes(files: File[]): Promise<number> {
     }
   }
   return added
+}
+
+/**
+ * Saves brushes as a Photoshop ABR file (io/abrWrite.ts): the presets of a
+ * group (or every one of the user's, with no group), or, when there are
+ * none, the brush the painting tool has now. Their image tips and texture
+ * patterns go in with them.
+ */
+export async function exportBrushes(tool: PaintTool, group?: string): Promise<boolean> {
+  const { writeAbr } = await import('../io/abrWrite')
+  const state = brushes().get()
+  const chosen = state.user.filter((p) => group === undefined || (p.group ?? '') === group)
+  const list = chosen.length ? chosen.map((p) => ({ name: p.name, settings: p.settings })) : [{ name: 'Current Brush', settings: state[tool] }]
+  const { bytes, notes } = writeAbr(list, (id) => {
+    const a = brushAssets().get(id)
+    return a ? { name: a.name, width: a.width, height: a.height, data: a.data } : null
+  })
+  const name = `${group || 'Plexel Brushes'}.abr`
+  const type = { description: 'Photoshop brushes', mime: 'application/octet-stream', extensions: ['.abr'] as const }
+  const handle = await pickExportFile(name, type)
+  if (handle === 'cancelled') return false
+  const blob = new Blob([bytes as Uint8Array<ArrayBuffer>], { type: type.mime })
+  if (handle) {
+    const out = await handle.createWritable()
+    await out.write(blob)
+    await out.close()
+  } else downloadAs(blob, name)
+  const n = list.length
+  notify(notes.length ? 'warning' : 'info', `${n} brush${n === 1 ? '' : 'es'} saved as Photoshop brushes${notes.length ? ', with a few things Photoshop has no place for' : ''}.`, notes)
+  return true
 }
 
 export interface DefinedTip {

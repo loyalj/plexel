@@ -40,6 +40,11 @@ import { makeNode } from '../src/doc/nodes'
 import { NO_STYLES, fontsUsed } from '../src/doc/text'
 import { pxllBlob, readPxll } from '../src/io/pxll'
 import { sha256 } from '../src/io/assets'
+import { Hyphenation } from '../src/text/hyphenate'
+import { alternatesOf, cmapOf } from '../src/text/glyphs'
+import { readParaProps, DEFAULT_PARA, type ParaProps, type CharProps } from '../src/doc/text'
+import { vectorOutline } from '../src/vector/outline'
+import { fillItem, solid } from '../src/doc/vector'
 
 let failures = 0
 const check = (name: string, ok: boolean, detail = '') => {
@@ -105,6 +110,27 @@ check('licences: restricted and preview-only fonts aren’t embedded, editable o
   const before = lazy.face('Noto Sans Arabic', 'Regular')
   await new Promise((r) => setTimeout(r, 20))
   check('a known font loads when it’s first wanted, and says so', before === null && loaded === 1 && made > 0 && !!lazy.face('Noto Sans Arabic', 'Regular'))
+}
+{
+  // A system font the browser lists under names of its own (as Local Font Access can), read when first used.
+  const sys = new FontLibrary(hb)
+  sys.addFile('Inter', readFileSync('public/fonts/InterVariable.ttf'), 'builtin')
+  sys.addLazy('local:NotoSansArabic-Regular', 'local', async () => readFileSync('scripts/fixtures/fonts/NotoSansArabic-Regular.ttf'), [
+    { family: 'Noto Arabic UI', style: 'Book', weight: 400, italic: false, index: 0, coords: {}, postscript: 'NotoSansArabic-Regular', full: 'Noto Arabic UI Book' },
+  ])
+  const asked = (font: string, style: string) => layoutText({ content: contentFrom('abc', { font, style }), mode: 'point', frame: null, pathOffset: 0 }, sys)
+  const first = asked('Noto Arabic UI', 'Book')
+  check('a font still loading is pending, not missing', first.missing.length === 0 && first.pending.includes('Noto Arabic UI Book') && sys.status('Noto Arabic UI', 'Book') === 'loading', JSON.stringify({ m: first.missing, p: first.pending }))
+  await new Promise((r) => setTimeout(r, 20))
+  const after = asked('Noto Arabic UI', 'Book')
+  check('once read, the names the browser listed it by still find it', after.missing.length === 0 && after.pending.length === 0 && !!sys.face('Noto Arabic UI', 'Book') && sys.status('Noto Arabic UI', 'Book') === 'ready')
+  const fams = sys.families().map((f) => f.family)
+  check('the menu lists it by those names, the file’s own kept as an alias it doesn’t list', fams.includes('Noto Arabic UI') && !fams.includes('Noto Sans Arabic') && sys.resolve('Noto Sans Arabic', 'Regular')?.file === 'local:NotoSansArabic-Regular', JSON.stringify(fams))
+  check('found by PostScript name, with no style (as a Photoshop file asks)', sys.resolve('NotoSansArabic-Regular', '')?.family === 'Noto Arabic UI')
+  check('found by its full name, or names written another way', sys.resolve('Noto Arabic UI Book', '')?.family === 'Noto Arabic UI' && sys.resolve('noto-arabic-ui', 'BOOK')?.family === 'Noto Arabic UI')
+  check('a PostScript name not here is guessed as a family and style', sys.resolve('InterVariable-Bold', '')?.style === 'Bold' && sys.resolve('InterVariable-Bold', '')?.family === 'Inter Variable')
+  const none = asked('Nowhere Sans', 'Regular')
+  check('a font nothing knows is missing', none.missing.includes('Nowhere Sans Regular') && none.pending.length === 0 && sys.status('Nowhere Sans', 'Regular') === 'missing')
 }
 
 // --- the model ---------------------------------------------------------------------------------
@@ -335,6 +361,90 @@ console.log('\nfonts in documents')
   check('on another computer, the document’s font is there for its text', other.hasFamily(notoFace.info.family) && other.entry(notoFace.info.family, 'Regular')?.source === 'document')
   const plain = await readPxll(await pxllBlob(doc, { pack: async () => new Uint8Array(), profile: () => undefined }))
   check('a .pxll without fonts reads with none', plain.ok && plain.fonts.size === 0)
+}
+
+// --- hyphenation, justification, tabs, colour per character, glyphs -----------------------------------
+console.log('\nhyphenation, justification and tabs')
+{
+  const hyph = new Hyphenation()
+  check('a language’s patterns aren’t here until asked for', hyph.points('hyphenation', 'en') === null)
+  await hyph.load('en')
+  const pts = hyph.points('hyphenation', 'en-US') ?? []
+  check('then a word’s breaks come from TeX’s patterns: hy-phen-ation', JSON.stringify(pts) === JSON.stringify([2, 6]), JSON.stringify(pts))
+  check('a language without patterns has none, and asks for nothing', JSON.stringify(hyph.points('word', 'xx')) === '[]')
+  const words = 'Typography demonstrates extraordinarily international communication possibilities within constrained typographical arrangements everywhere'
+  const frame = { subpaths: [{ closed: true, anchors: [[0, 0], [260, 0], [260, 4000], [0, 4000]].map((p) => ({ p: p as [number, number], in: null, out: null, smooth: false })) }], fillRule: 'nonzero' as const }
+  const para = (p: Partial<ParaProps>, text = words, char: Partial<CharProps> = {}) => ({ paragraphs: [{ runs: [{ text, style: null, props: { size: 24, ...char } }], style: null, props: p }] })
+  const lay = (p: Partial<ParaProps>, text?: string, char?: Partial<CharProps>) => layoutText({ content: para(p, text, char), mode: 'area', frame, hyphenator: hyph }, lib)
+  const isLetter = (ch: string | undefined) => !!ch && /\p{L}/u.test(ch)
+  const broken = (l: ReturnType<typeof lay>, text = words) => l.lines.filter((ln, i) => i < l.lines.length - 1 && isLetter(text[ln.end - 1]) && isLetter(text[ln.end]))
+  const plain = lay({ hyphenate: false, align: 'left', composer: 'single' })
+  const hy = lay({ hyphenate: true, align: 'left', composer: 'single' })
+  check('without hyphenation no line ends inside a word', broken(plain).length === 0)
+  const glyphCount = (l: ReturnType<typeof lay>) => l.glyphs.placements.length / 7
+  check('hyphenating, lines end inside words, each with a hyphen drawn', broken(hy).length > 0 && glyphCount(hy) === glyphCount(plain) + broken(hy).length, `${broken(hy).length} broken, ${glyphCount(hy)} glyphs against ${glyphCount(plain)}`)
+  check('and the text takes fewer lines', hy.lines.length <= plain.lines.length, `${hy.lines.length} against ${plain.lines.length}`)
+  const every = lay({ hyphenate: true, align: 'justify', composer: 'every' })
+  check('the every-line composer hyphenates too', broken(every).length > 0)
+  const limited = lay({ hyphenate: true, align: 'left', composer: 'single', hyphenation: { ...DEFAULT_PARA.hyphenation, limit: 1 } })
+  const ends = limited.lines.map((ln, i) => i < limited.lines.length - 1 && isLetter(words[ln.end - 1]) && isLetter(words[ln.end]))
+  check('a hyphen limit of 1: never two hyphenated lines in a row', !ends.some((b, i) => b && ends[i + 1]), ends.map((b) => (b ? '-' : '.')).join(''))
+  const long = lay({ hyphenate: true, align: 'left', composer: 'single', hyphenation: { ...DEFAULT_PARA.hyphenation, minWord: 30 } })
+  check('words no longer than “words longer than” aren’t hyphenated', broken(long).length === 0)
+  const soft = 'Supercali\u00adfragilistic\u00adexpialidocious'
+  const sl = layoutText({ content: para({ align: 'left' }, soft), mode: 'area', frame: { ...frame, subpaths: [{ ...frame.subpaths[0], anchors: frame.subpaths[0].anchors.map((a) => ({ ...a, p: [Math.min(a.p[0], 200), a.p[1]] as [number, number] })) }] } }, lib)
+  check('a soft hyphen is a place to break, with a hyphen drawn there', sl.lines.length > 1 && soft[sl.lines[0].end - 1] === '\u00ad', sl.lines.map((l) => soft.slice(l.start, l.end)).join(' | '))
+  check('Photoshop’s hyphenation and justification settings read back, kept in order', JSON.stringify(readParaProps({ hyphenate: true, hyphenation: { minWord: 7, minBefore: 3, minAfter: 3, limit: 0, zone: 20, caps: false }, wordSpacing: [120, 90, 80], autoLeading: 140, tabs: [{ at: 50, align: 'decimal', leader: '.', char: ',' }] })) === JSON.stringify({ hyphenate: true, hyphenation: { minWord: 7, minBefore: 3, minAfter: 3, limit: 0, zone: 20, caps: false }, wordSpacing: [90, 90, 90], autoLeading: 140, tabs: [{ at: 50, align: 'decimal', leader: '.', char: ',' }] }))
+
+  // Spacing: a point text's word space at 200% is twice as wide; letter spacing and glyph scaling widen the line.
+  const pt = (p: Partial<ParaProps>, text = 'ab cd') => layoutText({ content: para(p, text), mode: 'point', frame: null }, lib).lines[0]
+  const spaceW = (l: ReturnType<typeof pt>) => l.boxes[2][1] - l.boxes[2][0]
+  check('wanted word spacing scales the spaces', Math.abs(spaceW(pt({ wordSpacing: [80, 200, 250] })) - 2 * spaceW(pt({}))) < 0.01, `${fmt(spaceW(pt({ wordSpacing: [80, 200, 250] })))} against ${fmt(spaceW(pt({})))}`)
+  const w = (l: ReturnType<typeof pt>) => l.x1 - l.x0
+  check('wanted letter spacing adds room between letters', w(pt({ letterSpacing: [0, 50, 50] })) > w(pt({})) + 2)
+  check('wanted glyph scaling widens the glyphs', w(pt({ glyphScaling: [100, 150, 150] }, 'abcd')) > w(pt({}, 'abcd')) * 1.4)
+  // Justified: with word spacing fixed, letter spacing takes the slack; one word spreads across its letters.
+  const narrow = frame
+  const jtext = 'ab cd ef gh ij kl mn op qr st uv wx yz ab cd ef'
+  const jl = layoutText({ content: para({ align: 'justify', composer: 'single', wordSpacing: [100, 100, 100], letterSpacing: [0, 0, 100] }, jtext), mode: 'area', frame: narrow }, lib).lines[0]
+  // The last letter on the line (its trailing space hangs past the frame).
+  let lastLetter = jl.end - 1
+  while (lastLetter > jl.start && jtext[lastLetter] === ' ') lastLetter--
+  const space0 = jl.boxes[2][1] - jl.boxes[2][0]
+  check('justified with word spacing held at 100%, the spaces stay their size and the letters spread', Math.abs(space0 - spaceW(pt({}))) < 0.5 && Math.abs(jl.boxes[lastLetter - jl.start][1] - 260) < 0.5, `space ${fmt(space0)}, letters to ${fmt(jl.boxes[lastLetter - jl.start][1])}`)
+
+  // Tabs.
+  const tl = (tabs: ParaProps['tabs'], text: string) => layoutText({ content: para({ tabs }, text), mode: 'point', frame: null }, lib)
+  const left = tl([{ at: 200, align: 'left', leader: '', char: '.' }], 'a\tb').lines[0]
+  check('a tab moves to the next stop: left-aligned text starts there', Math.abs(left.boxes[2][0] - 200) < 0.5, fmt(left.boxes[2][0]))
+  const right = tl([{ at: 300, align: 'right', leader: '', char: '.' }], 'a\tlast').lines[0]
+  check('right-aligned text ends there', Math.abs(right.boxes[right.boxes.length - 1][1] - 300) < 1, fmt(right.boxes[right.boxes.length - 1][1]))
+  const dec = tl([{ at: 300, align: 'decimal', leader: '', char: '.' }], 'a\t123.45').lines[0]
+  check('decimal-aligned text lines its point up on it', Math.abs(dec.boxes[5][0] - 300) < 1, fmt(dec.boxes[5][0]))
+  const plainTab = tl([{ at: 300, align: 'left', leader: '', char: '.' }], 'a\tb')
+  const dotted = tl([{ at: 300, align: 'left', leader: '.', char: '.' }], 'a\tb')
+  check('a leader fills the gap', dotted.glyphs.placements.length / 7 > plainTab.glyphs.placements.length / 7 + 5, `${dotted.glyphs.placements.length / 7} glyphs`)
+  const def = tl([], 'a\tb').lines[0]
+  check('past the last stop, one every four ems', Math.abs(def.boxes[2][0] - 24 * 4) < 0.5, fmt(def.boxes[2][0]))
+}
+
+console.log('\ncolour per character')
+{
+  const content = { paragraphs: [{ runs: [{ text: 'ab', style: null, props: { size: 40 } }, { text: 'cd', style: null, props: { size: 40, fill: solid([0, 0, 1]) } }, { text: 'ef', style: null, props: { size: 40, stroke: solid([1, 0, 0]), strokeWidth: 2 } }], style: null, props: {} }] }
+  const l = layoutText({ content, mode: 'point', frame: null }, lib)
+  const g = l.glyphs
+  check('glyphs keep the paints their characters have of their own', g.paints?.length === 2 && JSON.stringify(g.paintOf) === JSON.stringify([-1, -1, 0, 0, 1, 1]), JSON.stringify(g.paintOf))
+  const o = vectorOutline(g, [fillItem(solid([0, 0, 0]))], [1, 0, 0, 1, 0, 0], 0, 'rgb')
+  const paints = o.items.map((it) => `${it.item.kind}:${it.item.paint.kind === 'solid' ? it.item.paint.colour.join(',') : ''}`)
+  check('the text’s fill is split: its own glyphs black, the blue ones blue; a stroke added for the stroked ones', JSON.stringify(paints) === JSON.stringify(['fill:0,0,0', 'fill:0,0,1', 'stroke:1,0,0']), JSON.stringify(paints))
+}
+
+console.log('\nthe Glyphs panel')
+{
+  const map = cmapOf(interFace)
+  check('every character the font maps, from its cmap', map.length > 1000 && map.some((m) => m.cp === 65) && map.some((m) => m.cp === 0x20ac), `${map.length} characters`)
+  const alts = alternatesOf(inter, '1'.codePointAt(0)!, 'en')
+  check('a character’s alternates, each with the feature that makes it', alts.length > 0 && alts.every((a) => a.gid > 0 && a.feature), alts.map((a) => a.feature).join(' '))
 }
 
 console.log(`\n${failures === 0 ? 'all clear' : `${failures} failure(s)`}`)

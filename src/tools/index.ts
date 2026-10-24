@@ -30,6 +30,7 @@ export type ToolId =
   | 'heal'
   | 'patch'
   | 'gradient'
+  | 'mesh'
   | 'bucket'
   | 'picker'
   | 'pen'
@@ -278,7 +279,17 @@ const TOOL_KEYS: Record<ToolId, ToolKey[]> = {
   ],
   gradient: [
     { keys: 'Drag', does: 'lays the gradient from start to end' },
+    { keys: 'Drag', does: 'the selected gradient’s end, stop or colour point: moves it' },
+    { keys: 'Click', does: 'its line: adds a stop; in a freeform gradient: adds a point' },
+    { keys: 'Delete', does: 'removes the selected stop or point' },
     { keys: 'Shift', does: 'keeps it to 45°', during: 'drag' },
+    { keys: 'Alt', does: 'a copy of the stop', during: 'drag' },
+  ],
+  mesh: [
+    { keys: 'Click', does: 'a shape: adds a row and a column through the point, in the foreground colour' },
+    { keys: 'Drag', does: 'a mesh point: moves it' },
+    { keys: 'Alt+Click', does: 'a mesh point: removes its row and column' },
+    { keys: 'Delete', does: 'removes the selected point’s row and column' },
   ],
   bucket: [{ keys: 'Click', does: 'fills similar pixels' }],
   picker: [
@@ -597,9 +608,17 @@ const DEFS: Omit<ToolDef, 'keys'>[] = [
     shortcut: 'G',
     group: 'fill',
     cursor: 'crosshair',
-    hint: 'Drag across the canvas to lay a gradient from where you press to where you let go; Shift keeps it to 45°. On a gradient fill layer or a shape with a gradient, the drag moves its ends.',
+    hint: 'Drag across the canvas to lay a gradient from where you press to where you let go; Shift keeps it to 45°. On a gradient fill layer or a shape with a gradient, its line shows: drag its ends or stops, click the line to add a stop, drag a stop off to remove it. On a freeform gradient, drag its points, or click to add one in the foreground colour.',
    
     options: [{ kind: 'gradient' }],
+  },
+  {
+    id: 'mesh',
+    name: 'Mesh',
+    shortcut: 'G',
+    group: 'fill',
+    cursor: 'crosshair',
+    hint: 'Click a shape to make its fill a gradient mesh, or to add a row and a column through the point you click, in the foreground colour (on a line, only the line across). Drag a mesh point to move it; Alt-click one to remove its row and column. Properties sets the selected point’s colour.',
   },
   {
     id: 'bucket',

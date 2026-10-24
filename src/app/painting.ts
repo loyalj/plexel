@@ -18,6 +18,7 @@
  * some colour channels. Anything but the selection itself is confined to
  * the selection when there is one.
  */
+import { Wear } from '../brush/special'
 import type { PenSample } from '../brush/stroke'
 import { setChannelTiles, setSelection, setTiles } from '../doc/edit'
 import { channelKind } from '../doc/types'
@@ -44,6 +45,8 @@ interface Active {
   last: PenSample
   /** Whether the target is gray coverage (a mask, or the selection) rather than a layer's pixels. */
   gray: boolean
+  /** An erodible tip's wear, counted as the engine counts it, kept for the next stroke. */
+  wear: Wear | null
 }
 
 /** Stroke ids are unique for the page's life; the engine pairs samples with them. */
@@ -156,10 +159,12 @@ class Painter {
     const seed = crypto.getRandomValues(new Uint32Array(1))[0]
     const id = ++nextId
     const from = line ? this.lastEnd.get(d.key) : undefined
-    this.active = { id, key: d.key, node: nodeId, tool, last: p, gray }
     const selection = nodeId === SELECTION_NODE ? null : (doc.selection?.tiles ?? null)
     const state = brushes().get()
     const settings = state[tool]
+    const wear0 = state.wear[tool] ?? 0
+    const wear = settings.special?.kind === 'erodible' ? new Wear(settings.special, settings.size, wear0) : null
+    this.active = { id, key: d.key, node: nodeId, tool, last: p, gray, wear }
     // The Clone Stamp and the Healing Brush copy from their source; they need one first.
     let clone: { offset: [number, number]; sampleAll: boolean } | undefined
     if (tool === 'clone' || tool === 'heal') {
@@ -190,8 +195,10 @@ class Painter {
     }
     // Image tips and patterns go to the engine before the stroke that needs them.
     brushAssets().sendFor(settings)
-    engine().beginStroke({ id, key: d.key, node: nodeId, settings: tool === 'spot' ? { ...settings, opacity: 0.6 } : settings, eraser, seed, fg, bg, selection, sampling, clone, retouch: retouching, ...(planes ? { planes } : {}) })
-    engine().strokeSamples(id, from ? [{ ...from, t: p.t - 1 }, p] : [p])
+    engine().beginStroke({ id, key: d.key, node: nodeId, settings: tool === 'spot' ? { ...settings, opacity: 0.6 } : settings, eraser, seed, fg, bg, selection, sampling, clone, retouch: retouching, ...(planes ? { planes } : {}), ...(wear ? { wear: wear0 } : {}) })
+    const first = from ? [{ ...from, t: p.t - 1 }, p] : [p]
+    this.wearFrom(first)
+    engine().strokeSamples(id, first)
     this.emit()
     return true
   }
@@ -199,7 +206,16 @@ class Painter {
   move(samples: PenSample[]) {
     if (!this.active || !samples.length) return
     this.active.last = samples[samples.length - 1]
+    this.wearFrom(samples)
     engine().strokeSamples(this.active.id, samples)
+  }
+
+  /** An erodible tip wears as the engine's stroke does (brush/special.ts Wear), Brush Pose's pressure and all. */
+  private wearFrom(samples: PenSample[]) {
+    const a = this.active
+    if (!a?.wear) return
+    const pose = brushes().get()[a.tool].pose?.pressure ?? null
+    for (const s of samples) a.wear.add(s.x, s.y, pose ?? s.pressure)
   }
 
   /** The pen lifted: the stroke is baked and committed as one step. */
@@ -208,6 +224,7 @@ class Painter {
     if (!a) return
     this.active = null
     this.lastEnd.set(a.key, a.last)
+    if (a.wear) brushes().setWear(a.tool, a.wear.value)
     this.emit()
     try {
       const { set, overflow } = await engine().call('stroke.end', { id: a.id })

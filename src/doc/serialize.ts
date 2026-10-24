@@ -25,6 +25,7 @@ import { readGraphicStyles } from './graphicStyles'
 import { readBrush, type VectorBrush } from './vectorBrush'
 import { brushReaders } from './vector'
 import { MAX_PATTERN } from '../vector/paint'
+import { readPatternTile } from './patterns'
 import { DOC_FORMAT, DEFAULT_PROFILES } from './edit'
 import { NODE_DEFS, isBlendMode, isEffectKind, isLayerKind, makeNode, nodeDef } from './nodes'
 import { isObject, readBool, readInt, readNumber, readOneOf, readString, type Warn } from './read'
@@ -280,7 +281,17 @@ function readBody(b: Record<string, unknown>, warn: Warn): Doc {
   if (tiled !== 'off') doc.tiled = tiled
   const symbols = readSymbols(b.symbols, warn)
   if (symbols.length) doc.symbols = symbols
+  const numbered = readNumbered(b.numbered)
+  if (numbered) doc.numbered = numbered
   return repairTree(doc, warn)
+}
+
+/** The highest number given to each name: whole numbers only, others left out (they only steer new names). */
+function readNumbered(v: unknown): Record<string, number> | null {
+  if (!isObject(v)) return null
+  const out: Record<string, number> = {}
+  for (const [k, n] of Object.entries(v).slice(0, 10000)) if (k.length <= 255 && typeof n === 'number' && Number.isInteger(n) && n > 0 && n < 1e9) out[k] = n
+  return Object.keys(out).length ? out : null
 }
 
 /** Symbols: each an id, a name and its contents, a document of their own. */
@@ -320,13 +331,26 @@ function readPatterns(v: unknown, warn: Warn): DocPattern[] {
       continue
     }
     ids.add(p.id)
-    out.push({
+    const pattern: DocPattern = {
       id: p.id,
       name: readString(p.name, 'Pattern', 'A pattern’s name', warn).trim() || 'Pattern',
       tiles: p.tiles,
       width: readInt(p.width, 1, 1, MAX_PATTERN, 'A pattern’s width', warn),
       height: readInt(p.height, 1, 1, MAX_PATTERN, 'A pattern’s height', warn),
-    })
+    }
+    // Its artwork, a document of its own as a symbol's contents are.
+    if (isObject(p.art) && isObject(p.art.content)) {
+      if (nesting >= MAX_NESTING) warn('Patterns were nested too deep to read; the innermost’s artwork was left out, its pixels kept')
+      else {
+        nesting++
+        try {
+          pattern.art = { content: readBody(p.art.content, (m) => warn(`In pattern “${pattern.name}”: ${m}`)), tile: readPatternTile(p.art.tile) }
+        } finally {
+          nesting--
+        }
+      }
+    }
+    out.push(pattern)
   }
   return out
 }

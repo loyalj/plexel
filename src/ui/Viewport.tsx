@@ -28,7 +28,9 @@
  * place, how far a move has gone) shows beside the pointer, and the Move
  * tool over a guide shows which way it drags.
  */
+import { pressureSizeShare } from '../brush/defs'
 import { cursorLoops } from '../brush/outline'
+import { cursorTip } from '../brush/special'
 import { pointer } from '../app/pointer'
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { engine, type EngineHealth } from '../engine/EngineHost'
@@ -55,7 +57,8 @@ import { copyShift } from '../app/tiling'
 import { retouch } from '../app/retouch'
 import { clearToolOverlay, setToolOverlay } from '../app/overlay'
 import type { PenSample } from '../brush/stroke'
-import { RecentList } from './docDialogs'
+import { StartPage } from './StartPage'
+import type { Preset } from '../doc/presets'
 import { previewing } from '../app/previewing'
 import { TileHome } from './TileHome'
 import { ArtboardLabels } from './ArtboardLabels'
@@ -68,7 +71,11 @@ interface Props {
   /** A document is open and in front, so gestures have something to move. */
   active: boolean
   canRecent: boolean
+  /** The start page's Custom… card: the New Document dialog. */
   onNew(): void
+  /** A preset's card on the start page: its document, made at once. */
+  onPreset(p: Preset): void
+  onFromClipboard(): void
   onOpen(): void
   onOpenRecent(r: RecentFile): void
   /** A right-click on the canvas, at a point on the screen. */
@@ -125,10 +132,13 @@ function readoutAt(el: HTMLCanvasElement, r: { x: number; y: number }): { left: 
   return { left: el.offsetLeft + (r.x + px) / k + 14, top: el.offsetTop + r.y / k + 18 }
 }
 
+/** Whether a pen has turned an airbrush wheel this session: until one has, every pen's wheel counts as full on. */
+let wheelSeen = false
+
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || (t instanceof HTMLInputElement && t.type !== 'checkbox' && t.type !== 'range'))
 
-export function Viewport({ health: state, hasDoc, active, canRecent, onNew, onOpen, onOpenRecent, onContextMenu, onRulerMenu, children }: Props) {
+export function Viewport({ health: state, hasDoc, active, canRecent, onNew, onPreset, onFromClipboard, onOpen, onOpenRecent, onContextMenu, onRulerMenu, children }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const drag = useRef<Drag | null>(null)
   /**
@@ -297,12 +307,19 @@ export function Viewport({ health: state, hasDoc, active, canRecent, onNew, onOp
   const sampleOf = (e: PointerEvent): PenSample => {
     const [x, y] = toolPoint(...devicePoint(e))
     const pressure = e.pointerType === 'pen' ? applyResponse(e.pressure, penSettings.get().response) : e.pointerType === 'touch' ? e.pressure || 0.5 : 1
-    return { x, y, pressure, tiltX: e.tiltX ?? 0, tiltY: e.tiltY ?? 0, twist: e.twist ?? 0, t: e.timeStamp }
+    // An airbrush pen's wheel reads −1..1; a pen without one reads 0 throughout, and counts as a wheel turned full on.
+    const tp = e.tangentialPressure ?? 0
+    if (tp !== 0) wheelSeen = true
+    return { x, y, pressure, tiltX: e.tiltX ?? 0, tiltY: e.tiltY ?? 0, twist: e.twist ?? 0, wheel: wheelSeen && e.pointerType === 'pen' ? Math.min(1, Math.max(0, (tp + 1) / 2)) : 1, t: e.timeStamp }
   }
   const paints = TOOL_BY_ID.get(tool)?.paints
 
-  /** Where the brush cursor goes, or nowhere. */
-  const showCursor = (e: { clientX: number; clientY: number } | null) => {
+  /**
+   * Where the brush cursor goes, or nowhere. With a pen's pressure (pressed
+   * to the canvas) and a brush it sizes, a ring inside the brush's own shows
+   * the size it paints at that pressure.
+   */
+  const showCursor = (e: { clientX: number; clientY: number } | null, pressure?: number) => {
     const key = documents().getState().active
     const v = views().front()
     if (!e || !paints || space || !key || !v) {
@@ -310,11 +327,27 @@ export function Viewport({ health: state, hasDoc, active, canRecent, onNew, onOp
       return
     }
     const [x, y] = docPoint(v, engine().canvasSize(), ...devicePoint(e))
-    const b = brushes().get()[paints]
+    const state = brushes().get()
+    const b = state[paints]
+    // A bristle, airbrush or worn round tip shows the most it can cover; a flat bristle brush its flat shape.
+    const tip = b.special ? cursorTip(b.special, state.wear[paints] ?? 0) : b.tip
+    const roundness = b.roundness * (b.special?.kind === 'bristle' && b.special.shape.startsWith('flat') ? 0.3 : 1)
     // A round tip at full roundness is a ring; anything else shows its own shape, turned as it paints.
-    const plain = b.tip === 'round' && b.roundness >= 0.999
-    engine().setCursor({ key, x, y, size: b.size, loops: plain ? null : cursorLoops(b.tip, x, y, b.size, b.angle, b.roundness, b.flipX, b.flipY) })
+    const plain = tip === 'round' && roundness >= 0.999
+    const share = pressure === undefined ? null : pressureSizeShare(b, pressure)
+    // As the stroke has it, never under half a pixel; none when it's the full size anyway.
+    const inner = share === null ? null : Math.max(0.5, b.size * share)
+    engine().setCursor({
+      key,
+      x,
+      y,
+      size: b.size,
+      loops: plain ? null : cursorLoops(tip, x, y, b.size, b.angle, roundness, b.flipX, b.flipY),
+      inner: inner === null || inner >= b.size - 0.5 ? null : cursorLoops(tip, x, y, inner, b.angle, roundness, b.flipX, b.flipY),
+    })
   }
+  /** A pen's pressure, after its response curve, while it's pressed to the canvas; otherwise none. */
+  const penPressure = (e: PointerEvent) => (e.pointerType === 'pen' && e.buttons & 1 ? applyResponse(e.pressure, penSettings.get().response) : undefined)
   useEffect(() => {
     if (!paints || space) engine().setCursor(null)
   }, [paints, space])
@@ -452,7 +485,10 @@ export function Viewport({ health: state, hasDoc, active, canRecent, onNew, onOp
       drag.current = d
       pick(d, e.nativeEvent)
     } else if (!pan && paints) {
-      if (painting().begin(paints, sampleOf(e.nativeEvent), e.shiftKey)) drag.current = { kind: 'paint', id: e.pointerId }
+      if (painting().begin(paints, sampleOf(e.nativeEvent), e.shiftKey)) {
+        drag.current = { kind: 'paint', id: e.pointerId }
+        showCursor(e, penPressure(e.nativeEvent))
+      }
     } else if (pan) drag.current = { kind: 'pan', x: p[0], y: p[1], id: e.pointerId }
     else if (tool === 'zoom') drag.current = { kind: 'zoom', x: p[0], y: p[1], start: views().front()?.zoom ?? 1, at: p, moved: false, out: e.altKey, id: e.pointerId }
     else if (tool === 'rotate') drag.current = { kind: 'rotate', angle: angleOf(p), start: views().front()?.rotation ?? 0, id: e.pointerId }
@@ -477,7 +513,7 @@ export function Viewport({ health: state, hasDoc, active, canRecent, onNew, onOp
       return
     }
     if (!drag.current) choosePane(e)
-    showCursor(e)
+    showCursor(e, drag.current?.kind === 'paint' ? penPressure(e.nativeEvent) : undefined)
     const front = documents().getState().active
     // Where the pointer is in the document, once for everything that follows it.
     const at = views().front() ? pointerOf(e) : null
@@ -534,7 +570,11 @@ export function Viewport({ health: state, hasDoc, active, canRecent, onNew, onOp
       views().set(d.key, { ...d.from, cx, cy })
     }
     if (d.kind === 'zoom' && !d.moved) views().zoomStep(d.out || e.altKey ? -1 : 1, d.at)
-    if (d.kind === 'paint') void painting().end()
+    if (d.kind === 'paint') {
+      void painting().end()
+      // The pen lifted: just the brush's own ring again.
+      showCursor(e)
+    }
     if (d.kind === 'tool') {
       const q = pointerOf(e)
       if (d.ready) d.gesture?.up(q)
@@ -636,30 +676,7 @@ export function Viewport({ health: state, hasDoc, active, canRecent, onNew, onOp
           </span>
         </div>
       )}
-      {!hasDoc && (
-        <div className="start" data-screen="start">
-          <div className="start-card">
-            <h2>Start</h2>
-            <div className="start-actions">
-              <button type="button" className="button primary" onClick={onNew}>
-                New Document… <kbd>{k('file.new')}</kbd>
-              </button>
-              <button type="button" className="button" onClick={onOpen}>
-                Open… <kbd>{k('file.open')}</kbd>
-              </button>
-            </div>
-            {canRecent && (
-              <>
-                <h3>Recent</h3>
-                <RecentList onOpen={onOpenRecent} />
-              </>
-            )}
-            <p className="start-hint">
-              Or drop a .pxll file or an image (PNG, JPEG, TIFF) here. <kbd>{k('palette.open')}</kbd> lists every command.
-            </p>
-          </div>
-        </div>
-      )}
+      {!hasDoc && <StartPage canRecent={canRecent} keys={k} onCustom={onNew} onPreset={onPreset} onFromClipboard={onFromClipboard} onOpen={onOpen} onOpenRecent={onOpenRecent} />}
       {children}
       {hasDoc && <TileHome />}
       {hasDoc && <ArtboardLabels />}

@@ -417,7 +417,8 @@ for (const [x, y] of [
   [-100, -60],
 ]) {
   await moveTo(x, y, 8)
-  await settle(60)
+  // Longer than the gesture's double-click (350 ms), which closes the outline.
+  await settle(400)
   await clickAt(x, y)
 }
 // Photoshop's habits: Alt-click a straight side out to a stray point, and Backspace takes it back.
@@ -428,5 +429,186 @@ await clickAt(-97, -103)
 check('a click on the start closes it, as one step', await stepIs('Magnetic Lasso'))
 check('the outline followed the square’s edges, the point taken back not in it', boundsNear(await bounds(), [300, 200, 500, 400], 4), JSON.stringify(await bounds()))
 await page.evaluate(() => globalThis.plexel.selectTools().update('lasso', { mode: 'freehand' }))
+
+// --- gradients edited on the canvas: stops, freeform points, the Mesh tool --------------------------
+console.log('\ngradients on the canvas')
+await newDoc()
+await page.evaluate(() => {
+  const P = globalThis.plexel
+  const d = P.documents().active()
+  P.documents().commit(
+    (doc) => {
+      const n = P.doc.makeNode('vector', 'gshape', 'Shape', {
+        geometry: { kind: 'shape', shape: { type: 'rect', x: 200, y: 150, w: 400, h: 300, radii: [0, 0, 0, 0], corner: 'round' } },
+        appearance: [{ kind: 'fill', enabled: true, opacity: 1, blend: 'normal', paint: { kind: 'gradient', type: 'linear', stops: [{ at: 0, colour: [1, 0, 0], alpha: 1 }, { at: 1, colour: [0, 0, 1], alpha: 1 }], angle: 0, scale: 100, reverse: false } }],
+      })
+      return P.doc.insertNode(doc, n, doc.root, doc.nodes[doc.root].children.length)
+    },
+    { key: d.key, label: 'Gradient Shape' },
+  )
+  P.documents().select('gshape')
+})
+await tool('gradient')
+await frames(page)
+const handles = () => page.evaluate(() => globalThis.plexel.gradients.handlesOf())
+const paintOf = () => page.evaluate(() => globalThis.plexel.documents().active().history.present.nodes.gshape.props.appearance[0].paint)
+const off = (p) => [p[0] - 400, p[1] - 300]
+{
+  const h = await handles()
+  check('the selected shape’s gradient shows its line across the box, with its stops beside it', !!h && Math.abs(h.line[0][0] - 200) < 1 && Math.abs(h.line[1][0] - 600) < 1 && h.stops.length === 2 && Math.abs(h.stops[0][0] - 200) < 1 && h.stops[0][1] > 302, JSON.stringify(h))
+  await drag(off(h.stops[0]), [0, off(h.stops[0])[1]])
+  check('dragging a stop slides it along the line, one step', await stepIs('Move Gradient Stop'))
+  const p = await paintOf()
+  check('it is half way along now', Math.abs(p.stops[0].at - 0.5) < 0.02, JSON.stringify(p.stops.map((x) => x.at)))
+}
+await clickAt(-100, 0)
+check('a click on the line adds a stop there', await stepIs('Add Gradient Stop'))
+{
+  const p = await paintOf()
+  check('three stops, the new one a quarter along in the colour it had', p.stops.length === 3 && Math.abs(p.stops[0].at - 0.25) < 0.02 && p.stops[0].colour[0] > 0.99, JSON.stringify(p.stops))
+}
+await press('Delete')
+check('Delete takes the selected stop away', (await stepIs('Delete Gradient Stop')) && (await paintOf()).stops.length === 2)
+{
+  const h = await handles()
+  await drag(off(h.line[1]), [200, 120])
+  check('dragging an end moves it, giving the gradient a line of its own', (await stepIs('Move Gradient')) && JSON.stringify((await paintOf()).line?.map(Math.round)) === JSON.stringify([200, 300, 600, 420]), JSON.stringify((await paintOf()).line))
+  await drag(off(h.stops[1]), [off(h.stops[1])[0], 200])
+  check('a stop dragged far off the line is taken away, unless only two are left', (await paintOf()).stops.length === 2)
+}
+// Freeform, from Properties: four points over the box; a click adds one in the foreground colour.
+await page.$eval('#props-item-0-paint-freeform', (e) => e.click())
+check('Properties makes it a freeform gradient', (await paintOf()).kind === 'freeform' && (await paintOf()).points.length === 4)
+await setForeground(0, 255, 0)
+await clickAt(0, -100)
+check('a click in the shape adds a colour point', await stepIs('Add Colour Point'))
+{
+  const p = await paintOf()
+  const q = p.points[4]
+  check('where it was clicked, in the foreground colour', p.points.length === 5 && Math.abs(q.p[0] - 400) < 1.5 && Math.abs(q.p[1] - 200) < 1.5 && q.colour[1] > 0.99 && q.colour[0] < 0.01, JSON.stringify(q))
+  check('Properties lists it, selected', !!(await page.$('[data-editor="freeform"] [data-point="4"].selected')))
+  await drag([0, -100], [50, -80])
+  check('dragging a point moves it', (await stepIs('Move Colour Point')) && Math.abs((await paintOf()).points[4].p[0] - 450) < 1.5)
+  await idle()
+  // Beside the point: its handle is drawn over it.
+  check('the canvas shows the green point’s colour there', near(await at(58, -72), [0, 255, 0], 30), JSON.stringify(await at(58, -72)))
+}
+// The Mesh tool: a click makes the shape a mesh, then adds rows and columns.
+await press('Escape')
+await tool('mesh')
+await setForeground(255, 255, 0)
+await clickAt(-100, -50)
+check('the Mesh tool makes the shape a mesh through the click', await stepIs('Make Gradient Mesh'))
+{
+  const p = await paintOf()
+  check('2 × 2 patches, the new point in the foreground colour', p.kind === 'mesh' && p.cols === 2 && p.rows === 2 && p.nodes[4].colour[0] > 0.99 && p.nodes[4].colour[1] > 0.99 && p.nodes[4].colour[2] < 0.01, JSON.stringify({ cols: p.cols, rows: p.rows, n: p.nodes[4] }))
+  await idle()
+  check('the canvas shows it at the point', near(await at(-92, -42), [255, 255, 0], 30), JSON.stringify(await at(-92, -42)))
+}
+await clickAt(100, 80)
+check('another click adds a row and a column', (await stepIs('Add Mesh Lines')) && (await paintOf()).cols === 3 && (await paintOf()).rows === 3)
+await drag([100, 80], [120, 90])
+check('dragging a mesh point moves it', await stepIs('Move Mesh Point'))
+await clickAt(120, 90, ['Alt'])
+check('Alt-click on a point takes its row and column away', (await stepIs('Delete Mesh Lines')) && (await paintOf()).cols === 2 && (await paintOf()).rows === 2)
+check('Properties sets the mesh’s columns and rows', !!(await page.$('#props-item-0-mcols')))
+await press('Control+KeyZ')
+check('each is one step in the history', (await stepIs('Move Mesh Point')) && (await paintOf()).cols === 3)
+
+// --- Patterns from artwork, and pattern editing mode ----------------------------------------------------
+console.log('\nMake Pattern and pattern editing mode')
+await press('Escape')
+await newDoc()
+// The red square on a layer of its own, over the white background.
+await press('Control+Alt+Shift+KeyN')
+await stepIs('New Pixel Layer')
+await redSquare()
+const ownerKey = await page.evaluate(() => globalThis.plexel.documents().active().key)
+const layerId = await page.evaluate(() => globalThis.plexel.documents().active().selected)
+const owner = () => page.evaluate((k) => globalThis.plexel.documents().get(k).history.present, ownerKey)
+const ownerPattern = async () => (await owner()).patterns?.[0] ?? null
+await clickMenu('Layer', 'layer.make-pattern', 'Pattern')
+const madeTab = await waitUntil(page, () => !!globalThis.plexel.documents().active()?.patternOf, { timeout: 8000 }).then(() => true, () => false)
+check('Layer → Pattern → Make Pattern opens the layer’s copy in a tab of its own', madeTab)
+const tabKey = await page.evaluate(() => globalThis.plexel.documents().active().key)
+const tab = () => page.evaluate((k) => globalThis.plexel.documents().get(k)?.history.present ?? null, tabKey)
+{
+  const t = await tab()
+  check('its canvas is the layer’s box, repeating both ways', t.width === 200 && t.height === 200 && t.tiled === 'both', `${t.width} × ${t.height}, ${t.tiled}`)
+}
+const patternMade = await waitUntil(page, (k) => !!globalThis.plexel.documents().get(k).history.present.patterns?.[0]?.art, { args: [ownerKey], timeout: 8000 }).then(() => true, () => false)
+{
+  const p = await ownerPattern()
+  check('the pattern is in its document at once, one step there, with its artwork', patternMade && p.width === 200 && p.height === 200 && (await page.evaluate((k) => globalThis.plexel.documents().get(k).history.label, ownerKey)) === 'Make Pattern')
+  check('the red square is still where it was', !!(await owner()).nodes[layerId])
+}
+check('the Patterns panel shows the Pattern Options', !!(await page.waitForSelector('[data-pattern-options]', { timeout: 4000 }).catch(() => null)))
+await page.select('#pattern-tile-type', 'brick-row')
+const brick = await waitUntil(page, (k) => globalThis.plexel.documents().get(k).history.present.patterns?.[0]?.height === 400, { args: [ownerKey], timeout: 8000 }).then(() => true, () => false)
+check('Brick by Row: a repeat two tiles high, the tab wrapping across only', brick && (await ownerPattern()).art.tile.type === 'brick-row' && (await tab()).tiled === 'x')
+// Something drawn in the tile: a blue square in its corner.
+await page.evaluate((k) => {
+  const { doc, documents } = globalThis.plexel
+  const n = doc.makeNode('vector', 'blue', 'Blue', { geometry: { kind: 'shape', shape: { type: 'rect', x: 0, y: 0, w: 50, h: 50, radii: [0, 0, 0, 0], corner: 'round' } }, appearance: [{ kind: 'fill', enabled: true, paint: { kind: 'solid', colour: [0, 0, 1] }, opacity: 1, blend: 'normal' }], graphicStyle: null })
+  documents().commit((d) => doc.insertNode(d, n, d.root, (d.nodes[d.root].children ?? []).length), { key: k, label: 'Add Blue' })
+}, tabKey)
+const followed = await waitUntil(page, (k) => !!globalThis.plexel.documents().get(k).history.present.patterns?.[0]?.art?.content.nodes.blue, { args: [ownerKey], timeout: 8000 }).then(() => true, () => false)
+check('what’s drawn in the tab goes into the pattern', followed && (await page.evaluate((k) => globalThis.plexel.documents().get(k).history.label, ownerKey)) === 'Edit Pattern')
+await page.click('[data-pattern-done]')
+await waitUntil(page, (k) => !globalThis.plexel.documents().get(k), { args: [tabKey] })
+check('Done closes the tab and goes back to the document', (await page.evaluate(() => globalThis.plexel.documents().active().key)) === ownerKey)
+// Pattern Overlay with it on the red square: bricks a row down moved half a tile along.
+const patId = (await ownerPattern()).id
+await page.evaluate(
+  (k, id, pid) => {
+    const { doc, documents } = globalThis.plexel
+    documents().commit((d) => doc.setFx(d, id, [{ kind: 'pattern-overlay', enabled: true, params: { image: pid, imageScale: 100 } }]), { key: k, label: 'Layer Style' })
+  },
+  ownerKey,
+  layerId,
+  patId,
+)
+await idle()
+{
+  const img = await shot()
+  // Document (310, 210) is in the second row, 10 px into a tile moved 100 along: the blue corner.
+  check('Pattern Overlay draws the document’s pattern: its blue corner where the bricks put it', near(await at(-90, -90, img), [0, 0, 255], 20), JSON.stringify(await at(-90, -90, img)))
+  check('and its red elsewhere', near(await at(50, -90, img), RED, 20) && near(await at(-90, 90, img), RED, 20), JSON.stringify([await at(50, -90, img), await at(-90, 90, img)]))
+}
+// Edit again, change the layout, then Cancel: the pattern goes back as it was.
+await page.click(`[data-pattern-edit="${patId}"]`)
+await waitUntil(page, () => !!globalThis.plexel.documents().active()?.patternOf)
+const tab2 = await page.evaluate(() => globalThis.plexel.documents().active().key)
+await page.waitForSelector('#pattern-tile-type')
+await page.select('#pattern-tile-type', 'grid')
+await waitUntil(page, (k) => globalThis.plexel.documents().get(k).history.present.patterns?.[0]?.height === 200, { args: [ownerKey], timeout: 8000 }).catch(() => {})
+await page.click('[data-pattern-cancel]')
+await waitUntil(page, (k) => !globalThis.plexel.documents().get(k), { args: [tab2] })
+check('Cancel puts the pattern back as it was before the tab opened', (await ownerPattern()).art.tile.type === 'brick-row' && (await ownerPattern()).height === 400 && (await page.evaluate((k) => globalThis.plexel.documents().get(k).history.label, ownerKey)) === 'Cancel Pattern Edit')
+// Save a Copy keeps a second pattern.
+await page.click(`[data-pattern-edit="${patId}"]`)
+await waitUntil(page, () => !!globalThis.plexel.documents().active()?.patternOf)
+await page.waitForSelector('[data-pattern-copy]')
+await page.click('[data-pattern-copy]')
+check('Save a Copy keeps what’s drawn as a pattern of its own', await waitUntil(page, (k) => globalThis.plexel.documents().get(k).history.present.patterns?.length === 2, { args: [ownerKey], timeout: 8000 }).then(() => true, () => false))
+await page.click('[data-pattern-done]')
+await waitUntil(page, () => !globalThis.plexel.documents().active()?.patternOf)
+// A pattern from pixels opens as a layer of its pixels and stays pixels until something's drawn.
+await marquee([-100, -100], [-20, -20])
+await clickMenu('Edit', 'edit.define-pattern')
+await dialogSubmit('definePattern')
+await stepIs('Define Pattern')
+await press('Control+KeyD')
+const pixelPat = (await owner()).patterns.at(-1)
+await page.click(`[data-pattern-edit="${pixelPat.id}"]`)
+await waitUntil(page, () => !!globalThis.plexel.documents().active()?.patternOf)
+{
+  const t = await page.evaluate(() => globalThis.plexel.documents().active().history.present)
+  const layers = t.nodes[t.root].children.map((id) => t.nodes[id])
+  check('a pattern from pixels opens as one pixel layer of its repeat', layers.length === 1 && layers[0].kind === 'pixel' && layers[0].props.tiles === pixelPat.tiles && t.width === pixelPat.width)
+}
+await page.click('[data-pattern-done]')
+await waitUntil(page, () => !globalThis.plexel.documents().active()?.patternOf)
+check('opened and closed untouched, it stays as it was', JSON.stringify((await owner()).patterns.at(-1)) === JSON.stringify(pixelPat))
 
 await finish()

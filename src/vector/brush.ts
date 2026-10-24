@@ -15,7 +15,7 @@
  * Pure and DOM-free; check-geom runs it in Node.
  */
 import type { ColourMode } from '../doc/types'
-import type { Paint } from '../doc/vector'
+import { mainColour, mapPaintColours, type Paint } from '../doc/vector'
 import type { ParamColour } from '../doc/params'
 import type { ArtBrush, BrushArt, Colorize, PatternBrush, ScatterBrush, VectorBrush } from '../doc/vectorBrush'
 import { brushArts } from '../doc/vectorBrush'
@@ -401,7 +401,7 @@ function fromHsl([h, s, l]: [number, number, number]): [number, number, number] 
 }
 
 /** The stroke's colour, for tints and the hue shift: its paint's, or its gradient's first. */
-const strokeColour = (p: Paint): ParamColour => (p.kind === 'solid' ? p.colour : p.kind === 'gradient' ? p.stops[0].colour : p.colour)
+const strokeColour = (p: Paint): ParamColour => mainColour(p)
 
 /** One colour of the art recoloured as the brush says, in the document's mode. */
 export function colorizeColour(c: ParamColour, how: Colorize, stroke: ParamColour, key: ParamColour, mode: ColourMode): ParamColour {
@@ -429,8 +429,8 @@ function colorizePaint(p: Paint, how: Colorize, stroke: Paint, key: ParamColour,
       return { kind: 'solid', colour: f(p.colour) }
     case 'gradient':
       return { ...p, stops: p.stops.map((st) => ({ ...st, colour: f(st.colour) })) }
-    case 'pattern':
-      return { ...p, colour: f(p.colour), background: f(p.background) }
+    default:
+      return mapPaintColours(p, f)
   }
 }
 

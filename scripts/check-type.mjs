@@ -4,17 +4,21 @@
  * Undo inside the session, IME composition, pasting); area text wrapping in
  * its frame and overflowing; text along a shape's path; the Character and
  * Paragraph panels on a selection, a layer and new text; styles; a missing
- * font; Create Outlines and Rasterize.
+ * font; Create Outlines and Rasterize; then, with the browser's permission to
+ * list the system's fonts granted, those fonts listed without a click, a
+ * system font loading without being called missing, a Photoshop file's
+ * fonts found by their PostScript names, and the font menu.
  *
  * Documents are 800 × 600 at 100%, so an offset from the canvas's centre is
  * one from the document's centre (400, 300).
  *
  * Run with: npm run check:type
  */
+import fs from 'node:fs'
 import { check, finish, frames, open, pageHelpers, settle, waitForEngine, waitUntil } from './harness.mjs'
 import { decodePng, pixelAt } from './png.mjs'
 
-const { page, url } = await open({ viewport: { width: 1280, height: 900 } })
+const { browser, page, url } = await open({ viewport: { width: 1280, height: 900 } })
 page.on('pageerror', (e) => console.log('page error:', e.message))
 await page.goto(url)
 await waitForEngine(page)
@@ -300,6 +304,92 @@ await drawn()
 const told = await waitUntil(page, () => [...document.querySelectorAll('.notice')].some((n) => /Nowhere Grotesk/.test(n.textContent)), { timeout: 4000 })
 check('a font that isn’t here is named, and its text shown in the default', told && (await ink(50, 220, 380, 260)) > 20)
 
+// --- hyphenation, colour per character, the Glyphs panel ----------------------------------------
+console.log('\nhyphenation, colour per character, the Glyphs panel')
+await newDoc()
+const WORDS = 'Typography demonstrates extraordinarily international communication possibilities'
+await page.evaluate((words) => {
+  const { makeNode } = globalThis.plexel.doc
+  globalThis.plexel.documents().commit((d) => {
+    const n = makeNode('text', 'typo', 'Typo', {
+      mode: 'area',
+      content: { paragraphs: [{ runs: [{ text: words, style: null, props: { size: 28 } }, { text: ' BLUE', style: null, props: { size: 60, style: 'Black', fill: { kind: 'solid', colour: [0, 0, 1] } } }], style: null, props: {} }] },
+      frame: { kind: 'shape', shape: { type: 'rect', x: 0, y: 0, w: 230, h: 500, radii: [0, 0, 0, 0], corner: 'round' } },
+      pathOffset: 0,
+      appearance: [{ kind: 'fill', enabled: true, paint: { kind: 'solid', colour: [0, 0, 0] }, opacity: 1, blend: 'normal' }],
+    })
+    n.transform = [1, 0, 0, 1, 60, 40]
+    const root = d.nodes[d.root]
+    return { ...d, nodes: { ...d.nodes, typo: n, [d.root]: { ...root, children: [...root.children, 'typo'] } } }
+  })
+  globalThis.plexel.documents().select('typo')
+}, WORDS)
+await drawn()
+await tap('[data-type-hyphenate]')
+const brokenIn = () =>
+  page.evaluate((words) => {
+    const P = globalThis.plexel
+    const d = P.documents().active().history.present
+    const l = P.text.layoutOf(d.nodes.typo, d)
+    const t = words + ' BLUE'
+    return l ? l.lines.filter((ln, i) => i < l.lines.length - 1 && /\p{L}/u.test(t[ln.end - 1] ?? '') && /\p{L}/u.test(t[ln.end] ?? '')).length : -1
+  }, WORDS)
+const hyphenated = await waitUntil(page, (words) => {
+  const P = globalThis.plexel
+  const d = P.documents().active().history.present
+  const l = P.text.layoutOf(d.nodes.typo, d)
+  const t = words + ' BLUE'
+  return !!l && l.lines.some((ln, i) => i < l.lines.length - 1 && /\p{L}/u.test(t[ln.end - 1] ?? '') && /\p{L}/u.test(t[ln.end] ?? ''))
+}, { timeout: 8000, args: [WORDS] })
+check('Hyphenate in the Paragraph panel: the language’s patterns load, and lines end inside words', (await label()) === 'Paragraph' && hyphenated, `${await brokenIn()} lines broken`)
+await idle()
+{
+  // The blue run, drawn blue: its line's ink is blue where the black text's isn't.
+  const box = await page.evaluate((words) => {
+    const P = globalThis.plexel
+    const d = P.documents().active().history.present
+    const l = P.text.layoutOf(d.nodes.typo, d)
+    const at = words.length + 2
+    const line = l.lines.find((ln) => at >= ln.start && at < ln.end)
+    return line ? { x0: line.boxes[at - line.start][0], x1: line.boxes[line.end - line.start - 1][1], top: line.top, bottom: line.bottom } : null
+  }, WORDS)
+  const img = await shot()
+  const r = await rect()
+  let blue = 0
+  let black = 0
+  if (box)
+    for (let y = box.top; y < box.bottom; y += 2)
+      for (let x = box.x0; x < box.x1; x += 2) {
+        const c = pixelAt(img, Math.round(r.x + r.w / 2 + 60 + x - 400), Math.round(r.y + r.h / 2 + 40 + y - 300))
+        if (c[2] > 150 && c[0] < 90 && c[1] < 90) blue++
+        else if (c[0] + c[1] + c[2] < 150) black++
+      }
+  check('a run with its own fill is drawn in it, the rest in the text’s', blue > 40 && black < blue / 4, `${blue} blue, ${black} black`)
+}
+await clickMenu('Window', 'window.panel.glyphs')
+await waitUntil(page, () => !!document.querySelector('[data-panel-body="glyphs"] [data-glyphs-grid]'), { timeout: 8000 })
+const cells = await page.$eval('[data-glyphs-grid]', (e) => Number(e.getAttribute('data-glyphs-grid')))
+check('the Glyphs panel shows every character of the font in use', cells > 1000, `${cells}`)
+await press('KeyT')
+await clickAt(150, 200)
+await waitUntil(page, () => !!document.querySelector('[data-type-input]'), { timeout: 10000 })
+await typed('X')
+await drawn()
+await page.$eval('[data-glyphs-grid] [data-glyph="65"]', (e) => e.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })))
+await frames(page)
+s = await selected()
+check('double-clicking a glyph puts it in at the caret', s?.kind === 'text' && textOf(s) === 'XA', s && textOf(s))
+await page.$eval('[data-glyphs-grid] [data-glyph="49"]', (e) => e.click())
+await waitUntil(page, () => !!document.querySelector('[data-glyphs-alternates]'), { timeout: 4000 })
+const alt = await page.$eval('[data-glyphs-alternates] [data-alternate]', (e) => e.getAttribute('data-alternate'))
+await page.$eval('[data-glyphs-alternates] [data-alternate]', (e) => e.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })))
+await frames(page)
+s = await selected()
+const lastRun = s.props.content.paragraphs[0].runs.at(-1)
+check('an alternate goes in with the feature that makes it, on that character', textOf(s) === 'XA1' && lastRun.text === '1' && (lastRun.props.features ?? []).includes(alt), JSON.stringify(s.props.content.paragraphs[0].runs.map((r) => [r.text, r.props.features])))
+check('the panel keeps it among the recently used', !!(await page.$('[data-glyphs-recent] [data-glyph="65"]')))
+await press('Escape')
+
 // Dense text fitted on screen puts most of its glyphs in a few tiles: one tile's segments can outgrow the
 // frame's storage ring (16 MB here, against 8), and must still be drawn rather than waited for forever.
 console.log('\ndense text')
@@ -322,5 +412,84 @@ const dense = await page.evaluate(async () => {
   return Promise.race([P.engine().call('render.idle', {}).then(() => true), new Promise((r) => setTimeout(() => r(false), 60000))])
 })
 check('60,000 characters of area text, fitted on screen, are drawn to the last tile', dense)
+
+// --- system fonts and the font menu -----------------------------------------------------------------
+// A second page, after the browser has been given permission to list the system's fonts (as a user who
+// once said yes has): the page lists them by itself.
+console.log('\nsystem fonts and the font menu')
+{
+  const cdp = await page.createCDPSession()
+  await cdp.send('Browser.grantPermissions', { origin: new URL(url).origin, permissions: ['localFonts'] })
+  const p2 = await browser.newPage()
+  await p2.setViewport({ width: 1280, height: 900 })
+  await p2.goto(url)
+  await waitForEngine(p2)
+  const listed = await p2.evaluate(async () => {
+    const lib = await globalThis.plexel.text.startFonts()
+    for (let i = 0; i < 50 && !lib.families().some((f) => f.styles[0].source === 'local'); i++) await new Promise((r) => setTimeout(r, 100))
+    const local = lib.families().filter((f) => f.styles[0].source === 'local')
+    const arial = local.find((f) => f.family === 'Arial')
+    const pick = arial ?? local.find((f) => f.styles.some((x) => /^regular$/i.test(x.style))) ?? local[0]
+    return { count: local.length, family: pick?.family ?? null, style: pick ? (pick.styles.find((x) => /^regular$/i.test(x.style)) ?? pick.styles[0]).style : null, arial: !!arial }
+  })
+  check('with permission given once, the system’s fonts are listed without a click', listed.count > 0, JSON.stringify(listed))
+  if (listed.family) {
+    // Text in a system font that hasn't been read yet: it loads, and nothing calls it missing meanwhile.
+    const r = await p2.evaluate(async (family, style) => {
+      const P = globalThis.plexel
+      const { createDoc, insertNode, makeNode } = P.doc
+      let doc = createDoc({ name: 'System', width: 800, height: 600, resolution: 72, mode: 'rgb', depth: 8, profile: { builtin: 'srgb' } }, 'sys-root')
+      doc = insertNode(doc, makeNode('text', 'sys', 'System', { mode: 'point', content: { paragraphs: [{ runs: [{ text: 'System font', style: null, props: { font: family, style, size: 40 } }], style: null, props: {} }] }, frame: null, pathOffset: 0, appearance: [{ kind: 'fill', enabled: true, paint: { kind: 'solid', colour: [0, 0, 0] }, opacity: 1, blend: 'normal' }] }), doc.root, 0)
+      P.documents().add({ doc, file: null, saved: true })
+      const lib = await P.text.startFonts()
+      for (let i = 0; i < 50 && lib.status(family, style) !== 'ready'; i++) await new Promise((r) => setTimeout(r, 100))
+      await new Promise((r) => setTimeout(r, 600))
+      const said = [...document.querySelectorAll('.notice')].some((n) => /isn’t available|aren’t available/.test(n.textContent))
+      return { status: lib.status(family, style), said }
+    }, listed.family, listed.style)
+    check('a system font loading when text first asks for it is drawn, and not called missing', r.status === 'ready' && !r.said, JSON.stringify({ ...r, family: listed.family }))
+  }
+  if (listed.arial) {
+    // A Photoshop file asking for ArialMT: found among the system's fonts as it opens.
+    const runs = await p2.evaluate(async (b64) => {
+      const P = globalThis.plexel
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+      await P.files.openFile(new File([bytes], 'text.psd'), null)
+      const doc = P.documents().active().history.present
+      return Object.values(doc.nodes).filter((n) => n.kind === 'text').flatMap((n) => n.props.content.paragraphs.flatMap((p) => p.runs.map((x) => [x.props.font, x.props.style])))
+    }, fs.readFileSync('scripts/fixtures/psd/text.psd').toString('base64'))
+    check('a Photoshop file’s fonts are found by their PostScript names among the system’s', runs.length > 0 && runs.every(([font, style]) => font === 'Arial' && !!style), JSON.stringify(runs))
+  }
+  // The font menu.
+  await p2.evaluate(() => globalThis.plexel.tools().set('type'))
+  await p2.waitForSelector('#opt-type-font')
+  await p2.click('#opt-type-font')
+  await p2.waitForSelector('[data-font-list]')
+  const rows = await p2.$$eval('[data-font-list] .font-row', (r) => r.length)
+  const total = await p2.evaluate(() => globalThis.plexel.text.startFonts().then((l) => l.families().length))
+  check('the font menu opens, drawing only the rows in view of every family', rows > 0 && rows < Math.max(total, 30) + 1, `${rows} of ${total}`)
+  if (listed.family) {
+    await p2.type('.font-list-search', listed.family)
+    await p2.waitForSelector(`.font-row[data-font-family="${listed.family}"]`)
+    const face = await p2.$eval(`.font-row[data-font-family="${listed.family}"] .font-row-name`, (e) => getComputedStyle(e).fontFamily)
+    check('a search finds a family, its name drawn in its own face', face.includes(listed.family), face)
+    await p2.click(`.font-row[data-font-family="${listed.family}"] .font-star`)
+    await p2.click('[data-font-filter="favourites"]')
+    await p2.click('.font-list-search', { clickCount: 3 })
+    await p2.keyboard.press('Backspace')
+    const favs = await p2.$$eval('[data-font-list] .font-row', (r) => r.map((x) => x.dataset.fontFamily))
+    check('the star makes it a favourite, shown under ★', favs.length === 1 && favs[0] === listed.family, JSON.stringify(favs))
+    await p2.keyboard.press('Enter')
+    await p2.waitForFunction(() => !document.querySelector('[data-font-list]'))
+    const picked = await p2.$eval('#opt-type-font', (e) => e.dataset.fontPicker)
+    const recent = await p2.evaluate(() => JSON.parse(localStorage.getItem('plexel.fontMenu') ?? '{}').recent ?? [])
+    check('Enter picks it, and it’s first among the recent', picked === listed.family && recent[0] === listed.family, JSON.stringify({ picked, recent }))
+  }
+  await p2.click('#opt-type-font')
+  await p2.waitForSelector('[data-font-list]')
+  await p2.keyboard.press('Escape')
+  check('Esc closes the menu', await p2.waitForFunction(() => !document.querySelector('[data-font-list]')).then(() => true, () => false))
+  await p2.close()
+}
 
 await finish()

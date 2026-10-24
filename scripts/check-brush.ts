@@ -7,18 +7,21 @@
  *
  * Run with: npm run check:brush
  */
-import { BRUSH_PRESETS, DEFAULT_BRUSH, DEFAULT_DUAL, DEFAULT_TEXTURE, LINEAR, colourVaries, curveAt, presetSettings, readBrush, readMixer, withControl, withPressure, hasDynamic, type BrushSettings } from '../src/brush/defs'
+import { BRUSH_PRESETS, DEFAULT_AIRBRUSH, DEFAULT_BRISTLE, DEFAULT_BRUSH, DEFAULT_DUAL, DEFAULT_ERODIBLE, DEFAULT_TEXTURE, LINEAR, colourVaries, curveAt, presetSettings, readBrush, readMixer, withControl, withPressure, hasDynamic, pressureSizeShare, type BrushSettings } from '../src/brush/defs'
 import { dabColour, hsvToRgb, rgbToHsv } from '../src/brush/colour'
 import { dabMask, edgeness, hash01, noisy, roundMask, toLayer, wrapDab, type Dab } from '../src/brush/dab'
 import { rng } from '../src/brush/rng'
 import { readFileSync } from 'node:fs'
 import { cursorLoops, tipOutline } from '../src/brush/outline'
 import { AbrError, readAbr, renamePatterns } from '../src/io/abr'
+import { writeAbr } from '../src/io/abrWrite'
+import { TplError, readTpl } from '../src/io/tpl'
+import { BRISTLE_LEVELS, WEAR_LEVELS, Wear, bristleTipId, generateTip, isGeneratedTip } from '../src/brush/special'
 import { Writer } from '../src/io/psd/bin'
 import { D, desc, writeDescriptor } from '../src/io/psd/descriptor'
 import { BUILD_UP_MS, StrokeBuilder, strokeDabs, type PenSample } from '../src/brush/stroke'
 import { BUILTIN_TEXTURES, adjustTexture, sampleTexture, textureImage, textured } from '../src/brush/textures'
-import { BUILTIN_TIP_SIZE, levelSize, makeTip, mipChain, registerTip, sampleTip, tipFromBytes, tipId, tipImage } from '../src/brush/tips'
+import { BUILTIN_TIP_SIZE, hasTip, levelSize, makeTip, mipChain, registerTip, sampleTip, tipFromBytes, tipId, tipImage } from '../src/brush/tips'
 import { applyReplace, applyStroke, colourAt, coverageAt, layoutOf, newStrokeTile, onCanvas, stamp, styleOf, type StrokeLayout } from '../src/render/ref/paint'
 
 let failures = 0
@@ -57,6 +60,13 @@ check('every preset reads back as itself', BRUSH_PRESETS.every((p) => JSON.strin
   check('the mixer’s settings read back clamped', readMixer({ wet: 3, load: 0 }).wet === 1 && readMixer({ wet: 3, load: 0 }).load === 0.01)
 }
 check('a curve is read between its points', near(curveAt([0, 1], 0.25), 0.25) && near(curveAt([0, 0.35, 1], 0.5), 0.35) && near(curveAt([0, 0.35, 1], 0.75), 0.675) && curveAt([0, 1], 2) === 1)
+{
+  // The cursor's inner ring: the size the stroke paints at a pressure, from the size's pressure control alone.
+  const sized = brush({ size: 30, dynamics: [{ input: 'pressure', target: 'size', curve: [0, 0.35, 1], min: 0.1 }, { input: 'pressure', target: 'opacity', curve: LINEAR, min: 0 }] })
+  const dab = new StrokeBuilder(sized, 1).add({ x: 10, y: 10, pressure: 0.3, tiltX: 0, tiltY: 0, twist: 0, t: 0 })[0]
+  check('the cursor’s pressure size is the size a dab paints', !!dab && near(30 * pressureSizeShare(sized, 0.3)!, dab.size))
+  check('and there’s none when pressure doesn’t size the brush', pressureSizeShare(brush({ dynamics: [{ input: 'pressure', target: 'opacity', curve: LINEAR, min: 0 }] }), 0.3) === null)
+}
 check('switching pressure for opacity on and off', hasDynamic(withPressure(brush(), 'opacity', true), 'pressure', 'opacity') && !hasDynamic(withPressure(withPressure(brush(), 'opacity', true), 'opacity', false), 'pressure', 'opacity'))
 {
   const a = rng(42)
@@ -309,7 +319,7 @@ console.log('\nABR files')
   check('its shape dynamics: size jitter 37%, angle 10%, roundness 30% down to 25%, flip X', !!d && near(d.sizeJitter, 0.37) && near(d.angleJitter, 0.1) && near(d.roundnessJitter, 0.3) && near(d.minRoundness, 0.25) && d.flipXJitter && !d.flipYJitter)
   check('its scattering: 250%, a count of 4 with 50% jitter', !!d && near(d.scatter, 2.5) && d.count === 4 && near(d.countJitter, 0.5))
   check('its transfer: opacity jitter 25%', !!d && near(d.opacityJitter, 0.25))
-  check('its angle follows the pen’s rotation, and the stroke-start rotation it asked for is named', !!d && d.dynamics.some((x) => x.input === 'twist' && x.target === 'angle') && dyn.warnings.some((w) => w.includes('rotation')))
+  check('its angle follows the pen’s rotation as the stroke began, as it asked', !!d && d.dynamics.some((x) => x.input === 'initial-twist' && x.target === 'angle') && !dyn.warnings.some((w) => w.includes('rotation')))
   const dual = fixture('photoshop_dual_brush.abr').presets[0]?.settings.dual
   check('Photoshop’s dual brush probe: a 25 px soft round in Colour Burn at 25% spacing', !!dual && dual.tip === 'round' && dual.size === 25 && dual.hardness === 0 && dual.mode === 'color-burn' && near(dual.spacing, 0.25))
   // CC0, from a set someone published: many sampled tips.
@@ -465,7 +475,22 @@ console.log('\nABR files')
   check('the texture: that pattern, Linear Height, 50%, 80% deep, inverted', !!g?.texture && g.texture.id === `pat:${pat?.id}` && g.texture.mode === 'linear-height' && near(g.texture.scale, 0.5) && near(g.texture.depth, 0.8) && g.texture.invert)
   check('transfer: opacity by pressure, jitter 20% down to 10%; flow fading over 12 steps', !!g && near(g.opacityJitter, 0.2) && g.dynamics.some((x) => x.input === 'pressure' && x.target === 'opacity' && near(x.min, 0.1)) && g.dynamics.some((x) => x.input === 'fade' && x.target === 'flow' && x.steps === 12))
   check('wet edges, the options bar (70%, 40% flow, Multiply) and 30% smoothing', !!g && g.wetEdges && near(g.opacity, 0.7) && near(g.flow, 0.4) && g.mode === 'multiply' && near(g.smoothing, 0.3))
-  check('a stylus wheel control is left off and named', f.presets[1]?.settings.dynamics.length === 0 && f.warnings.some((w) => w.includes('wheel')))
+  check('a stylus wheel control comes in as one', f.presets[1]?.settings.dynamics.some((x) => x.input === 'wheel' && x.target === 'size') === true && !f.warnings.some((w) => w.includes('wheel')))
+  // Bristle, erodible and airbrush tips: their shape by Photoshop's menu order under their class, settings found by name.
+  const special = (name: string, cls: string, items: [string, ReturnType<typeof D.bool>][]) => desc('brushPreset', [['Nm  ', D.text(name)], ['Brsh', D.obj(cls, [['Dmtr', D.unit('#Pxl', 36)], ['Spcn', D.unit('#Prc', 2)], ['Intr', D.bool(true)], ...items])]])
+  const sf = readAbr(
+    modern([
+      special('Fan', 'dBrush', [['Shp ', D.long(9)], ['bristleDensity', D.unit('#Prc', 40)], ['bristleLength', D.unit('#Prc', 150)], ['bristleThickness', D.unit('#Prc', 20)], ['bristleStiffness', D.unit('#Prc', 70)]]),
+      special('Chisel', 'dTips', [['Shp ', D.long(1)], ['softness', D.unit('#Prc', 80)]]),
+      special('Spray', 'dTips', [['Shp ', D.long(5)], ['Hrdn', D.unit('#Prc', 60)], ['distortion', D.unit('#Prc', 30)]]),
+      special('Odd', 'dBrush', [['Shp ', D.long(42)]]),
+    ]),
+  )
+  const [fan, chisel, spray, odd] = sf.presets.map((p) => p.settings.special)
+  check('a bristle tip: Flat Fan, its bristles, length, thickness and stiffness', fan?.kind === 'bristle' && fan.shape === 'flat-fan' && near(fan.bristles, 0.4) && near(fan.length, 1.5) && near(fan.thickness, 0.2) && near(fan.stiffness, 0.7))
+  check('an erodible flat with its softness', chisel?.kind === 'erodible' && chisel.shape === 'flat' && near(chisel.softness, 0.8))
+  check('dTips 5 is the airbrush, not a sixth erodible shape', spray?.kind === 'airbrush' && near(spray.hardness, 0.6) && near(spray.distortion, 0.3))
+  check('a shape Plexel doesn’t know comes in as a default, named; settings not found are said', odd?.kind === 'bristle' && odd.shape === 'round-point' && sf.warnings.some((w) => w.includes('Odd') && w.includes('shape')) && sf.warnings.some((w) => w.includes('Spray') && w.includes('defaults')))
   const renamed = renamePatterns(f, (p) => `pat:${p.width}x${p.height}`)
   check('patterns renamed by their pixels, the textures that use them too', renamed.patterns[0].id === 'pat:3x2' && renamed.presets[0].settings.texture?.id === 'pat:3x2')
   const lost = readAbr(modern([textured], false))
@@ -480,6 +505,159 @@ console.log('\nABR files')
   }
   check('version 5 is refused by name', refuses(Uint8Array.of(0, 5, 0, 1)))
   check('a cut-off file is refused, not thrown about', refuses(modern([textured]).subarray(0, 300)) || readAbr(modern([textured]).subarray(0, 300)).presets.length === 0)
+}
+
+console.log('\nbristle, erodible and airbrush tips, the stylus wheel and Initial Rotation')
+{
+  const bristle = { ...DEFAULT_BRISTLE }
+  const r1 = readBrush({ special: { kind: 'bristle', shape: 'flat-angle', bristles: 2, length: 0.1, thickness: 0.5, stiffness: 0.3 } })
+  check('a bristle tip reads back, out-of-range values held in range', r1.special?.kind === 'bristle' && r1.special.shape === 'flat-angle' && r1.special.bristles === 1 && r1.special.length === 0.25)
+  const warned: string[] = []
+  check('a kind of tip that isn’t known is none, said', readBrush({ special: { kind: 'sponge' } }, (w) => warned.push(w)).special === null && warned.length === 1)
+  check('every preset with a special tip reads back as itself', BRUSH_PRESETS.filter((p) => p.settings.special).every((p) => JSON.stringify(readBrush(JSON.parse(JSON.stringify(presetSettings(p))))) === JSON.stringify(presetSettings(p))))
+  // Footprints: made from their names, the same each time.
+  const id0 = bristleTipId(bristle, 0)
+  const id11 = bristleTipId(bristle, BRISTLE_LEVELS - 1)
+  const a = generateTip(id11)!
+  const b = generateTip(id11)!
+  check('a footprint is made from its name, the same every time', a.data.every((v, i) => v === b.data[i]) && isGeneratedTip(id11) && hasTip(id11) && !!tipImage(id11))
+  const extent = (d: Float32Array) => {
+    let far = 0
+    for (let y = 0; y < a.size; y++) for (let x = 0; x < a.size; x++) if (d[y * a.size + x] > 0.3) far = Math.max(far, Math.hypot(x + 0.5 - a.size / 2, y + 0.5 - a.size / 2))
+    return far
+  }
+  const sum = (d: Float32Array) => d.reduce((s, v) => s + v, 0)
+  const light = generateTip(id0)!.data
+  check('pressed harder, a pointed brush’s hairs splay further and more of them touch', extent(a.data) > extent(light) * 1.3 && sum(a.data) > sum(light) * 2, `${extent(light).toFixed(0)} → ${extent(a.data).toFixed(0)} px`)
+  const stiff = generateTip(bristleTipId({ ...bristle, stiffness: 1 }, BRISTLE_LEVELS - 1))!.data
+  const soft = generateTip(bristleTipId({ ...bristle, stiffness: 0.05 }, BRISTLE_LEVELS - 1))!.data
+  const ratio = (d: Float32Array) => extent(d) / extent(generateTip(bristleTipId({ ...bristle, stiffness: d === stiff ? 1 : 0.05 }, 0))!.data)
+  check('stiff hairs splay less than soft ones', ratio(stiff) < ratio(soft), `${ratio(stiff).toFixed(2)} vs ${ratio(soft).toFixed(2)}`)
+  check('a name that isn’t a footprint’s makes none', generateTip('gen:b:99:1:1:1:1:1') === null && generateTip('gen:q:1') === null && generateTip('gen:a:1:2') === null)
+  const dabsOf = (o: Partial<BrushSettings>, s: PenSample[], wear?: number) => strokeDabs(brush({ size: 30, spacing: 0.1, ...o }), 7, s, { wear })
+  const hard = dabsOf({ special: bristle }, line(0, 0, 200, 0, 20, (t) => t))
+  const levels = hard.map((d) => Number(d.tip.split(':').pop()))
+  check('a bristle stroke pressed harder as it goes goes deeper', hard.every((d) => d.tip.startsWith('gen:b:')) && levels[levels.length - 1] > levels[0])
+  // Erodible: wear.
+  const pencil: Partial<BrushSettings> = { special: { ...DEFAULT_ERODIBLE, softness: 1 } }
+  const long = dabsOf(pencil, line(0, 0, 3000, 0, 200, () => 0.5))
+  check('an erodible point blunts as it draws', long[long.length - 1].size > long[0].size * 1.5, `${long[0].size.toFixed(1)} → ${long[long.length - 1].size.toFixed(1)} px`)
+  const worn = dabsOf(pencil, line(0, 0, 100, 0, 10, () => 0.5), 0.8)
+  check('a worn one starts wide', worn[0].size > long[0].size * 2)
+  const sb = new StrokeBuilder(brush({ size: 30, ...pencil }), 1, { wear: 0.1 })
+  for (const s of line(0, 0, 600, 0, 40, () => 1)) sb.add(s)
+  const w = new Wear({ ...DEFAULT_ERODIBLE, softness: 1 }, 30, 0.1)
+  for (const s of line(0, 0, 600, 0, 40, () => 1)) w.add(s.x, s.y, s.pressure)
+  check('the page counts wear as the stroke does', near(sb.wearNow, w.value) && sb.wearNow > 0.1, `${sb.wearNow.toFixed(4)}`)
+  const zero = new Wear({ ...DEFAULT_ERODIBLE, softness: 0 }, 30, 0.2)
+  zero.add(0, 0, 1)
+  zero.add(500, 0, 1)
+  check('a tip with no softness doesn’t wear', zero.value === 0.2)
+  const tri = dabsOf({ special: { ...DEFAULT_ERODIBLE, shape: 'triangle' } }, line(0, 0, 50, 0, 5), 0.5)
+  check('a square or triangle draws its worn image; point, round and flat the round tip', tri.every((d) => d.tip === `gen:e:4:${Math.round(0.5 * (WEAR_LEVELS - 1))}`) && long.every((d) => d.tip === 'round'))
+  const tilt = (s: PenSample[]) => s.map((x) => ({ ...x, tiltX: 60, tiltY: 0 }))
+  const side = dabsOf(pencil, tilt(line(0, 0, 100, 0, 10)))
+  check('tilted, a point draws with its side: wider and flatter, along the lean', side[0].size > long[0].size * 1.3 && side[0].roundness < 0.6 && near(side[0].angle, 0))
+  // Airbrush: the spray leans.
+  const air: Partial<BrushSettings> = { special: { ...DEFAULT_AIRBRUSH, distortion: 1 } }
+  const upright = dabsOf(air, line(100, 100, 100.5, 100, 2))
+  const leaning = dabsOf(air, line(100, 100, 100.5, 100, 2).map((x) => ({ ...x, tiltX: 0, tiltY: 60 })))
+  check('an upright airbrush sprays round, where the pen is', near(upright[0].x, 100) && near(upright[0].y, 100) && upright[0].roundness === 1)
+  check('tilted, it stretches the way the pen leans and moves that way', leaning[0].y > 100 + 3 && near(leaning[0].x, 100, 1e-6) && leaning[0].roundness < 0.7 && near(leaning[0].angle, Math.PI / 2) && leaning[0].size > upright[0].size)
+  const sprays = new Set(dabsOf(air, line(0, 0, 300, 0, 30)).map((d) => d.tip))
+  check('its dabs are of several variants', sprays.size >= 4 && [...sprays].every((t) => t.startsWith('gen:a:')))
+  // The stylus wheel and Initial Rotation.
+  const wheelFlow = brush({ flow: 0.8, dynamics: [{ input: 'wheel', target: 'flow', curve: [...LINEAR], min: 0 }] })
+  const wheeled = strokeDabs(wheelFlow, 1, line(0, 0, 100, 0, 5).map((s) => ({ ...s, wheel: 0.25 })))
+  check('the wheel sets flow through its control', wheeled.every((d) => near(d.flow, 0.2)))
+  check('a pen without a wheel counts as turned full on', strokeDabs(wheelFlow, 1, line(0, 0, 100, 0, 5)).every((d) => near(d.flow, 0.8)))
+  const turns = line(0, 0, 100, 0, 5).map((s, i) => ({ ...s, twist: 90 + i * 40 }))
+  const init = strokeDabs(brush({ dynamics: [{ input: 'initial-twist', target: 'angle', curve: [...LINEAR], min: 0 }] }), 1, turns)
+  check('Initial Rotation holds the pen’s rotation as the stroke began', init.every((d) => near(d.angle, Math.PI / 2)))
+}
+
+console.log('\nbrushes out as ABR, and Photoshop’s tool presets (TPL)')
+{
+  const userTip = { name: 'Mine', width: 5, height: 3, data: Uint8Array.from({ length: 15 }, (_, i) => i * 17) }
+  const userId = tipId(userTip.width, userTip.height, userTip.data)
+  const list = [...BRUSH_PRESETS.map((p) => ({ name: p.name, settings: presetSettings(p) })), { name: 'Own tip, curved', settings: brush({ tip: userId, size: 33, dynamics: [{ input: 'pressure', target: 'size', curve: [0, 0.3, 1], min: 0.2 }, { input: 'speed', target: 'opacity', curve: [...LINEAR], min: 0 }] }) }]
+  const out = writeAbr(list, (id) => (id === userId ? userTip : null))
+  const back = readAbr(out.bytes)
+  check('every brush makes the round trip unchanged', back.presets.length === list.length && back.presets.every((p, i) => p.name === list[i].name && JSON.stringify(p.settings) === JSON.stringify(list[i].settings)))
+  check('image tips go in once each, a user’s exactly', back.tips.some((t) => t.id === userId && t.data.every((v, i) => v === userTip.data[i])) && new Set(back.tips.map((t) => t.id)).size === back.tips.length)
+  check('textures’ patterns go in with them', ['paper', 'rough', 'canvas'].every((n) => back.patterns.some((p) => p.name === n)))
+  check('what Photoshop has no place for is named', out.notes.some((n) => n.includes('curves')) && out.notes.some((n) => n.includes('Speed')) && out.notes.some((n) => n.includes('footprint')))
+  // Photoshop's keys alone, as Photoshop reads them: Plexel's own copy hidden.
+  const bytes = Uint8Array.from(out.bytes)
+  const text = new TextDecoder('latin1').decode(bytes)
+  for (let at = text.indexOf('plexelBrush'); at >= 0; at = text.indexOf('plexelBrush', at + 1)) bytes[at] = 'q'.charCodeAt(0)
+  const ps = readAbr(bytes)
+  const by = (n: string) => ps.presets.find((p) => p.name === n)?.settings
+  const cal = by('Calligraphy')
+  const air = by('Spray Paint')
+  const own = by('Own tip, curved')
+  check('Photoshop’s keys alone: a round tip’s shape and control', !!cal && cal.tip === 'round' && near(cal.roundness, 0.25) && cal.angle === 45 && near(cal.hardness, 0.95) && cal.dynamics.some((d) => d.input === 'pressure' && d.target === 'size'))
+  check('a special tip as an image of its footprint, a user’s tip as itself', !!air && air.tip.startsWith('tip:') && air.special === null && own?.tip === userId && own.size === 33)
+  check('the options bar’s settings and Build-up', !!air && near(air.flow, 0.4) && air.buildUp && near(air.opacity, 1))
+
+  // A TPL file as Photoshop lays one out: patterns, then the presets, each a name and a descriptor whose class is its tool.
+  const tpl = (presets: [string, ReturnType<typeof desc>][]) => {
+    const w = new Writer()
+    w.sig('8BTP')
+    w.u32(3)
+    w.u32(4)
+    const section = (key: string, body: () => void) => {
+      w.sig('8BIM')
+      w.sig(key)
+      const end = w.mark()
+      body()
+      end()
+      w.pad(4)
+    }
+    section('tppa', () => {})
+    section('tpsh', () => {})
+    section('tptp', () => {
+      w.u32(presets.length)
+      for (const [name, d] of presets) {
+        w.unicode(`$$$/Presets/Tools/X=${name}`)
+        w.u32(16)
+        writeDescriptor(w, d)
+      }
+    })
+    return w.done()
+  }
+  const t = readTpl(
+    tpl([
+      ['Soft Multiply', desc('paintbrushTool', [['Opct', D.long(50)], ['Md  ', D.enum('BlnM', 'Mltp')], ['Brsh', D.obj('computedBrush', [['Dmtr', D.unit('#Pxl', 64)], ['Hrdn', D.unit('#Prc', 10)], ['Angl', D.unit('#Ang', 0)], ['Rndn', D.unit('#Prc', 100)], ['Spcn', D.unit('#Prc', 25)], ['Intr', D.bool(true)]])], ['useTipDynamics', D.bool(true)], ['szVr', D.obj('brVr', [['bVTy', D.long(2)], ['jitter', D.unit('#Prc', 0)]])], ['minimumDiameter', D.unit('#Prc', 30)]])],
+      ['Pencil', desc('pencilTool', [['Brsh', D.obj('computedBrush', [['Dmtr', D.unit('#Pxl', 3)], ['Hrdn', D.unit('#Prc', 0)]])]])],
+      ['Loose Fill', desc('bucketTool', [['Md  ', D.enum('BlnM', 'Nrml')], ['Opct', D.long(40)], ['BckT', D.long(10)], ['BckA', D.bool(false)], ['BckS', D.bool(true)], ['Cntg', D.bool(false)]])],
+      ['Radial Screen', desc('GrTl', [['Md  ', D.enum('BlnM', 'Scrn')], ['Opct', D.long(90)], ['GrdT', D.long(1)], ['GrdR', D.long(1)]])],
+      ['Star', desc('polygonTool', [['sides', D.long(6)], ['indent', D.unit('#Prc', 40)], ['doIndent', D.bool(true)]])],
+      ['Headline', desc('typeCreateOrEditTool', [['textToolCharacterOptions', D.obj('null', [['TxtS', D.obj('null', [['FntN', D.text('Inter')], ['FntS', D.text('Bold')], ['Sz  ', D.unit('#Pnt', 30)], ['Trck', D.long(50)]])]])], ['textToolParagraphOptions', D.obj('null', [['paragraphStyle', D.obj('null', [['Algn', D.enum('Alg ', 'Cntr')]])]])]])],
+      ['Wand 5', desc('magicWandTool', [['Tlrn', D.long(5)], ['AntA', D.bool(false)], ['Cntg', D.bool(true)]])],
+      ['Crop 4 × 6', desc('cropTool', [])],
+      ['Sponge', desc('saturationTool', [])],
+    ]),
+  )
+  const p = (n: string) => t.presets.find((x) => x.name === n)
+  const soft = p('Soft Multiply')?.options.brush as BrushSettings | undefined
+  check('a TPL file: the presets for tools Plexel has, by name', t.presets.length === 7 && p('Soft Multiply')?.tool === 'brush' && p('Loose Fill')?.tool === 'bucket' && p('Radial Screen')?.tool === 'gradient')
+  check('a Brush preset: its tip, its control and its options beside it', !!soft && soft.size === 64 && near(soft.hardness, 0.1) && near(soft.opacity, 0.5) && soft.mode === 'multiply' && soft.dynamics.some((d) => d.input === 'pressure' && d.target === 'size' && near(d.min, 0.3)))
+  check('Photoshop’s Pencil is the Brush, hard', p('Pencil')?.tool === 'brush' && (p('Pencil')?.options.brush as BrushSettings).hardness === 1)
+  check('the Paint Bucket’s tolerance, anti-alias, all layers and contiguous', JSON.stringify(p('Loose Fill')?.options.bucket) === JSON.stringify({ blend: 'normal', opacity: 0.4, tolerance: 10, antialias: false, contiguous: false, sampleAll: true }))
+  check('the Gradient tool by its short class: Radial, reversed, Screen at 90%', JSON.stringify(p('Radial Screen')?.options.gradient) === JSON.stringify({ blend: 'screen', opacity: 0.9, reverse: true, type: 'radial' }))
+  check('a polygon with an indent is a star', JSON.stringify(p('Star')?.options.shape) === JSON.stringify({ type: 'star', points: 6, inner: 0.6 }))
+  const type = p('Headline')?.options.type as { char: Record<string, unknown>; para: Record<string, unknown> } | undefined
+  check('the Type tool: its font, size, tracking and alignment', !!type && type.char.font === 'Inter' && type.char.style === 'Bold' && type.char.size === 30 && type.char.tracking === 50 && type.para.align === 'centre')
+  check('the Magic Wand’s tolerance and switches', JSON.stringify(p('Wand 5')?.options.wand) === JSON.stringify({ tolerance: 5, antialias: false, contiguous: true }))
+  check('presets Plexel can’t use are left out, each said', t.warnings.some((x) => x.includes('Crop 4 × 6') && x.includes('Crop’s')) && t.warnings.some((x) => x.includes('Sponge') && x.includes('saturationTool')))
+  let refused = false
+  try {
+    readTpl(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]))
+  } catch (e) {
+    refused = e instanceof TplError
+  }
+  check('a file that isn’t one is refused', refused)
 }
 
 console.log('\ntiled documents')

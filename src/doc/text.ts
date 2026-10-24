@@ -15,6 +15,7 @@
  * paragraphs. The edits here are pure: content in, content out.
  */
 import { isObject, type Warn } from './read'
+import { readPaint, type Paint } from './vector'
 import type { Doc } from './types'
 import { deepEqual } from '../lib/equal'
 import { clamp } from '../lib/num'
@@ -40,11 +41,48 @@ export interface CharProps {
   verticalScale: number
   underline: boolean
   strikethrough: boolean
-  /** A BCP 47 language tag, for shaping (and hyphenation, later). */
+  /** A BCP 47 language tag, for shaping and hyphenation. */
   language: string
+  /**
+   * The characters' own fill, in place of the text's bottom fill (its
+   * appearance's first): colour per character, as Photoshop and
+   * Illustrator have it. Null is the text's own.
+   */
+  fill: Paint | null
+  /** Their own stroke, in place of the text's bottom stroke (one is added if it has none), `strokeWidth` wide; null is the text's own. */
+  stroke: Paint | null
+  strokeWidth: number
 }
 
 export type Align = 'left' | 'centre' | 'right' | 'justify' | 'justify-all'
+
+/** A tab stop: where (from the paragraph's start edge, in document pixels), how text lines up on it, and what fills the gap. */
+export interface TabStop {
+  at: number
+  align: 'left' | 'centre' | 'right' | 'decimal'
+  /** Repeated across the gap ("." for a dotted leader); empty for none. */
+  leader: string
+  /** What a decimal tab lines up on. */
+  char: string
+}
+
+/** Photoshop's hyphenation settings. */
+export interface Hyphenation {
+  /** Only words longer than this many letters are hyphenated, as Photoshop's "Words Longer Than". */
+  minWord: number
+  /** Letters kept before and after a hyphen. */
+  minBefore: number
+  minAfter: number
+  /** The most lines in a row that may end in a hyphen; 0 for no limit. */
+  limit: number
+  /** Unjustified text with the single-line composer: no hyphen when the line already reaches this near its end (document pixels); 0 for none. */
+  zone: number
+  /** Whether words starting with a capital are hyphenated. */
+  caps: boolean
+}
+
+/** Least, wanted and most, as Photoshop's Justification sets them. */
+export type Range3 = [number, number, number]
 
 export interface ParaProps {
   align: Align
@@ -56,6 +94,22 @@ export interface ParaProps {
   spaceAfter: number
   /** Single-line breaks each line as it comes; every-line (Knuth-Plass) weighs the whole paragraph. */
   composer: 'single' | 'every'
+  /** Words broken with a hyphen at line ends, by the language's patterns. */
+  hyphenate: boolean
+  hyphenation: Hyphenation
+  /** Word spaces, as % of the font's space: least, wanted, most. Justified lines stretch and shrink them within these first. */
+  wordSpacing: Range3
+  /** Room between letters, as % of a space: least, wanted, most. */
+  letterSpacing: Range3
+  /** Glyphs' width, as %: least, wanted, most. Justification's last resort. */
+  glyphScaling: Range3
+  /** Auto leading, as % of the size. */
+  autoLeading: number
+  /** A justified line of one word: spread across its letters, or aligned. */
+  singleWord: 'full' | 'left' | 'centre' | 'right'
+  /** Tab stops, in order; past the last, one every `tabInterval` (0: every four ems of the text's size). */
+  tabs: TabStop[]
+  tabInterval: number
 }
 
 export interface Run {
@@ -112,7 +166,12 @@ export const DEFAULT_CHAR: CharProps = {
   underline: false,
   strikethrough: false,
   language: 'en',
+  fill: null,
+  stroke: null,
+  strokeWidth: 1,
 }
+
+export const DEFAULT_HYPHENATION: Hyphenation = { minWord: 5, minBefore: 2, minAfter: 2, limit: 2, zone: 0, caps: true }
 
 export const DEFAULT_PARA: ParaProps = {
   align: 'left',
@@ -123,12 +182,21 @@ export const DEFAULT_PARA: ParaProps = {
   spaceBefore: 0,
   spaceAfter: 0,
   composer: 'every',
+  hyphenate: false,
+  hyphenation: DEFAULT_HYPHENATION,
+  wordSpacing: [80, 100, 133],
+  letterSpacing: [0, 0, 0],
+  glyphScaling: [100, 100, 100],
+  autoLeading: 120,
+  singleWord: 'full',
+  tabs: [],
+  tabInterval: 0,
 }
 
 export const NO_STYLES: TextStyles = { character: [], paragraph: [] }
 
-/** Auto leading: 120% of the size, as Photoshop and Illustrator have it. */
-export const leadingOf = (c: CharProps) => c.leading ?? c.size * 1.2
+/** Auto leading: the paragraph's share of the size (120%, as Photoshop and Illustrator have it). */
+export const leadingOf = (c: CharProps, autoLeading = 120) => c.leading ?? (c.size * autoLeading) / 100
 
 // --- reading ---------------------------------------------------------------------------------
 
@@ -156,7 +224,50 @@ export function readCharProps(raw: unknown): Partial<CharProps> {
   if (typeof raw.underline === 'boolean') o.underline = raw.underline
   if (typeof raw.strikethrough === 'boolean') o.strikethrough = raw.strikethrough
   if (typeof raw.language === 'string' && /^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/.test(raw.language)) o.language = raw.language
+  if (raw.fill === null) o.fill = null
+  else if (isObject(raw.fill)) o.fill = readPaint(raw.fill)
+  if (raw.stroke === null) o.stroke = null
+  else if (isObject(raw.stroke)) o.stroke = readPaint(raw.stroke)
+  if (finite(raw.strokeWidth)) o.strokeWidth = clamp(raw.strokeWidth, 0, 1000)
   return o
+}
+
+const range3 = (v: unknown, lo: number, hi: number): Range3 | null => {
+  if (!Array.isArray(v) || v.length !== 3 || !v.every(finite)) return null
+  const [a, b, c] = (v as number[]).map((x) => clamp(x, lo, hi))
+  // Least ≤ wanted ≤ most.
+  return [Math.min(a, b), b, Math.max(b, c)]
+}
+
+const TAB_ALIGNS: TabStop['align'][] = ['left', 'centre', 'right', 'decimal']
+
+function readTabs(v: unknown): TabStop[] | null {
+  if (!Array.isArray(v)) return null
+  const out: TabStop[] = []
+  for (const t of v.slice(0, 64)) {
+    if (!isObject(t) || !finite(t.at)) continue
+    out.push({
+      at: clamp(t.at, 0, 100000),
+      align: TAB_ALIGNS.includes(t.align as TabStop['align']) ? (t.align as TabStop['align']) : 'left',
+      leader: typeof t.leader === 'string' ? t.leader.replace(/[\n\r\t]/g, '').slice(0, 8) : '',
+      char: typeof t.char === 'string' && t.char ? t.char.slice(0, 1) : '.',
+    })
+  }
+  return out.sort((a, b) => a.at - b.at)
+}
+
+function readHyphenation(v: unknown): Hyphenation | null {
+  if (!isObject(v)) return null
+  const n = (x: unknown, d: number, lo: number, hi: number) => (finite(x) ? Math.round(clamp(x, lo, hi)) : d)
+  const d = DEFAULT_HYPHENATION
+  return {
+    minWord: n(v.minWord, d.minWord, 1, 50),
+    minBefore: n(v.minBefore, d.minBefore, 1, 20),
+    minAfter: n(v.minAfter, d.minAfter, 1, 20),
+    limit: n(v.limit, d.limit, 0, 50),
+    zone: finite(v.zone) ? clamp(v.zone, 0, 100000) : d.zone,
+    caps: typeof v.caps === 'boolean' ? v.caps : d.caps,
+  }
 }
 
 export function readParaProps(raw: unknown): Partial<ParaProps> {
@@ -166,6 +277,20 @@ export function readParaProps(raw: unknown): Partial<ParaProps> {
   if (raw.direction === 'auto' || raw.direction === 'ltr' || raw.direction === 'rtl') o.direction = raw.direction
   for (const k of ['indentLeft', 'indentRight', 'indentFirst', 'spaceBefore', 'spaceAfter'] as const) if (finite(raw[k])) o[k] = clamp(raw[k] as number, -100000, 100000)
   if (raw.composer === 'single' || raw.composer === 'every') o.composer = raw.composer
+  if (typeof raw.hyphenate === 'boolean') o.hyphenate = raw.hyphenate
+  const h = readHyphenation(raw.hyphenation)
+  if (h) o.hyphenation = h
+  const ws = range3(raw.wordSpacing, 0, 1000)
+  if (ws) o.wordSpacing = ws
+  const ls = range3(raw.letterSpacing, -100, 500)
+  if (ls) o.letterSpacing = ls
+  const gs = range3(raw.glyphScaling, 50, 200)
+  if (gs) o.glyphScaling = gs
+  if (finite(raw.autoLeading)) o.autoLeading = clamp(raw.autoLeading, 0, 500)
+  if (raw.singleWord === 'full' || raw.singleWord === 'left' || raw.singleWord === 'centre' || raw.singleWord === 'right') o.singleWord = raw.singleWord
+  const tabs = readTabs(raw.tabs)
+  if (tabs) o.tabs = tabs
+  if (finite(raw.tabInterval)) o.tabInterval = clamp(raw.tabInterval, 0, 100000)
   return o
 }
 

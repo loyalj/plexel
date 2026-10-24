@@ -4,8 +4,9 @@
  * handling (canvasTools.ts) when this loads.
  *
  * - The Gradient tool drags a line. On a gradient fill layer, or a shape
- *   whose top fill is a gradient, the line moves the gradient's ends, live;
- *   otherwise it makes a gradient fill layer (masked by the selection) or,
+ *   with a gradient (app/gradientEdit.ts says which of its fills and
+ *   strokes), a press on its handles edits them there, and a drag anywhere
+ *   else gives it a new line, live; otherwise it makes a gradient fill layer (masked by the selection) or,
  *   set to pixels, lays the gradient into the target through the selection.
  * - The Paint Bucket fills what the Magic Wand would select at the click,
  *   inside the selection.
@@ -16,11 +17,11 @@
  *   drop by themselves where the wire has held still, a click drops one,
  *   and a click on the start, a double-click or Enter closes it.
  */
-import { insertNode, invertAffine, setAppearance, setFillPaint } from '../doc/edit'
+import { insertNode, invertAffine } from '../doc/edit'
 import { makeNode } from '../doc/nodes'
 import { freshName } from '../doc/tree'
 import type { Affine, Doc, DocNode } from '../doc/types'
-import type { AppearanceItem, Paint } from '../doc/vector'
+import type { Paint } from '../doc/vector'
 import { engine } from '../engine/EngineHost'
 import { stableAnchor } from '../select/liveWire'
 import { ellipsePoints } from '../tiles/coverage'
@@ -38,30 +39,15 @@ import { commitSelectionFrom, previewSelection, quickSelectStroke, selectShape }
 import { opFor, selectTools } from './selectTools'
 import { views } from './views'
 import { nearestCopy } from './tiling'
+import { gradientEditPress, gradientTarget, withPaint, type GTarget } from './gradientEdit'
 
 const store = () => documents()
 
 // --- the Gradient tool -------------------------------------------------------------------------------
 
-/** A layer whose gradient a drag moves: a gradient fill layer, or a shape whose top enabled fill is a gradient. */
-function liveGradient(doc: Doc, node: DocNode | null): { node: DocNode; item: number } | null {
-  if (!node) return null
-  if (node.kind === 'fill') return node.props.paint.kind === 'gradient' ? { node, item: -1 } : null
-  if (node.kind === 'vector' || node.kind === 'boolean' || node.kind === 'text') {
-    const items = node.props.appearance
-    for (let i = items.length - 1; i >= 0; i--) if (items[i].kind === 'fill' && items[i].enabled) return items[i].paint.kind === 'gradient' ? { node, item: i } : null
-  }
-  void doc
-  return null
-}
-
-/** A layer with its gradient's line set (in its own coordinates). */
-function withLine(doc: Doc, t: { node: DocNode; item: number }, line: [number, number, number, number]): Doc {
-  const n = t.node
-  if (n.kind === 'fill' && n.props.paint.kind === 'gradient') return setFillPaint(doc, n.id, { ...n.props.paint, line })
-  if (n.kind !== 'vector' && n.kind !== 'boolean' && n.kind !== 'text') return doc
-  const items: AppearanceItem[] = n.props.appearance.map((it, i) => (i === t.item && it.paint.kind === 'gradient' ? ({ ...it, paint: { ...it.paint, line } } as AppearanceItem) : it))
-  return setAppearance(doc, n.id, items)
+/** A layer with its gradient's line set (in the gradient's own coordinates). */
+function withLine(doc: Doc, t: GTarget, line: [number, number, number, number]): Doc {
+  return t.paint.kind === 'gradient' ? withPaint(doc, t, { ...t.paint, line }) : doc
 }
 
 /** The gradient the tool lays: its preset made from the colours, in the document's terms. */
@@ -79,10 +65,10 @@ function gradientGesture(d: OpenDoc, raw0: Pointer): Gesture {
   const snap = startSnap(d)
   const p0 = snapped(snap, raw0)
   const doc = d.history.present
-  const node = d.selected ? (doc.nodes[d.selected] ?? null) : null
   // A channel targeted (or some colour channels) is painted on: no fill layer, no live gradient.
   const onPixels = !!channelTarget(d) || !!planesTarget(d)
-  const live = onPixels ? null : liveGradient(doc, node)
+  // The selected layer's gradient (app/gradientEdit.ts says which), whose line the drag sets.
+  const live = onPixels ? null : gradientTarget(d, (x) => x.kind === 'gradient' && !x.stroke)
   const g = { ...fillTools().get().gradient, ...(onPixels ? { makes: 'pixels' as const } : {}) }
   let end: [number, number] = [p0.x, p0.y]
   let moved = false
@@ -105,7 +91,7 @@ function gradientGesture(d: OpenDoc, raw0: Pointer): Gesture {
         { kind: 'handles', points: [[p0.x, p0.y], end] },
       ],
     })
-    if (live) engine().setScene(d.key, withLine(doc, live, lineIn(live.node.transform)))
+    if (live) engine().setScene(d.key, withLine(doc, live, lineIn(live.transform)))
     else if (g.makes === 'layer' && !doc.selection) engine().setScene(d.key, fresh())
   }
   const unpreview = () => {
@@ -135,7 +121,7 @@ function gradientGesture(d: OpenDoc, raw0: Pointer): Gesture {
       unpreview()
       if (!moved || dist([p0.x, p0.y], end) < 1) return
       if (live) {
-        const line = lineIn(live.node.transform)
+        const line = lineIn(live.transform)
         store().commit((x) => withLine(x, live, line), { key: d.key, label: 'Gradient' })
         return
       }
@@ -153,7 +139,13 @@ function gradientGesture(d: OpenDoc, raw0: Pointer): Gesture {
   }
 }
 
-registerTool('gradient', (d, p) => gradientGesture(d, p))
+// A press on the selected gradient's handles edits them (app/gradientEdit.ts); anywhere else, a drag lays a line.
+registerTool('gradient', (d, p) => {
+  const g = onPixelsTarget(d) ? undefined : gradientEditPress(d, p)
+  return g === undefined ? gradientGesture(d, p) : g
+})
+
+const onPixelsTarget = (d: OpenDoc) => !!channelTarget(d) || !!planesTarget(d)
 
 // --- the Paint Bucket ----------------------------------------------------------------------------------
 

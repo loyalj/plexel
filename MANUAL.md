@@ -179,7 +179,20 @@ The choice is remembered by your browser.
 
 ### Making one
 
-**File → New** (Ctrl+Alt+N), or **New Document** on the start screen.
+**File → New** (Ctrl+Alt+N), or **Custom…** on the start page.
+
+With nothing open, the document area shows the **start page**:
+
+- **Open**: **Open…**, then the files you've opened and saved, each with a
+  picture of it. Click one to open it again; its **×** takes it off the list
+  (the file itself stays where it is). The list is there in Chrome and Edge.
+- **New**: **Custom…** opens the New Document dialog below. **From
+  Clipboard** makes a document the size of what's copied. Every other card
+  is a preset, and makes its document in one click, as the dialog would
+  with that preset: named Untitled, with a white Background. The corner of
+  each says its colour mode, and for print its resolution.
+
+The arrow keys move between the cards, and Enter opens one.
 
 | Setting | What it does |
 | --- | --- |
@@ -211,7 +224,7 @@ if something ever goes wrong, any unzip tool can look inside one.
 - **File → Open** (Ctrl+O) opens a .pxll, or an image (see *Images*). You
   can also drop either onto the window. Opening a file that's already open
   brings its tab to the front.
-- **File → Open Recent** and the start screen list the files you've opened
+- **File → Open Recent** and the start page list the files you've opened
   and saved.
 
 In Chrome and Edge, Save writes straight back to the file, as a desktop app
@@ -278,6 +291,25 @@ The **Layers** panel lists the document's layers, the top one first.
   duplicate the selected layers, and delete them. Rest the pointer on one
   for its name.
 - **Layer → New Group** adds an empty group above the selected layer.
+- **New layers go where you're working.** With a group selected, a new
+  layer (a pixel layer, or a shape drawn with the Pencil, Paintbrush, Blob
+  Brush, Pen or a shape tool) goes in at the top of the group; with a
+  layer inside a group selected, it goes just above that layer; with
+  several selected, above the topmost of them. Inside a group a new layer
+  is named after it: in a group called "Home", "Home 1", "Home 2" and so
+  on, so a hundred quick sketches stay sorted. Text, fill and adjustment
+  layers keep their own names.
+- **Numbers aren't given twice.** New names count on from the highest
+  number that name has ever had in the document, so deleting "Home 3" and
+  drawing again gives "Home 4". **Edit → Interface → Number new layers in
+  three digits** writes "Home 007", so a long list sorts in order.
+- **Layer → Draw Into This Group** (or right-click a group) pins it: new
+  layers go into it, at its top, whatever you select afterwards, so you can
+  adjust other layers between strokes. A pin on its row says so; click the
+  pin, or choose the command again, to stop.
+- **A folded group opens** when a new layer goes into it, and the panel
+  scrolls to the new row, so nothing lands out of sight. Fold it again
+  yourself and it stays folded from then on.
 - **Layer → Duplicate Layer** copies it, just above itself (chapter 13).
 - **Delete** (the button, or the Delete key) removes the selected layers
   and everything in them. The layer below is selected next (the one above
@@ -290,6 +322,59 @@ The **Layers** panel lists the document's layers, the top one first.
   a layer to put it inside. A line, or an outline round the row, shows where
   it will go, and a label beside the pointer says it in words: "Below
   Background", "Into Group 1", "Clipped to Layer 2", or "Can't go here".
+- **Drag several at once**: with layers selected (Ctrl-click, Shift-click),
+  drag any of them and they all go, keeping their order, as one step; the
+  label says how many. A click on one of them without dragging selects it
+  alone. Hold **Alt** as you drop to put copies there instead ("… copy"),
+  the layers staying where they were.
+- While dragging, **rest on a folded group** for a moment and it opens;
+  drop on its middle and the layers go in at its top. Near the top or
+  bottom of a long list, the list scrolls, faster the nearer the edge.
+- **Right-click a row** for the panel's menu: Draw Into, Select All in
+  Group, Group, Ungroup, Move to Group, the merges, Rasterize, Combine into
+  One Shape, renaming, colour labels and folding, for the layers selected.
+- **Layer → Group Layers** (Ctrl+G) puts the selected layers in a new group
+  in the top one's place, and selects it. **Ungroup Layers** (Ctrl+Shift+G)
+  lets a group's layers out where it was, and selects them.
+- **Layer → Select All in Group**, or **Ctrl-click** a group's arrow,
+  selects every layer in the group (the selected one, or the one holding
+  the selected layer), ready to drag, merge or rasterize.
+- **Layer → Move to Group…** lists the groups; type part of a name, choose
+  with the arrows and press Enter, and the selected layers go in at its top.
+  "Top level" takes them out of every group.
+- **Layer → Merge Layers** (Ctrl+E) makes the selected layers one pixel
+  layer of what they show together, each with its opacity, blend mode,
+  masks and effects, in the top one's place and with its name. Shapes and
+  text among them become pixels on the way; a hidden layer adds nothing.
+  With one layer selected it's **Merge Down**, into the layer below
+  (keeping that one's name); with a group selected it's **Merge Group**
+  (also **Flatten Group to Pixels**), named after the group. The menu says
+  which.
+- **Layer → Merge Visible** (Ctrl+Shift+E) merges the visible layers at the
+  top level into one; hidden layers stay as they are. **Stamp Visible**
+  (Ctrl+Alt+Shift+E) adds a new layer of everything visible above the
+  selected one, and changes nothing else.
+- **Layer → Combine Shapes → Combine into One Shape** makes the selected
+  shapes one shape holding all their paths, each as it was (a Pencil stroke
+  stays an open stroke), with the top one's look: a hundred strokes as one
+  editable layer.
+- **Layer → Colour Label** marks the selected layers red, orange, yellow,
+  green, blue, violet or grey, tinting the eye's column, as in Photoshop
+  (and kept in PSD files). New layers made inside a labelled group take its
+  label.
+- **Layer → Rename Layers…** renames the selected layers at once: by a name
+  and number, where each run of # is the number ("Window ##" gives Window
+  01, Window 02…, counted from the bottom or the top, from any start), or by
+  finding and replacing text in their names. The new names show as you
+  type.
+- **Alt-click** any group's arrow to fold or open every group. **Layer →
+  Groups in the Panel** has Collapse All, Expand All and **Collapse
+  Others**, which folds every group but those holding what's selected.
+- **Layer → Rasterize** on a group makes every shape, text, fill layer and
+  smart object in it (and in groups inside it) a pixel layer, each still a
+  layer of its own and in its place, as one step. It works on several
+  selected layers the same way. A large group shows its progress over the
+  canvas and can be called off.
 
 Putting a layer inside a group groups it. Putting it inside any other layer
 **clips** it: it only shows where that layer does, as Photoshop's clipping
@@ -914,7 +999,7 @@ on the right. The canvas shows them as you go; OK keeps them as one step.
 | Satin | Soft shading inside the shape. |
 | Colour Overlay | The layer in one colour. |
 | Gradient Overlay | The layer in a gradient, at an angle across it. |
-| Pattern Overlay | The layer in a pattern (checkerboard, stripes, dots or a grid) in two colours, sized and turned; the pattern stays put when the layer moves. |
+| Pattern Overlay | The layer in a pattern (checkerboard, stripes, dots or a grid) in two colours, sized and turned, or in one of the document's own patterns (**Document pattern**, at its **Scale**); the pattern stays put when the layer moves. |
 | Bevel & Emboss | Highlights and shadows that make the layer look raised (or sunk, Down). |
 | Stroke | An outline outside, inside or centred on the edge. |
 
@@ -1074,9 +1159,11 @@ and × to remove it. Click one to set it:
 
 | Setting | What it does |
 | --- | --- |
-| Paint | **Colour**, **Gradient** or **Pattern**. |
+| Paint | **Colour**, **Gradient**, **Pattern**, **Freeform** or **Mesh**. |
 | Colour | Its chip: click it for the colour picker. |
-| Gradient | Linear, radial, angular or diamond, across the shape's box: its stops (each with a position, a colour and an opacity), angle, scale and Reverse. |
+| Gradient | Linear, radial, angular, reflected or diamond, across the shape's box: its stops (each with a position, a colour and an opacity), angle, scale and Reverse. On a stroke, **Apply** lays it **Within** the stroke (as across a fill), **Along** it (from each path's start to its end) or **Across** it (from one edge to the other, following a width profile; an inside or outside stroke from the path out). |
+| Freeform | Colour points anywhere in the shape, the colours blending smoothly between them, as Illustrator's freeform gradient: each point's colour, opacity and **Spread** (how far its colour reaches), and Add Point. The Gradient tool places them on the canvas. |
+| Mesh | A gradient mesh: a grid of points, each with a colour, the colour running smoothly across the grid. **Columns** and **Rows** make the grid again finer or coarser, keeping its colours; the point selected on the canvas has its colour and opacity here. The Mesh tool adds rows and columns where you click. |
 | Pattern | Checkerboard, stripes, dots or a grid, in a colour over a background (which can be see-through), its size and angle. It moves and turns with the shape. |
 | Opacity, Blend mode | How it's laid over the fills and strokes below it. |
 | Width | A stroke's width in pixels. |
@@ -1379,7 +1466,7 @@ behave.
 | --- | --- |
 | Font, Style | The family and its style (weight and italics; a variable font's named instances are styles too). |
 | Size | In document pixels. |
-| Leading | Baseline to baseline. **Auto leading** makes it 120% of the size. |
+| Leading | Baseline to baseline. **Auto leading** makes it the paragraph's Auto Leading (120% of the size unless Justification says otherwise). |
 | Tracking | Extra space between every character, in thousandths of an em. |
 | Kerning | The font's own kerning, on or off. |
 | Baseline | Raises (positive) or lowers the characters. |
@@ -1387,7 +1474,8 @@ behave.
 | Underline, Strikethrough | Lines through or under the text, in its fills and strokes. |
 | Axes | A variable font's axes (weight, width, slant, optical size...), as sliders. |
 | OpenType features | Ligatures, contextual alternates, discretionary ligatures, small caps, oldstyle, lining, tabular and proportional figures, slashed zero, fractions, ordinals, superscript and subscript, where the font has them. |
-| Language | A language tag (`en`, `tr`, `sr-Latn`...): fonts use it for the right letterforms and features. |
+| Language | A language tag (`en`, `tr`, `sr-Latn`...): fonts use it for the right letterforms and features, and hyphenation for its patterns. |
+| Fill, Stroke | **Colour per character**: the selected characters' own fill and stroke, in place of the text layer's. Until set, the chip shows the layer's own ("the text's"); set, × gives it back. A stroke has its width beside it. The characters' fill takes the place of the layer's bottom fill, their stroke its bottom stroke (one is added when the layer has none); the layer's other fills and strokes go over all its text. Photoshop files keep each run's colour and stroke. |
 
 ### The Paragraph panel
 
@@ -1402,6 +1490,21 @@ or all of a selected text layer's.
 | Space before, after | Space between paragraphs. |
 | Direction | From the text (its first strong character), left to right, or right to left. |
 | Composer | **Every-line** weighs the whole paragraph's line breaks together for the most even spacing, as InDesign's and Illustrator's do. **Single-line** fills each line as it goes. |
+| Hyphenate | Breaks words at line ends with a hyphen, where the language's hyphenation patterns (TeX's) allow; the text's language (Character panel) chooses them, and they load the first time they're wanted. **Hyphenation** sets, as Photoshop does: only words longer than so many letters, at least so many letters before and after the hyphen, the most lines in a row ending in a hyphen (0 for no limit), a **Zone** (for unjustified text with the single-line composer: no hyphen when the line already reaches within that far of its end), and whether capitalized words are hyphenated. A soft hyphen typed in a word (U+00AD) is always a place it may break, with a hyphen shown there. |
+| Justification | Photoshop's Justification settings. **Word spacing**, **Letter spacing** and **Glyph scaling**, each as least, wanted and most: the wanted value is used everywhere (word spaces at 100% are the font's own); a justified line stretches or shrinks its word spaces within their range first, then its letter spacing, then its glyphs' width, and only then goes past the word spaces' limits. **Auto leading** is the share of the size auto leading uses. **One word**: a justified line holding a single word is spread across its letters, or aligned left, centre or right. |
+| Tabs | Tab stops: each one's position (from the paragraph's start edge, in pixels), alignment (**Left**, **Centre**, **Right**, or **Decimal**, which lines up on a character, a point by default) and **leader** (what fills the gap, such as a dot). A Tab typed in text moves what follows to the next stop; past the last one, stops come every **Then every** pixels (every four ems of the text's size when it's 0). |
+
+### The Glyphs panel
+
+**Window → Glyphs** shows every character of the font in use (the text
+being edited's, a selected text layer's, or new text's), drawn in it, with
+**Show** to narrow them to Latin, punctuation, numbers, symbols, Greek and
+Cyrillic, or other scripts. Click a glyph to see its code and its
+**alternates**: the other forms the font's OpenType features give it
+(stylistic alternates and sets, swashes, small caps, figures and the rest).
+Double-click a glyph to put it in at the caret of the text being edited; an
+alternate goes in with the feature that makes it, on that character alone.
+The glyphs you've inserted lately are kept along the top.
 
 ### Styles
 
@@ -1428,11 +1531,22 @@ other fonts:
   browser, so they're there next time.
 - **Type → Load System Fonts** lists the computer's own fonts, in Chrome and
   Edge, after the browser asks your permission. Each loads when it's first
-  used.
+  used. Once you've said yes, Plexel lists them by itself each time it
+  starts, so a document's fonts are there when it opens.
 
-When a document's text uses a font Plexel hasn't got, a message names it
-and the text is shown in Inter. The text keeps asking for its own font:
-add the font, and the text is drawn in it again.
+**The font menu** (Font in the Character panel and the options bar) shows
+each family in its own face. Type to search; **★** lists your favourites
+(click the star beside a family), **Recent** the last ten you picked, and
+**Sans**, **Serif**, **Mono**, **Script** and **Display** sort families by
+their names. The arrow keys move, Enter picks, Esc closes.
+
+A font is found by its family and style, or, when that doesn't match, by
+its PostScript name, its full name, or its name written another way
+(spaces, hyphens and case don't count). A font that's still loading is
+shown in Inter for a moment, without a message. When a document's text uses
+a font Plexel hasn't got, a message names it and the text is shown in
+Inter. The text keeps asking for its own font: add the font, and the text
+is drawn in it again.
 
 Saving a document **carries the fonts its text uses** inside the `.pxll`
 file, where each font's licence allows it to go with an editable document,
@@ -1576,10 +1690,14 @@ list.
 **File → Open** (Ctrl+O) opens Photoshop documents (`.psd`, and `.psb` for
 large ones), SVG files and images. A file is known by what's inside it, so
 a Photoshop document opens whatever it's called. Fonts its text asks for
-are looked for among Plexel's, the ones you've loaded and, where the
-browser allows, the computer's. Text whose font isn't here is shown in
-Inter and keeps asking for its own, as any text does (chapter 9): add the
-font and it's drawn in it.
+are looked for by their PostScript names among Plexel's, the ones you've
+loaded and, where the browser allows, the computer's (listed first, when
+you've allowed it before). Text whose font isn't here is **shown as
+Photoshop drew it** (the file keeps a picture of every text layer) and
+keeps asking for its font, by the PostScript name the file gave: add the
+font, or load the system's, and it's live text in it again. Editing the
+text lets Photoshop's picture go; from then on it's drawn as Plexel lays it
+out.
 
 ### Photoshop documents
 
@@ -1668,7 +1786,7 @@ you change them. Tick a section's box to turn it on.
 
 | Section | What it does |
 | --- | --- |
-| Brush Tip Shape | The tip (the round one, the built-in Chalk, Spatter and Dry Bristle, and any you've defined or imported), its size, Flip X and Y, angle and roundness, hardness for the round tip, and spacing. |
+| Brush Tip Shape | The tip (the round one, the built-in Chalk, Spatter and Dry Bristle, a Bristle, Erodible or Airbrush tip, and any you've defined or imported), its size, Flip X and Y, angle and roundness, hardness for the round tip, and spacing. |
 | Shape Dynamics | How the size, angle and roundness change from dab to dab: a jitter (random change) for each, a control, and a minimum; Flip X and Flip Y Jitter. |
 | Scattering | Dabs thrown off the stroke's line, by up to so many diameters, across it or both ways; how many dabs each step puts down, and that count's jitter. |
 | Texture | A paper or pattern the paint sits in: Fine Paper, Canvas, Rough Paper, Burlap, or a pattern from a brush file, at a scale, brightness and contrast, inverted or not, by one of ten modes, as deep as Depth (with its jitter and minimum), over the whole stroke or each tip on its own. |
@@ -1686,10 +1804,27 @@ preset you choose keeps the texture you have).
 
 **Controls.** A setting with a control follows one of: Off, Fade (from full
 to the minimum over so many dabs), Pen Pressure, Pen Tilt, Rotation (the
-pen's twist), Direction (the way the stroke is going), Initial Direction
-(the way it set off), Speed, Distance or Random. **Curve** shows the curve
+pen's twist), Stylus Wheel (an airbrush pen's finger wheel), Direction (the
+way the stroke is going), Initial Direction (the way it set off), Initial
+Rotation (the pen's twist as the stroke began), Speed, Distance or Random.
+A pen without a wheel counts as one turned full on. **Curve** shows the curve
 the control goes through: drag its points up or down, **More points** and
 **Fewer** change how many there are, and **Straight** puts it back.
+
+### Bristle, erodible and airbrush tips
+
+Three tips in the tip picker change as they paint, as Photoshop's do.
+Choosing one shows its own settings under the picker; choosing any other
+tip puts the brush back to an ordinary one.
+
+| Tip | What it does |
+| --- | --- |
+| Bristle Tip | A brush of hairs. **Shape** is Photoshop's ten (Round or Flat; Point, Blunt, Curve, Angle or Fan): a pointed brush touches with its middle hairs first, an angled one with one side. **Bristles** is how many hairs, **Length** how far they splay, **Thickness** how thick each is, **Stiffness** how much they hold together. Pressed harder or tilted, the hairs splay and more of them touch, so the stroke widens; each hair lays its own amount of paint, so it streaks. |
+| Erodible Tip | A pencil or a pastel that wears down. **Shape**: Point (sharp, blunting as you draw), Flat (a chisel that widens), Round, Square or Triangle (their corners rounding off). **Softness** is how fast it wears, with distance drawn and how hard you press. Tilted, a point or a round draws with its side. The wear carries on from stroke to stroke; **Sharpen Tip** makes it new, and so does choosing a preset. The panel says how worn it is. |
+| Airbrush Tip | A spray: a soft cone of paint (**Hardness** its shoulder), with **Granularity** (grain in it) and drops round it (**Spatter Size** and **Spatter Amount**). Tilted, the spray stretches and leans the way the pen leans, by **Distortion**. The Soft Airbrush preset puts its flow on the stylus wheel. |
+
+The Brushes panel has presets of each: Round, Flat and Fan Bristle, Sketch
+Pencil, Pastel Chisel, Soft Airbrush and Spray Paint.
 
 ### Tips of your own
 
@@ -1711,11 +1846,40 @@ come too, and the settings of every section above come with them, along
 with the brush's opacity, flow, blend mode and smoothing from the options
 bar.
 
-What doesn't come over is named in the message that follows: erodible and
-airbrush tips (which come in round), and a stylus wheel control, which the
-browser can't read. A control on the pen's rotation when the stroke began
-follows the pen's rotation throughout instead. Imported tips and patterns
-are kept in the browser, so they're there next time.
+Bristle, erodible and airbrush tips come in as those tips, with their shape;
+Photoshop hasn't published the names it keeps their other settings under,
+so any it can't find are the tip's defaults, and the message that follows
+says so. Imported tips and patterns are kept in the browser, so they're
+there next time.
+
+**Export** in the Brushes panel saves your brushes (all of them: saved,
+defined and imported) as a Photoshop brush file, with their tips and their
+textures' patterns, or the current brush when you have none of your own.
+Photoshop reads every section it has; what it has no place for (a control's
+curve, Speed, Distance and Random, and a bristle, erodible or airbrush tip,
+which goes as a picture of its footprint) is named. Read back into Plexel,
+the file gives each brush exactly as it was.
+
+### Tool presets
+
+**Window → Tool Presets** keeps tools with their options under a name, as
+Photoshop's panel does: a Brush with its whole brush and settings, the
+Mixer Brush and Smudge with theirs, the selection tools, the Gradient tool,
+the Paint Bucket, the shape tools, the Pen, the freehand vector tools, the
+Type tool and the Move tool. **New Tool Preset** keeps the tool in use as
+it's set now; click a preset to switch to its tool with its options;
+double-click to rename it; × deletes it. **Current Tool Only** shows just
+the presets of the tool in use; untick it for every tool's, each named
+with its tool.
+
+**Import** reads Photoshop's tool preset files (`.tpl`). Presets for tools
+Plexel has come in grouped by file: the painting tools' brushes and
+options, the Gradient tool's style, mode and opacity, the Paint Bucket's
+and Magic Wand's tolerance and switches, the Marquee's and the Lassos'
+feather and settings, the shapes (a polygon with an indent is a star), and
+the Type tool's font, size, tracking and alignment. Presets for tools
+Plexel hasn't got, and the files' custom shapes and styles, are named and
+left out.
 
 ### The Mixer Brush
 
@@ -1749,10 +1913,9 @@ selection and on moved or turned layers.
 
 ### What's still to come
 
-The retouching tools (Blur, Sharpen, Dodge, Burn, Sponge, the healing
-brushes and Clone Stamp); erodible tips, airbrush tips and bristle tips
-that splay under pressure; Photoshop's tool presets (`.tpl`); and a stylus
-wheel.
+Blur, Sharpen, Dodge, Burn and Sponge; saving tool presets out as
+Photoshop's `.tpl`; and a Mixer Brush measured against Photoshop's strokes
+(today its paint is tuned to how Photoshop's is described to behave).
 
 ## 13. Cut, copy and paste
 
@@ -1934,10 +2097,51 @@ you let go. Shift keeps the line to steps of 45°. In the options bar:
 Making a fill layer is the default: the gradient becomes a new gradient
 fill layer above the selected layer, masked by the selection if there is
 one, and it stays editable. **Drag again on a gradient fill layer** (or
-on a shape whose top fill is a gradient) and the drag moves that
-gradient's ends instead of making a new one; its colours and style are
-kept, and Properties edits the rest. **Fit to the Box** in Properties
-puts a shape's gradient back across its box.
+on a shape with a gradient) and the drag moves that gradient's ends
+instead of making a new one; its colours and style are kept, and
+Properties edits the rest. **Fit to the Box** in Properties puts a
+shape's gradient back across its box.
+
+**On the canvas**, the selected layer's gradient shows its line, as
+Illustrator's gradient annotator does: its ends as squares and its stops as
+round points just beside the line. Which gradient: a fill layer's, or the
+shape's fill or stroke open in Properties' Appearance (else its top
+gradient fill, else its top gradient stroke).
+
+- **Drag an end** to move it (Shift: 45° about the other end). A gradient
+  across the box gets a line of its own.
+- **Drag a stop** along the line to move it; **Alt-drag** for a copy;
+  drag it **far off the line** and it goes when you let go (two always
+  stay). **Click the line** to add a stop there, in the colour the
+  gradient already has there. A click selects a stop, marked in
+  Properties' list; **Delete** removes it.
+- On a **freeform gradient**, its colour points show: drag one to move it,
+  **click anywhere in the shape** to add one in the foreground colour, and
+  Delete removes the selected one. Properties sets each point's colour,
+  opacity and spread.
+- On a **mesh**, its grid and points show: drag a point to move it, click
+  one to select it and set its colour in Properties.
+
+### The Mesh tool
+
+**The Mesh tool** (in the Gradient tool's slot: G, Shift+G to cycle; U
+with Illustrator's keys) works as Illustrator's:
+
+- **Click a shape** that isn't a mesh to make its fill (or the fill or
+  stroke open in Properties) a gradient mesh, with a row and a column
+  through the point you click. The mesh starts in the colours the shape
+  had, and the new point takes the foreground colour.
+- **Click inside a mesh** to add a row and a column through that point,
+  the new point in the foreground colour; on a line already, only the
+  line across it. Each new point lies on the old grid, so nothing else
+  changes.
+- **Drag a mesh point** to move it, bending the patches round it.
+- **Alt-click a mesh point** to remove its row and column (the edges
+  stay); Delete does the same for the selected point.
+
+Freeform gradients and meshes are kept in the shape's own coordinates, so
+they move, scale and turn with it. A mesh's patches have straight sides
+between their points (Illustrator's can curve).
 
 Set to **Pixels**, the drag lays the gradient into the selected layer's
 pixels (or its mask: black to white there is the usual way to fade a layer
@@ -1971,10 +2175,47 @@ them; double-click a name to rename one, and × deletes it (anything
 painted with it then draws nothing until it's back).
 
 A pattern can be used by Edit → Fill, a pattern fill layer, the Paint
-Bucket, and any shape's fill or stroke (choose Pattern as its paint, then
-the pattern). Its **Scale** is 100% at one of its pixels to one of the
-document's. Patterns repeat from the document's top-left corner, and stay
-smooth when drawn small.
+Bucket, Pattern Overlay, and any shape's fill or stroke (choose Pattern as
+its paint, then the pattern). Its **Scale** is 100% at one of its pixels to
+one of the document's. Patterns repeat from the document's top-left
+corner, and stay smooth when drawn small.
+
+### Patterns from artwork, and pattern editing mode
+
+**Layer → Pattern → Make Pattern** (or **Make Pattern** in the Patterns
+panel) makes a pattern from the selected layers, whatever they are:
+shapes, text, pixels, groups. Copies of them go into the pattern's tile,
+the box round them; the layers stay where they were. The tile opens in a
+tab of its own, **pattern editing mode**, with its copies round it and the
+**Pattern Options** in the Patterns panel:
+
+| Option | What it does |
+| --- | --- |
+| Name | The pattern's name. |
+| Tile Type | **Grid**, **Brick by Row** or **Brick by Column** (every row or column moved along by the **Brick Offset**: ½, ⅓, ¼ or ⅕ of a tile), **Hex by Column** or **Hex by Row**. |
+| Width, Height | The tile's size: the tab's canvas, grown or shrunk round its middle. |
+| H Spacing, V Spacing | Room between tiles; less than nothing overlaps them. |
+| Show copies | The copies round the tile (View → Tiled View). |
+
+Everything works in the tab: draw, paint, type, move, transform. What you
+do goes into the pattern as you do it, so every fill, shape and layer
+style drawn with it follows; in the pattern's document it's one step
+(**Edit Pattern**) for each run of edits. Where the layout repeats a tile
+exactly (a grid, or a brick's rows across), the tab wraps: what you draw
+over one edge comes in at the other, so the tile is seamless.
+
+**Done** closes the tab. **Cancel** puts the pattern back as it was before
+the tab opened (or takes away one you were making). **Save a Copy** keeps
+what you've drawn as a new pattern beside it. Undo in either the tab or
+the document, and the other follows.
+
+To edit a pattern, double-click it in the Patterns panel or click its
+⚙ button. A pattern from pixels opens as one pixel layer of its pixels:
+paint on it, add to it, and it becomes a pattern from artwork; close it
+untouched and it stays as it was. Patterns from artwork are marked ◇ in
+the panel. A pattern's repeat (the layout of its tiles) can be up to 1,024
+pixels a side; a layout that would be bigger is refused, said, and the
+pattern keeps what it had.
 
 ### The Paint Bucket
 
@@ -2079,10 +2320,10 @@ Canvas Size move them with everything else.
 
 ### What's still to come
 
-Patterns from pixels in Pattern Overlay (a layer style's patterns are
-still the four drawn ones), a gradient editor with presets of your own,
-Photoshop's patterns, Decontaminate Colours, and Select Subject, which
-needs a model.
+A gradient editor with presets of your own, Photoshop's patterns,
+patterns larger than 1,024 pixels a side and a library of patterns
+shared between documents, Decontaminate Colours, and Select Subject,
+which needs a model.
 
 ## 15. Help as you work, and the workspace
 

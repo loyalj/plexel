@@ -60,6 +60,7 @@
     "check:panels": "node scripts/check-panels.mjs",
     "check:flow": "node scripts/check-flow.mjs",
     "check:boards": "node scripts/check-boards.mjs",
+    "check:layers": "node scripts/check-layers.mjs",
     "check:guides": "node scripts/check-guides.mjs",
     "check:workflow": "node scripts/check-workflow.mjs",
     "check:tiled": "node scripts/check-tiled.mjs",
@@ -72,6 +73,7 @@
   },
   "dependencies": {
     "bidi-js": "^1.0.3",
+    "hyphen": "1.14.1",
     "linebreak": "^1.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

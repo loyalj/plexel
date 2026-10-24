@@ -88,6 +88,8 @@ export type OpenResult =
       profiles: Map<string, Uint8Array>
       /** Font files carried with the document, by hash. */
       fonts: Map<string, Uint8Array>
+      /** thumbnail.png, for the recent list; null when the file has none. */
+      thumbnail: Uint8Array | null
       /** With `lazy`, the sets left in the file instead: where each pack is. */
       ranges: Map<string, { start: number; length: number }>
     }
@@ -148,7 +150,9 @@ export async function readPxll(file: Blob, o: { lazy?: boolean } = {}): Promise<
       const m = /^fonts\/([0-9a-f]{64})\.font$/.exec(name)
       if (m) fonts.set(m[1], await zip.read(name))
     }
-    return { ok: true, doc: read.doc, warnings: [...warnings, ...read.warnings], packs, missingSets, profiles, fonts, ranges }
+    // Only a picture: a file without one, or with one that can't be read, opens all the same.
+    const thumbnail = zip.has('thumbnail.png') ? await zip.read('thumbnail.png').catch(() => null) : null
+    return { ok: true, doc: read.doc, warnings: [...warnings, ...read.warnings], packs, missingSets, profiles, fonts, ranges, thumbnail }
   } catch (e) {
     return { ok: false, error: e instanceof ZipError ? e.message : `The file could not be read: ${String(e)}` }
   }

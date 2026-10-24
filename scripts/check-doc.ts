@@ -47,7 +47,14 @@ import {
   fillsAsShapes,
   createDoc,
   insertNode,
+  combineIntoOne,
+  groupLayers,
+  mergeLayers,
+  renameMany,
+  setTag,
+  ungroupLayers,
   moveNode,
+  moveNodes,
   removeNode,
   renameDoc,
   renameNode,
@@ -57,6 +64,7 @@ import {
   setOpacity,
   setResolution,
   setTiling,
+  setTextContent,
   setVisible,
   shiftNode,
   type NewDocOptions,
@@ -65,8 +73,10 @@ import { HISTORY_LIMIT, canRedo, canUndo, commit, initHistory, jumpTo, redo, red
 import { NODE_DEFS, NODE_KINDS, makeNode } from '../src/doc/nodes'
 import { deepEqual } from '../src/lib/equal'
 import { DOC_APP, docToJson, readDocJson } from '../src/doc/serialize'
-import { freshName, layerRows, neighbourOf, placeOf, subtree } from '../src/doc/tree'
-import { MAX_SIDE, channelKind, channelOpacity, type Doc, type DocNode } from '../src/doc/types'
+import { freshName, layerRows, nameIn, neighbourOf, noteNumbers, outermost, placeOf, subtree, whereNew } from '../src/doc/tree'
+import { MAX_SIDE, channelKind, channelOpacity, type Doc, type DocNode, type PatternTile } from '../src/doc/types'
+import { contentOf, editTiling, patternContent, pixelContent, readPatternTile, repeatFits, repeatOf } from '../src/doc/patterns'
+import { convertDocColours, pixelSets } from '../src/doc/convert'
 import { fragmentLayers, fragmentOf, pasteFragment, pixelFragment } from '../src/doc/fragment'
 
 let failures = 0
@@ -140,6 +150,64 @@ check('a layer can move into another group', children(into).join() === 'a,b' && 
 check('shift up moves one step towards the top', children(shiftNode(s, 'a', 1)).join() === 'b,a,c')
 check('shift at the top stays put', shiftNode(s, 'c', 1) === s)
 check('shift at the bottom stays put', shiftNode(s, 'a', -1) === s)
+
+// Several layers at once: the Layers panel's drag of everything selected.
+const many = moveNodes(s, ['c', 'a'], 'd', 0)
+check('several layers move together, keeping their order', children(many).join() === 'b' && children(many, 'd').join() === 'a,c')
+check('dropped among others, at the index counted without them', children(moveNodes(s, ['a', 'c'], 'root', 1)).join() === 'b,a,c' && children(moveNodes(s, ['c', 'a'], 'root', 0)).join() === 'a,c,b')
+check('a layer inside another being moved goes with it', children(moveNodes(s, ['b', 'd'], 'a', 0), 'a').join() === 'b' && children(moveNodes(s, ['b', 'd'], 'a', 0), 'b').join() === 'd')
+check('refused whole when one would go inside itself', moveNodes(s, ['a', 'b'], 'd', 0) === s)
+check('a move that changes nothing returns the document', moveNodes(s, ['b', 'c'], 'root', 1) === s)
+check('outermost: nested dropped, painting order across groups', outermost(s, ['c', 'd', 'a']).join() === 'a,d,c' && outermost(s, ['d', 'b']).join() === 'b')
+
+// New layers with a group selected go in it, named after it.
+const home = renameNode(s, 'b', 'Home')
+check('with a group selected, a new layer goes at its top', whereNew(home, 'b').parent === 'b' && whereNew(home, 'b').index === 1)
+const homeQ = insertNode(home, makeNode('pixel', 'q', 'Q'), 'b', 0)
+check('with a layer in a group selected, just above it', whereNew(homeQ, 'q').parent === 'b' && whereNew(homeQ, 'q').index === 1)
+check('in a group a new layer is named after it', nameIn(home, 'b', 'Pencil') === 'Home 1' && nameIn(insertNode(home, makeNode('pixel', 'h1', 'Home 1'), 'b', 0), 'b', 'Layer') === 'Home 2')
+check('at the top level, after its kind', nameIn(home, 'root', 'Pencil') === 'Pencil 1')
+
+// Merge Layers: one pixel layer in the top one's place, with its name.
+let px = fresh()
+px = insertNode(px, makeNode('pixel', 'p1', 'Bottom', { tiles: 's1' }), 'root', 0)
+px = insertNode(px, makeNode('pixel', 'p2', 'Middle', { tiles: 's2' }), 'root', 1)
+px = insertNode(px, makeNode('pixel', 'p3', 'Top', { tiles: 's3' }), 'root', 2)
+px = insertNode(px, makeNode('group', 'g', 'G'), 'root', 3)
+px = moveNode(px, 'p3', 'g', 0)
+const merged = mergeLayers(px, ['p3', 'p1'], 'm', 'sm')
+check('merged layers become one pixel layer in the top one’s place, with its name', !merged.nodes.p1 && !merged.nodes.p3 && children(merged, 'g').join() === 'm' && merged.nodes.m.kind === 'pixel' && merged.nodes.m.name === 'Top' && (merged.nodes.m.props as { tiles: string }).tiles === 'sm' && children(merged).join() === 'p2,g')
+const mg = mergeLayers(px, ['g'], 'm', 'sm', 'G')
+check('a group alone merges into one layer in its place, named after it', !mg.nodes.g && !mg.nodes.p3 && children(mg).join() === 'p1,p2,m' && mg.nodes.m.name === 'G')
+check('nothing to merge, nothing done', mergeLayers(px, [], 'm', 'sm') === px)
+
+// Group and Ungroup, the pin, numbering, labels, renaming several.
+const grouped = groupLayers(s, ['a', 'c'], 'gg', 'Group 9')
+check('Group puts the layers in a new group in the top one’s place, in their order', children(grouped).join() === 'b,gg' && children(grouped, 'gg').join() === 'a,c' && grouped.nodes.gg.name === 'Group 9')
+check('a group can’t be made of what can’t go in one', groupLayers(s, [], 'gg', 'G') === s)
+const ungrouped = ungroupLayers(grouped, ['gg'])
+check('Ungroup lets them out where the group was, and it goes', children(ungrouped).join() === 'b,a,c' && !ungrouped.nodes.gg)
+check('Ungroup passes over what isn’t a group', ungroupLayers(px, ['p1']) === px)
+check('with a group pinned, a new layer goes at its top whatever’s selected', whereNew(s, 'a', null, { pinned: 'b' }).parent === 'b' && whereNew(s, 'a', null, { pinned: 'b' }).index === 1)
+check('a pin on a group that’s gone counts for nothing', whereNew(s, 'a', null, { pinned: 'gone' }).parent === whereNew(s, 'a').parent)
+check('with several selected, above the topmost of them', whereNew(px, 'p1', null, { others: ['p2'] }).index === 2 && whereNew(px, 'p1', null, { others: ['p2'] }).parent === 'root')
+const numbered = insertNode(insertNode(home, makeNode('pixel', 'h1', 'Home 1'), 'b', 0), makeNode('pixel', 'h3', 'Home 3'), 'b', 1)
+check('numbers go on from the highest, not into a gap', nameIn(numbered, 'b', 'Layer') === 'Home 4')
+const given = noteNumbers(home, insertNode(home, makeNode('pixel', 'h7', 'Home 7'), 'b', 0))
+const reread = readDocJson(docToJson(given))
+check('a number given isn’t given again once its layer goes', nameIn(removeNode(given, 'h7'), 'b', 'Layer') === 'Home 8', nameIn(removeNode(given, 'h7'), 'b', 'Layer'))
+check('and the document remembers it when saved', reread.ok && reread.doc.numbered?.Home === 7)
+check('and can be padded so they sort', nameIn(numbered, 'b', 'Layer', 3) === 'Home 004' && freshName(s, 'Layer', 3) === 'Layer 001')
+check('a name that only starts with the base doesn’t count', freshName(insertNode(s, makeNode('pixel', 'x1', 'Group 12b'), 'root', 0), 'Group') === 'Group 1')
+const tagged = setTag(s, 'b', 'green')
+check('a colour label is set, and setting it again changes nothing', tagged.nodes.b.tag === 'green' && setTag(tagged, 'b', 'green') === tagged)
+const renamed = renameMany(s, new Map([['a', 'One'], ['c', ' '], ['gone', 'X']]))
+check('several renamed at once; empty names and missing layers passed over', renamed.nodes.a.name === 'One' && renamed.nodes.c.name === 'C')
+let sh = fresh()
+sh = insertNode(sh, makeNode('vector', 'v1', 'Low', { geometry: { kind: 'path', path: { fillRule: 'nonzero', subpaths: [] } }, appearance: [] }), 'root', 0)
+sh = insertNode(sh, makeNode('vector', 'v2', 'High', { geometry: { kind: 'path', path: { fillRule: 'nonzero', subpaths: [] } }, appearance: [] }), 'root', 1)
+const one = combineIntoOne(sh, ['v1', 'v2'], { fillRule: 'nonzero', subpaths: [] })
+check('Combine into One Shape leaves one shape, the top one, with the path given', children(one).join() === 'v2' && one.nodes.v2.kind === 'vector' && !one.nodes.v1)
 
 check('renaming trims, and a blank name is refused', renameNode(s, 'a', '  Sky ').nodes.a.name === 'Sky' && renameNode(s, 'a', '  ') === s)
 check('renaming to the same name changes nothing', renameNode(s, 'a', 'A') === s)
@@ -507,6 +575,56 @@ console.log('\npatterns, alpha channels and fill layers')
   check('a fill layer may hold clipped layers, as any layer may', NODE_DEFS.fill.container && NODE_DEFS.group.accepts!('fill'))
 }
 
+console.log('\npatterns made from artwork, and pattern editing mode')
+{
+  const t = (type: PatternTile['type'], offset = 0.5, spacing: [number, number] = [0, 0]): PatternTile => ({ type, offset, spacing })
+  const tilesOf = (n: DocNode) => (n.kind === 'pixel' ? n.props.tiles : undefined)
+  check('a grid repeats every tile, with its spacing', JSON.stringify(repeatOf(40, 30, t('grid', 0.5, [10, -5]))) === JSON.stringify({ width: 50, height: 25, at: [[0, 0]] }))
+  check('bricks by row, a third along: three rows to a repeat, each moved on a third', JSON.stringify(repeatOf(30, 20, t('brick-row', 1 / 3))) === JSON.stringify({ width: 30, height: 60, at: [[0, 0], [10, 20], [20, 40]] }))
+  check('bricks by column, half down', JSON.stringify(repeatOf(30, 20, t('brick-column'))) === JSON.stringify({ width: 60, height: 20, at: [[0, 0], [30, 10]] }))
+  check('hexagons by column: columns three quarters of a tile apart, every other half down', JSON.stringify(repeatOf(40, 30, t('hex-column'))) === JSON.stringify({ width: 60, height: 30, at: [[0, 0], [30, 15]] }))
+  check('hexagons by row', JSON.stringify(repeatOf(40, 40, t('hex-row'))) === JSON.stringify({ width: 40, height: 60, at: [[0, 0], [20, 30]] }))
+  check('overlapped past nothing, a tile still steps a pixel', repeatOf(10, 10, t('grid', 0.5, [-50, 0])).width === 1)
+  check('a repeat too big for a pattern is told', !repeatFits(repeatOf(400, 300, t('brick-row', 1 / 5))) && repeatFits(repeatOf(400, 200, t('brick-row', 1 / 5))))
+  check(
+    'the edit tab wraps where the layout repeats a tile exactly',
+    editTiling(t('grid')) === 'both' && editTiling(t('grid', 0.5, [4, 0])) === 'y' && editTiling(t('brick-row')) === 'x' && editTiling(t('brick-column')) === 'y' && editTiling(t('hex-column')) === 'y' && editTiling(t('hex-row', 0.5, [2, 0])) === 'off',
+  )
+  const tile = readPatternTile({ type: 'brick-row', offset: 0.3, spacing: [3.4, 'x'] })
+  check('a tile read back: the offset to the nearest offered, spacing whole', tile.type === 'brick-row' && tile.offset === 1 / 3 && tile.spacing[0] === 3 && tile.spacing[1] === 0 && readPatternTile('junk').type === 'grid')
+
+  // Make Pattern: copies of layers, moved so their box is the tile.
+  let d = fresh()
+  d = addPattern(d, { id: 'p1', name: 'Dots', tiles: 'pat-set', width: 40, height: 30 })
+  const disc = makeNode('vector', 'v1', 'Disc', { geometry: { kind: 'shape', shape: { type: 'ellipse', x: 0, y: 0, w: 50, h: 50 } }, appearance: [{ kind: 'fill', enabled: true, paint: { kind: 'pattern', pattern: 'p1', colour: [0, 0, 0], background: [1, 1, 1], backgroundAlpha: 1, size: 40, angle: 0 }, opacity: 1, blend: 'normal' }], graphicStyle: null })
+  disc.transform = [1, 0, 0, 1, 110, 220]
+  d = insertNode(d, disc, 'root', 0)
+  const px = makeNode('pixel', 'px1', 'Paint', { tiles: 'art-set' })
+  d = insertNode(d, px, 'root', 1)
+  const content = patternContent(d, ['v1', 'px1'], [110, 220, 160, 270], 'pr', 'Tile')
+  check('Make Pattern: the tile is the layers’ box, the layers moved into it', content.width === 50 && content.height === 50 && JSON.stringify(content.nodes.v1.transform) === JSON.stringify([1, 0, 0, 1, 0, 0]) && content.nodes.pr.children?.join() === 'v1,px1')
+  check('the document’s layers stay where they were', JSON.stringify(d.nodes.v1.transform) === JSON.stringify([1, 0, 0, 1, 110, 220]))
+  check('the tile carries the patterns its layers use, and no tiling or channels', content.patterns?.[0]?.id === 'p1' && !content.tiled && !content.channels && content.name === 'Tile')
+  const pc = pixelContent(d, d.patterns![0], 'r2', 'l2')
+  check('a pattern from pixels opens as one pixel layer of its repeat', pc.width === 40 && pc.height === 30 && pc.nodes.l2.kind === 'pixel' && pc.nodes.l2.props.tiles === 'pat-set' && pc.nodes.r2.children?.join() === 'l2')
+  check('the tab’s document comes back without its tiling', !contentOf({ ...content, tiled: 'both' }, 'Tile').tiled)
+
+  const withArt = addPattern(d, { id: 'p2', name: 'Art', tiles: 'rep-set', width: 50, height: 100, art: { content, tile: t('brick-row') } })
+  check('a pattern’s artwork is among the document’s tile sets', ['rep-set', 'art-set'].every((s) => tileSetsOf(withArt).includes(s)))
+  const back = readDocJson(docToJson(withArt))
+  check('a pattern with artwork reads back as written, with no warnings', back.ok && back.warnings.length === 0 && deepEqual(back.doc.patterns, withArt.patterns), back.ok ? back.warnings.join('; ') : back.error)
+  const damaged = readDocJson(JSON.stringify({ format: DOC_FORMAT, app: DOC_APP, doc: { ...JSON.parse(docToJson(withArt)).doc, patterns: [{ id: 'p2', name: 'Art', tiles: 'rep-set', width: 50, height: 100, art: { content: JSON.parse(docToJson(content)).doc, tile: { type: 'spiral' } } }] } }))
+  check('a layout that isn’t understood is a grid', damaged.ok && damaged.doc.patterns?.[0].art?.tile.type === 'grid')
+  const lost = dropLostSets(withArt, new Set(['art-set']))
+  check('a lost tile set inside the artwork leaves its layer empty, the pattern kept', !!lost.patterns?.find((p) => p.id === 'p2')?.art?.content.nodes.px1 && tilesOf(lost.patterns.find((p) => p.id === 'p2')!.art!.content.nodes.px1) === null)
+  // Document → Mode: the artwork (and symbols' contents) convert with the document.
+  const sets = pixelSets(withArt)
+  check('converting a document takes in the artwork’s pixels', sets.includes('art-set') && sets.includes('rep-set'))
+  const into = convertDocColours(withArt, { mode: 'gray', profile: DEFAULT_PROFILES.gray, depth: 8 }, (c) => [c[0] ?? 0], new Map(sets.map((s) => [s, `${s}-g`])))
+  const art = into.patterns?.find((p) => p.id === 'p2')?.art?.content
+  check('and the artwork converts with it: its mode, its pixels', art?.mode === 'gray' && tilesOf(art.nodes.px1) === 'art-set-g' && into.patterns?.find((p) => p.id === 'p2')?.tiles === 'rep-set-g')
+}
+
 // --- what's selected when the selected layer goes ---------------------------------------------
 console.log('\nthe layer selected in place of one that goes')
 {
@@ -548,6 +666,19 @@ console.log('\ntiled documents')
   const smart = convertToSmartObject(layered, ['p'], 'so', 'so-root', 'Smart', { x: 0, y: 0, width: 100, height: 100 })
   const so = smart.nodes.so
   check('a smart object’s contents aren’t a tile of their own, though the document is', smart.tiled === 'both' && so?.kind === 'embedded' && !!so.props.content && so.props.content.tiled === undefined)
+}
+
+// --- a text layer's stand-in pixels (a Photoshop file's) ------------------------------------------
+console.log('\ntext drawn by another app')
+{
+  const t = makeNode('text', 't', 'Text', { mode: 'point', content: { paragraphs: [] }, frame: null, pathOffset: 0, appearance: [], stand: { tiles: 'stand-1', m: [1, 0, 0, 1, 5, -20] } })
+  const d = insertNode(fresh(), t, 'root', 0)
+  check('its pixels are kept with the document’s', tileSetsOf(d).includes('stand-1'))
+  const back = readDocJson(docToJson(d))
+  check('and saved', back.ok && (back.doc.nodes.t as typeof t).props.stand?.tiles === 'stand-1')
+  const edited = setTextContent(d, 't', { paragraphs: [] })
+  check('editing the text lets them go: it’s drawn as Plexel lays it out from then on', !(edited.nodes.t as typeof t).props.stand && !tileSetsOf(edited).includes('stand-1'))
+  check('a file missing them drops them, the text kept', !(dropLostSets(d, new Set(['stand-1'])).nodes.t as typeof t).props.stand)
 }
 
 console.log(`\n${failures === 0 ? 'all clear' : `${failures} failure(s)`}`)

@@ -119,6 +119,8 @@ export const FX_DEFS: FxDef[] = [
       n('backgroundOpacity', 'Background opacity', 0, 100, 100, '%'),
       n('scale', 'Size', 1, 1000, 16, 'px', 'One cell of the pattern, in document pixels.'),
       n('angle', 'Angle', -180, 180, 0, '°'),
+      { key: 'image', kind: 'pattern', label: 'Document pattern', hint: 'A pattern of the document’s (Define Pattern, Make Pattern) in place of the drawn one: its own colours, at its own size times the Scale.' },
+      n('imageScale', 'Scale', 1, 1000, 100, '%', 'The document pattern’s size: 100% is a pixel of it to a pixel of the document.'),
     ],
     reach: () => 0,
   }),

@@ -15,6 +15,7 @@
  */
 import { BUILTIN_TIPS, type TipId } from './defs'
 import { rng } from './rng'
+import { generateTip, isGeneratedTip } from './special'
 
 /** The built-in sampled tips' size, a side. */
 export const BUILTIN_TIP_SIZE = 256
@@ -186,6 +187,14 @@ export function tipImage(tip: TipId): TipImage | null {
     t = makeTip(n, n, tip === 'chalk' ? chalk(n) : tip === 'spatter' ? spatter(n) : bristle(n))
     registry.set(tip, t)
   }
+  if (!t && isGeneratedTip(tip)) {
+    // A bristle, erodible or airbrush tip's footprint, made from its name (special.ts).
+    const g = generateTip(tip)
+    if (g) {
+      t = makeTip(g.size, g.size, g.data)
+      registry.set(tip, t)
+    }
+  }
   return t ?? null
 }
 
@@ -194,7 +203,7 @@ export function registerTip(id: TipId, t: TipImage) {
   registry.set(id, t)
 }
 
-export const hasTip = (id: TipId) => id === 'round' || (BUILTIN_TIPS as string[]).includes(id) || registry.has(id)
+export const hasTip = (id: TipId) => id === 'round' || (BUILTIN_TIPS as string[]).includes(id) || isGeneratedTip(id) || registry.has(id)
 
 /** A tip's id from its pixels: the same image is the same tip wherever it came from. */
 export function tipId(width: number, height: number, data: Uint8Array): TipId {

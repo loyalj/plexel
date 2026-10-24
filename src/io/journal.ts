@@ -44,6 +44,8 @@ export interface SessionDoc {
   clean: boolean
   /** Layers folded in the layers panel. */
   folded: NodeId[]
+  /** The group new layers are pinned to (Draw Into), if any. */
+  drawInto?: NodeId | null
   /** A smart object's contents opened from another document: that document and the smart object's node. */
   parent?: { key: string; node: NodeId } | null
 }
@@ -128,6 +130,7 @@ export async function restoreSession(store: JournalStore): Promise<{ docs: Resto
       file: d.file && typeof d.file.name === 'string' ? { name: d.file.name, handleKey: typeof d.file.handleKey === 'string' ? d.file.handleKey : null } : null,
       clean: d.clean === true,
       folded: Array.isArray(d.folded) ? d.folded.filter((x) => typeof x === 'string') : [],
+      drawInto: typeof d.drawInto === 'string' ? d.drawInto : null,
       parent: d.parent && typeof d.parent.key === 'string' && typeof d.parent.node === 'string' ? { key: d.parent.key, node: d.parent.node } : null,
       doc: read.doc,
       warnings: read.warnings,

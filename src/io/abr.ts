@@ -15,7 +15,7 @@
  * ids (brush/tips.ts `tipId`), so a tip from an ABR file is the same tip
  * however often it's imported. Whatever can't come over is named.
  */
-import { DEFAULT_BRUSH, DEFAULT_DUAL, DEFAULT_TEXTURE, LINEAR, type BrushSettings, type DualMode, type DynInput, type DynTarget, type Dynamic, type TextureMode } from '../brush/defs'
+import { readBrush, BRISTLE_SHAPES, DEFAULT_AIRBRUSH, DEFAULT_BRISTLE, DEFAULT_BRUSH, DEFAULT_DUAL, DEFAULT_ERODIBLE, DEFAULT_TEXTURE, ERODIBLE_SHAPES, LINEAR, type BrushSettings, type DualMode, type DynInput, type DynTarget, type Dynamic, type SpecialTip, type TextureMode } from '../brush/defs'
 import { tipId } from '../brush/tips'
 import { BLEND_MODES, type BlendModeId } from '../doc/types'
 import { PsdError, Reader } from './psd/bin'
@@ -35,6 +35,8 @@ export interface AbrImage {
 export interface AbrPreset {
   name: string
   settings: BrushSettings
+  /** Read from Plexel's own copy of the settings (io/abrWrite.ts): its tips and textures already have Plexel's ids. */
+  own?: boolean
 }
 
 export interface AbrFile {
@@ -117,7 +119,7 @@ function readLegacy(r: Reader, version: number, out: AbrFile) {
 
 // --- versions 6 to 10: samples and patterns --------------------------------------------------------
 
-function readSamples(s: Reader, sub: number, byAbrId: Map<string, AbrImage>, out: AbrFile) {
+export function readSamples(s: Reader, sub: number, byAbrId: Map<string, AbrImage>, out: AbrFile) {
   while (s.left >= 4) {
     const len = s.u32()
     const start = s.pos
@@ -171,7 +173,7 @@ function readVmaChannel(r: Reader): { w: number; h: number; data: Uint8Array } |
   return { w, h, data: readImage(s, w, h, depth, compression) }
 }
 
-function readPatterns(s: Reader, out: AbrFile) {
+export function readPatterns(s: Reader, out: AbrFile) {
   while (s.left >= 4) {
     const len = s.u32()
     const start = s.pos
@@ -217,9 +219,73 @@ function readPatterns(s: Reader, out: AbrFile) {
 // --- presets ------------------------------------------------------------------------------------------
 
 /** Photoshop's control codes (brVr's bVTy). */
-const CONTROL: Record<number, DynInput | null> = { 0: null, 1: 'fade', 2: 'pressure', 3: 'tilt', 5: 'initial-direction', 6: 'direction', 8: 'twist' }
+const CONTROL: Record<number, DynInput | null> = { 0: null, 1: 'fade', 2: 'pressure', 3: 'tilt', 4: 'wheel', 5: 'initial-direction', 6: 'direction', 7: 'initial-twist', 8: 'twist' }
 
-const BLEND_NAMES: Record<string, BlendModeId> = {
+/**
+ * A number of a tip's own, found by its key's name: Photoshop's bristle,
+ * erodible and airbrush settings are written under keys that haven't been
+ * published, so any key that names the setting is taken. Percentages are
+ * read as shares; a bare number over 1 is taken as a percentage too.
+ */
+export function share(d: Descriptor, pattern: RegExp, lo: number, hi: number): number | null {
+  for (const [key, v] of d.items) {
+    if (!pattern.test(key.trim())) continue
+    const x = v.t === 'UntF' ? (v.unit === '#Prc' ? v.v / 100 : v.v) : v.t === 'doub' || v.t === 'long' ? (v.v > 1 && hi <= 5 ? v.v / 100 : v.v) : null
+    if (x !== null && Number.isFinite(x)) return Math.min(hi, Math.max(lo, x))
+  }
+  return null
+}
+
+/**
+ * A bristle tip (class dBrush) or an erodible or airbrush one (dTips),
+ * from its shape (Shp: the shape's place in Photoshop's menu; under dTips
+ * 5 is the airbrush) and whatever of its settings can be found by name.
+ */
+function specialOf(s: Descriptor, name: string, warn: (w: string) => void): SpecialTip | null {
+  if (s.cls !== 'dBrush' && s.cls !== 'dTips') return null
+  const shp = Math.round(num(s, 'Shp ', 0))
+  let found = 0
+  const pick = (pattern: RegExp, lo: number, hi: number, d: number) => {
+    const v = share(s, pattern, lo, hi)
+    if (v !== null) found++
+    return v ?? d
+  }
+  let out: SpecialTip
+  let wanted: number
+  if (s.cls === 'dBrush') {
+    const d = DEFAULT_BRISTLE
+    if (!BRISTLE_SHAPES[shp]) warn(`“${name}”’s bristle shape wasn’t one Plexel knows; it came in Round Point`)
+    out = {
+      kind: 'bristle',
+      shape: BRISTLE_SHAPES[shp] ?? d.shape,
+      bristles: pick(/dens|bristles?$|brstl|count/i, 0.01, 1, d.bristles),
+      length: pick(/le?ngth|lngt/i, 0.25, 5, d.length),
+      thickness: pick(/thick|thck/i, 0.01, 2, d.thickness),
+      stiffness: pick(/stiff|stff/i, 0.01, 1, d.stiffness),
+    }
+    wanted = 4
+  } else if (shp === 5) {
+    const d = DEFAULT_AIRBRUSH
+    out = {
+      kind: 'airbrush',
+      hardness: pick(/^hrdn$|hard/i, 0, 1, d.hardness),
+      distortion: pick(/distort|dstr/i, 0, 1, d.distortion),
+      granularity: pick(/granul|grnl/i, 0, 1, d.granularity),
+      spatterSize: pick(/spat\w*size|sptS/i, 0, 1, d.spatterSize),
+      spatterAmount: pick(/spat\w*(amount|amt)|sptA/i, 0, 1, d.spatterAmount),
+    }
+    wanted = 5
+  } else {
+    const d = DEFAULT_ERODIBLE
+    if (!ERODIBLE_SHAPES[shp]) warn(`“${name}”’s erodible shape wasn’t one Plexel knows; it came in as a point`)
+    out = { kind: 'erodible', shape: ERODIBLE_SHAPES[shp] ?? d.shape, softness: pick(/soft|sftn/i, 0, 1, d.softness) }
+    wanted = 1
+  }
+  if (found < wanted) warn(`“${name}”’s ${out.kind} tip came in with its shape; settings of it Plexel couldn’t find are its defaults`)
+  return out
+}
+
+export const BLEND_NAMES: Record<string, BlendModeId> = {
   Nrml: 'normal', normal: 'normal', Dslv: 'dissolve', dissolve: 'dissolve', Bhnd: 'normal', Drkn: 'darken', darken: 'darken', Mltp: 'multiply', multiply: 'multiply', CBrn: 'color-burn', colorBurn: 'color-burn', linearBurn: 'linear-burn',
   darkerColor: 'darker-color', Lghn: 'lighten', lighten: 'lighten', Scrn: 'screen', screen: 'screen', CDdg: 'color-dodge', colorDodge: 'color-dodge', linearDodge: 'linear-dodge', lighterColor: 'lighter-color', Ovrl: 'overlay', overlay: 'overlay',
   SftL: 'soft-light', softLight: 'soft-light', HrdL: 'hard-light', hardLight: 'hard-light', vividLight: 'vivid-light', linearLight: 'linear-light', pinLight: 'pin-light', hardMix: 'hard-mix', Dfrn: 'difference', difference: 'difference', Xclu: 'exclusion', exclusion: 'exclusion',
@@ -233,8 +299,22 @@ const pct = (d: Descriptor | undefined, key: string, fallback = 0) => {
   return v ? num(d, key, fallback * 100) / 100 : fallback
 }
 
-function readPreset(p: Descriptor, byAbrId: Map<string, AbrImage>, warn: (w: string) => void): AbrPreset | null {
+/**
+ * A brush preset's settings. A tool preset (io/tpl.ts) keeps its tool's
+ * options (opacity, flow, mode, smoothing) among its own keys rather than
+ * in a toolOptions object: `options` says where they are.
+ */
+export function readPreset(p: Descriptor, byAbrId: Map<string, AbrImage>, warn: (w: string) => void, options?: Descriptor): AbrPreset | null {
   const name = str(p, 'Nm  ', 'Brush')
+  // A brush Plexel wrote carries its settings whole: read those, not Photoshop's approximation of them.
+  const own = str(p, 'plexelBrush')
+  if (own) {
+    try {
+      return { name, settings: readBrush(JSON.parse(own), warn), own: true }
+    } catch {
+      // Not readable: Photoshop's keys instead.
+    }
+  }
   const shape = obj(p, 'Brsh')
   if (!shape) return null
   const b: BrushSettings = { ...DEFAULT_BRUSH, dynamics: [] }
@@ -247,10 +327,12 @@ function readPreset(p: Descriptor, byAbrId: Map<string, AbrImage>, warn: (w: str
       warn(`“${name}”’s tip wasn’t in the file; it came in round`)
       return 'round'
     }
-    warn(`“${name}” is a ${s.cls === 'dBrush' ? 'bristle' : s.cls === 'dTips' ? 'erodible or airbrush' : 'kind of'} tip Plexel hasn’t got; it came in round`)
+    if (s.cls === 'dBrush' || s.cls === 'dTips') return 'round'
+    warn(`“${name}” is a kind of tip Plexel hasn’t got; it came in round`)
     return 'round'
   }
   b.tip = tipOf(shape) ?? 'round'
+  b.special = specialOf(shape, name, warn)
   b.size = Math.max(1, num(shape, 'Dmtr', 30))
   b.hardness = shape.cls === 'computedBrush' ? pct(shape, 'Hrdn', 1) : 1
   b.angle = num(shape, 'Angl', 0)
@@ -263,9 +345,7 @@ function readPreset(p: Descriptor, byAbrId: Map<string, AbrImage>, warn: (w: str
     if (!v) return 0
     const code = num(v, 'bVTy', 0)
     const input = CONTROL[code]
-    if (code === 4) warn(`“${name}” is controlled by a stylus wheel, which the browser can’t read; that control was left off`)
-    if (code === 7) warn(`“${name}” is controlled by the pen’s rotation when the stroke begins; it follows the pen’s rotation throughout instead`)
-    const inp = input ?? (code === 7 ? 'twist' : null)
+    const inp = input
     if (inp) dynamics.push({ input: inp, target, curve: [...LINEAR], min, ...(inp === 'fade' ? { steps: Math.max(1, num(v, 'fStp', 25)) } : {}) })
     return clamp01(pct(v, 'jitter', 0))
   }
@@ -353,7 +433,7 @@ function readPreset(p: Descriptor, byAbrId: Map<string, AbrImage>, warn: (w: str
   b.noise = bool(p, 'Nose')
   b.wetEdges = bool(p, 'Wtdg')
   b.buildUp = bool(p, 'Rpt ')
-  const tool = obj(p, 'toolOptions')
+  const tool = obj(p, 'toolOptions') ?? options
   if (tool) {
     b.opacity = clamp01(num(tool, 'Opct', 100) / 100)
     b.flow = clamp01(num(tool, 'flow', 100) / 100)
@@ -417,7 +497,7 @@ export function readAbr(bytes: Uint8Array): AbrFile {
     const patIds = new Set(out.patterns.map((p) => p.id))
     for (const p of out.presets) {
       const t = p.settings.texture
-      if (t?.id.startsWith('pat:') && !patIds.has(t.id.slice(4))) {
+      if (!p.own && t?.id.startsWith('pat:') && !patIds.has(t.id.slice(4))) {
         warn(`“${p.name}”’s texture pattern wasn’t in the file; it came in with paper`)
         p.settings.texture = { ...t, id: 'paper' }
       }
@@ -436,6 +516,6 @@ export function renamePatterns(f: AbrFile, hash: (p: AbrImage) => string): AbrFi
   return {
     ...f,
     patterns: f.patterns.map((p) => ({ ...p, id: map.get(p.id)! })),
-    presets: f.presets.map((p) => (p.settings.texture?.id.startsWith('pat:') ? { ...p, settings: { ...p.settings, texture: { ...p.settings.texture, id: map.get(p.settings.texture.id.slice(4)) ?? 'paper' } } } : p)),
+    presets: f.presets.map((p) => (!p.own && p.settings.texture?.id.startsWith('pat:') ? { ...p, settings: { ...p.settings, texture: { ...p.settings.texture, id: map.get(p.settings.texture.id.slice(4)) ?? 'paper' } } } : p)),
   }
 }

@@ -12,13 +12,21 @@
  * where the fill is (inside) or isn't (outside): its `clip`. A stroke
  * with a vector brush is its artwork's parts, each in its own paint
  * (`parts`), laid together as the one stroke.
+ *
+ * Text whose characters have paints of their own (colour per character,
+ * geom/glyphs.ts) is split: the text's bottom fill draws its own glyphs
+ * in its paint and the others in theirs, and likewise its bottom stroke
+ * (one is added for characters with a stroke when the text has none; a
+ * fill, too, for characters with a fill when it has none). Every other
+ * fill and stroke goes over all of it.
  */
 import type { ColourMode } from '../doc/types'
-import { appearanceIn, strokeStyleOf, type AppearanceItem, type Paint, type StrokeItem } from '../doc/vector'
+import { appearanceIn, fillItem, paintIn, strokeItem, strokeStyleOf, type AppearanceItem, type Paint, type StrokeItem } from '../doc/vector'
 import { brushPieces, brushReach } from './brush'
+import { strokeCentre, type StrokeCentre } from './paint'
 import { flattenPath, maxScale, type Box, type FillRule, type Mat, type PathData, type Pt } from '../geom/path'
 import { warpLines } from '../geom/warp'
-import { flattenOutline, glyphsToPath, isGlyphs, outlineBounds, outlineClosed, outlineEmpty, outlineFillRule, type Outline } from '../geom/glyphs'
+import { flattenOutline, glyphSubset, glyphsToPath, isGlyphs, outlineBounds, outlineClosed, outlineEmpty, outlineFillRule, type GlyphSet, type Outline } from '../geom/glyphs'
 import { hasPathEffects, itemPath } from './itemEffects'
 import { fillSegments, loopsToSegments, segmentsBounds } from '../geom/raster'
 import { strokeOutline, strokeReach } from '../geom/stroke'
@@ -41,6 +49,8 @@ export interface ItemOutline {
    * and effects). `segs` is then all of them together, for its box.
    */
   parts?: { segs: number[]; rule: FillRule; paint: Paint; box: Box | null }[]
+  /** A stroke whose gradient runs along or across it: its centre line (vector/paint.ts). */
+  centre?: StrokeCentre
 }
 
 export interface VectorOutline {
@@ -81,9 +91,13 @@ export function vectorOutline(path: Outline, appearance: AppearanceItem[], trans
     }
   }
   const own = geometryOf(path)
-  for (const item of appearanceIn(appearance, mode)) {
+  const pairs: { item: AppearanceItem; outline: Outline }[] = isGlyphs(path) && path.paints?.length ? perCharacter(path, appearanceIn(appearance, mode), mode) : appearanceIn(appearance, mode).map((item) => ({ item, outline: path }))
+  const geometries = new Map<Outline, ReturnType<typeof geometryOf>>([[path, own]])
+  for (const { item, outline } of pairs) {
     if (!item.enabled || item.opacity <= 0) continue
-    const g = hasPathEffects(item.effects) ? geometryOf(itemPath(isGlyphs(path) ? glyphsToPath(path) : path, item.effects, mode, tolNode)) : own
+    let base = geometries.get(outline)
+    if (!base) geometries.set(outline, (base = geometryOf(outline)))
+    const g = hasPathEffects(item.effects) ? geometryOf(itemPath(isGlyphs(outline) ? glyphsToPath(outline) : outline, item.effects, mode, tolNode)) : base
     if (item.kind === 'fill') {
       const segs = g.fillSegs()
       items.push({ item, segs, rule: g.rule, box: segmentsBounds(segs), clip: null })
@@ -109,9 +123,99 @@ export function vectorOutline(path: Outline, appearance: AppearanceItem[], trans
       rule: 'nonzero',
       box: segmentsBounds(segs),
       clip: aligned ? { segs: g.fillSegs(), rule: g.rule, mode: item.align === 'inside' ? 'inside' : 'outside' } : null,
+      ...(item.paint.kind === 'gradient' && item.paint.stroke ? { centre: strokeCentre(g.nodeLines(), item, g.rule) } : {}),
     })
   }
   return { items, pathBox }
+}
+
+/**
+ * Text with colour per character as (item, glyphs) pairs, in drawing
+ * order: the bottom fill split into the glyphs that keep its paint and,
+ * for each paint characters have, theirs in that paint; the bottom stroke
+ * the same; one added where characters have a paint and the text has no
+ * item to split. Glyphs empty of a pair are left out.
+ */
+function perCharacter(g: GlyphSet, items: AppearanceItem[], mode: ColourMode): { item: AppearanceItem; outline: Outline }[] {
+  const paints = g.paints ?? []
+  const anyFill = paints.some((p) => p.fill)
+  const anyStroke = paints.some((p) => p.stroke)
+  let list = items
+  const firstFill = () => list.findIndex((it) => it.kind === 'fill' && it.enabled)
+  const firstStroke = () => list.findIndex((it) => it.kind === 'stroke' && it.enabled)
+  // Added items paint only characters with their own paint: their own glyphs have nothing from them.
+  const added = new Set<AppearanceItem>()
+  if (anyFill && firstFill() < 0) {
+    const f = fillItem({ kind: 'solid', colour: [0, 0, 0] })
+    added.add(f)
+    list = [f, ...list]
+  }
+  if (anyStroke && firstStroke() < 0) {
+    const st: StrokeItem = { ...strokeItem({ kind: 'solid', colour: [0, 0, 0] }, 1), join: 'round' }
+    added.add(st)
+    const at = firstFill()
+    list = [...list.slice(0, at + 1), st, ...list.slice(at + 1)]
+  }
+  const fi = firstFill()
+  const si = firstStroke()
+  const out: { item: AppearanceItem; outline: Outline }[] = []
+  const subset = (keep: (k: number) => boolean) => {
+    const sub = glyphSubset(g, keep)
+    return sub.placements.length ? sub : null
+  }
+  list.forEach((item, i) => {
+    if (i !== fi && i !== si) {
+      out.push({ item, outline: g })
+      return
+    }
+    const own = (k: number) => (i === fi ? !!paints[k]?.fill : !!paints[k]?.stroke)
+    if (!added.has(item)) {
+      const plain = subset((k) => k < 0 || !own(k))
+      if (plain) out.push({ item, outline: plain })
+    }
+    paints.forEach((p, k) => {
+      if (!own(k)) return
+      const sub = subset((x) => x === k)
+      if (!sub) return
+      if (i === fi) out.push({ item: { ...item, paint: paintIn(p.fill!, mode) } as AppearanceItem, outline: sub })
+      else out.push({ item: { ...(item as StrokeItem), paint: paintIn(p.stroke!, mode), width: p.strokeWidth } as AppearanceItem, outline: sub })
+    })
+  })
+  return out
+}
+
+/**
+ * Text with colour per character as groups of glyphs, each with the
+ * appearance it's drawn with: the text's own for glyphs without a paint,
+ * and for each paint characters have, the text's with its bottom fill and
+ * stroke (added if it has none) in that paint. For files and Create
+ * Outlines, which draw a path per group. Text without colour per character
+ * is one group.
+ */
+export function characterGroups(g: GlyphSet, items: AppearanceItem[]): { glyphs: GlyphSet; appearance: AppearanceItem[] }[] {
+  const paints = g.paints ?? []
+  if (!paints.length) return [{ glyphs: g, appearance: items }]
+  const out: { glyphs: GlyphSet; appearance: AppearanceItem[] }[] = []
+  const plain = glyphSubset(g, (k) => k < 0)
+  if (plain.placements.length) out.push({ glyphs: plain, appearance: items })
+  paints.forEach((p, k) => {
+    const glyphs = glyphSubset(g, (x) => x === k)
+    if (!glyphs.placements.length) return
+    let list = items
+    let fi = list.findIndex((it) => it.kind === 'fill' && it.enabled)
+    if (p.fill && fi < 0) {
+      list = [fillItem(p.fill), ...list]
+      fi = 0
+    }
+    let si = list.findIndex((it) => it.kind === 'stroke' && it.enabled)
+    if (p.stroke && si < 0) {
+      list = [...list.slice(0, fi + 1), { ...strokeItem(p.stroke, p.strokeWidth), join: 'round' as const }, ...list.slice(fi + 1)]
+      si = fi + 1
+    }
+    const appearance = list.map((it, i) => (i === fi && p.fill ? ({ ...it, paint: p.fill } as AppearanceItem) : i === si && p.stroke ? ({ ...(it as StrokeItem), paint: p.stroke, width: p.strokeWidth } as AppearanceItem) : it))
+    out.push({ glyphs, appearance })
+  })
+  return out
 }
 
 /**

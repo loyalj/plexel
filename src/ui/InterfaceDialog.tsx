@@ -25,7 +25,7 @@ const MOTIONS: [InterfacePrefs['motion'], string, string][] = [
 export function InterfaceDialog({ onClose }: { onClose(): void }) {
   const p = useSyncExternalStore(interfacePrefs().subscribe, interfacePrefs().get)
   const set = (change: Partial<InterfacePrefs>) => interfacePrefs().update(change)
-  const toggle = (key: 'richTips' | 'keyHints' | 'tabHides' | 'springTools', label: string, note: string) => (
+  const toggle = (key: 'richTips' | 'keyHints' | 'tabHides' | 'springTools' | 'padNumbers', label: string, note: string) => (
     <label className="check pref-check">
       <input type="checkbox" checked={p[key]} data-pref={key} onChange={(e) => set({ [key]: e.target.checked })} />
       {label}
@@ -67,6 +67,10 @@ export function InterfaceDialog({ onClose }: { onClose(): void }) {
           {toggle('keyHints', 'Key hints in the status bar', 'What each key does with the tool in use.')}
           {toggle('springTools', 'Hold a tool’s key to use it for a moment', 'Let go and the tool before comes back. A quick tap still switches for good.')}
           {toggle('tabHides', 'Tab hides the panels', 'As in Photoshop. Off, Tab only moves the focus between controls.')}
+        </fieldset>
+        <fieldset className="field-group">
+          <legend>Layers</legend>
+          {toggle('padNumbers', 'Number new layers in three digits', '“Home 007” rather than “Home 7”, so a long list sorts in order.')}
         </fieldset>
       </div>
     </Dialog>

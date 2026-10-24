@@ -13,7 +13,7 @@
  */
 import { addVector, addVectorMask, combineWithBelow, compose, expandCompound, insertNode, invertAffine, releaseCompound, removeNode, setAppearance, setBoolOp, setGeometry } from '../doc/edit'
 import { joinPath } from '../geom/regions'
-import { freshName, placeOf, layerRows } from '../doc/tree'
+import { placeOf, layerRows } from '../doc/tree'
 import type { Affine, BoolOp, Doc, DocNode, NodeId } from '../doc/types'
 import { fillItem, geometryPath, solid, strokeItem, type AppearanceItem, type Geometry } from '../doc/vector'
 import { breakAt, closeSubpath, joinSubpaths, separate, curvatureAnchor, recurvePath, convertAnchor, deleteAnchors, hitAnchor, hitHandle, hitSegment, insertAnchor, isEndpoint, moveAnchors, moveHandle, parseRef, refKey, type AnchorRef } from '../geom/edit'
@@ -27,7 +27,8 @@ import { docPathOf } from '../vector/shape'
 import { swatchIn } from './colour'
 import { clearToolOverlay, registerTool, sessions, setToolOverlay, snapped, type Gesture, type Pointer, type Session } from './canvasTools'
 import { startSnap } from './snapping'
-import { documents, newId, selectedIds, type OpenDoc } from './documents'
+import { documents, newId, placing, selectedIds, type OpenDoc } from './documents'
+import { layerName } from './naming'
 import { notify } from './notices'
 import { setPathSink, setPathSource } from './clipboard'
 import { vectorMaskOf } from './selection'
@@ -266,7 +267,7 @@ function commitPath(t: Target, path: PathData, label: string) {
 }
 
 /** Where a new layer goes (doc/tree.ts): above the selected one, or into the artboard it's drawn on. */
-const newLayerPlace = (doc: Doc, selected: NodeId | null, at?: [number, number] | null) => whereNew(doc, selected, at)
+const newLayerPlace = (doc: Doc, d: OpenDoc, at?: [number, number] | null) => whereNew(doc, d.selected, at, placing(d))
 
 // --- the overlay -------------------------------------------------------------------------------
 
@@ -481,8 +482,8 @@ function penSession(d: OpenDoc, target: Target | null, sub: number, end: 'start'
   const docNow = (): Doc => {
     if (anchors.length < 2 && !target) return base
     if (target) return withPath(base, target, pathNow())
-    const { parent, index } = newLayerPlace(base, d.selected, anchors[0]?.p ?? null)
-    return addVector(base, newId_!, freshName(base, 'Shape'), { kind: 'path', path: pathNow() }, newAppearance(base, false), parent, index)
+    const { parent, index } = newLayerPlace(base, d, anchors[0]?.p ?? null)
+    return addVector(base, newId_!, layerName(base, parent, 'Shape'), { kind: 'path', path: pathNow() }, newAppearance(base, false), parent, index)
   }
   const draft = () => {
     penDraft = { key, t: target, anchors: settled(), transform, hover, closing: closed, ghost: mode !== 'pen' && hover && !closed && anchors.length ? settled(hover) : null }
@@ -957,9 +958,9 @@ function shapePress(d: OpenDoc, raw0: Pointer): Gesture {
       return withPath(base, intoMask, { ...intoMask.path, subpaths: [...intoMask.path.subpaths, ...add.subpaths] })
     }
     const box = g.kind === 'shape' ? shapeBox(g.shape) : null
-    const { parent, index } = newLayerPlace(base, d.selected, box ? [box[0] + box[2] / 2, box[1] + box[3] / 2] : null)
+    const { parent, index } = newLayerPlace(base, d, box ? [box[0] + box[2] / 2, box[1] + box[3] / 2] : null)
     const label = s.type === 'rect' ? 'Rectangle' : s.type === 'ellipse' ? 'Ellipse' : s.type === 'polygon' ? 'Polygon' : s.type === 'star' ? 'Star' : 'Line'
-    return addVector(base, id, freshName(base, label), g, newAppearance(base, s.type === 'line'), parent, index)
+    return addVector(base, id, layerName(base, parent, label), g, newAppearance(base, s.type === 'line'), parent, index)
   }
   return {
     move(raw) {
@@ -1259,7 +1260,7 @@ setPathSink((path) => {
   }
   const doc = d.history.present
   const id = newId('n')
-  const { parent, index } = newLayerPlace(doc, d.selected)
-  documents().commit((x) => addVector(x, id, freshName(x, 'Shape'), { kind: 'path', path }, newAppearance(x, false), parent, index), { key: d.key, label: 'Paste Path' })
+  const { parent, index } = newLayerPlace(doc, d)
+  documents().commit((x) => addVector(x, id, layerName(x, parent, 'Shape'), { kind: 'path', path }, newAppearance(x, false), parent, index), { key: d.key, label: 'Paste Path' })
   documents().select(id, d.key)
 })

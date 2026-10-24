@@ -23,6 +23,12 @@ import type { GlyphSet } from '../geom/glyphs'
 import type { ColourValue } from '../color/value'
 import type { ParamColour } from './params'
 
+/** A text layer's pixels as another app drew them (KindProps['text'].stand). */
+export interface TextStand {
+  tiles: string
+  m: [number, number, number, number, number, number]
+}
+
 export type NodeId = string
 
 export type ColourMode = 'rgb' | 'gray' | 'cmyk'
@@ -204,6 +210,13 @@ export interface KindProps {
      * (which has no fonts). Never saved, never in the history.
      */
     layout?: GlyphSet
+    /**
+     * How another app drew the text (a Photoshop file's layer pixels): shown
+     * instead of the glyphs while a font it asks for is missing or still
+     * loading, and let go when the text is edited. `m` places the pixels in
+     * the node's own coordinates.
+     */
+    stand?: TextStand
   }
   adjustment: {
     adjustment: string
@@ -340,6 +353,12 @@ export interface Doc {
   vectorBrushes?: VectorBrush[]
   /** Symbols: artwork placed as instances that all follow it (doc/symbols.ts); absent is none. */
   symbols?: DocSymbol[]
+  /**
+   * The highest number each name has been given ("Home" → 7 once "Home 7"
+   * was made), so a number freed by deleting its layer isn't given again
+   * (doc/tree.ts' freshName); absent is none yet.
+   */
+  numbered?: Record<string, number>
 }
 
 /** A Live Paint group's fill: a point of the region it paints, and the paint. */
@@ -367,6 +386,31 @@ export interface DocPattern {
   tiles: string
   width: number
   height: number
+  /**
+   * The artwork the repeat is made from, for a pattern made from artwork or
+   * edited in pattern editing mode (doc/patterns.ts): its tile is a document
+   * of its own (its canvas the tile), laid out by `tile`; `tiles` is then
+   * what that makes, worked out again whenever the artwork changes. Absent
+   * for a pattern that is just its pixels.
+   */
+  art?: PatternArt
+}
+
+/** How a pattern's tiles are laid: in a grid, as bricks (rows or columns offset), or as hexagons. */
+export type PatternTileType = 'grid' | 'brick-row' | 'brick-column' | 'hex-column' | 'hex-row'
+export const PATTERN_TILE_TYPES: PatternTileType[] = ['grid', 'brick-row', 'brick-column', 'hex-column', 'hex-row']
+
+export interface PatternTile {
+  type: PatternTileType
+  /** For bricks: how far each row (or column) is moved along, as a share of a tile: ½, ⅓, ¼ or ⅕. */
+  offset: number
+  /** Pixels between tiles across and down; less than 0 overlaps them. */
+  spacing: [number, number]
+}
+
+export interface PatternArt {
+  content: Doc
+  tile: PatternTile
 }
 
 /**

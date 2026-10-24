@@ -27,7 +27,7 @@ export const BUILTIN_TIPS: BuiltinTip[] = ['round', 'chalk', 'spatter', 'bristle
 export type TipId = string
 export const isImageTip = (t: TipId) => t.startsWith('tip:')
 
-export type DynInput = 'pressure' | 'tilt' | 'twist' | 'speed' | 'distance' | 'random' | 'fade' | 'direction' | 'initial-direction'
+export type DynInput = 'pressure' | 'tilt' | 'twist' | 'wheel' | 'speed' | 'distance' | 'random' | 'fade' | 'direction' | 'initial-direction' | 'initial-twist'
 export type DynTarget =
   | 'size'
   | 'opacity'
@@ -44,7 +44,7 @@ export type DynTarget =
   | 'texture-depth'
   | 'wetness'
   | 'mix'
-export const DYN_INPUTS: DynInput[] = ['pressure', 'tilt', 'twist', 'speed', 'distance', 'random', 'fade', 'direction', 'initial-direction']
+export const DYN_INPUTS: DynInput[] = ['pressure', 'tilt', 'twist', 'wheel', 'speed', 'distance', 'random', 'fade', 'direction', 'initial-direction', 'initial-twist']
 const DYN_TARGETS: DynTarget[] = ['size', 'opacity', 'flow', 'hardness', 'angle', 'roundness', 'scatter', 'count', 'colour', 'hue', 'saturation', 'brightness', 'texture-depth', 'wetness', 'mix']
 
 /** Inputs as Photoshop's Control menus name them. */
@@ -52,12 +52,14 @@ export const DYN_INPUT_LABELS: Record<DynInput, string> = {
   pressure: 'Pen Pressure',
   tilt: 'Pen Tilt',
   twist: 'Rotation',
+  wheel: 'Stylus Wheel',
   speed: 'Speed',
   distance: 'Distance',
   random: 'Random',
   fade: 'Fade',
   direction: 'Direction',
   'initial-direction': 'Initial Direction',
+  'initial-twist': 'Initial Rotation',
 }
 
 export interface Dynamic {
@@ -122,9 +124,71 @@ export interface BrushPose {
   pressure: number | null
 }
 
+/**
+ * Photoshop's three tip kinds that change as they paint, in place of a tip
+ * image (brush/special.ts makes their footprints):
+ *
+ * - **Bristle**: a brush of hairs, each a fine point of its own strength.
+ *   The hairs touch a few at a time under light pressure (a pointed shape
+ *   its middle ones first) and splay apart as it's pressed and tilted, so
+ *   the stroke widens and streaks as a real brush's does.
+ * - **Erodible**: a pencil or a pastel that wears as it draws: its point
+ *   blunts with distance and pressure (faster the softer it is), a flat
+ *   one's chisel widens, and tilted it draws with its side. Sharpen Tip
+ *   puts it back.
+ * - **Airbrush**: a spray: a soft cone of paint, grainy, with spatter
+ *   round it, that stretches and leans as the pen tilts.
+ */
+export type BristleShape = 'round-point' | 'round-blunt' | 'round-curve' | 'round-angle' | 'round-fan' | 'flat-point' | 'flat-blunt' | 'flat-curve' | 'flat-angle' | 'flat-fan'
+export const BRISTLE_SHAPES: BristleShape[] = ['round-point', 'round-blunt', 'round-curve', 'round-angle', 'round-fan', 'flat-point', 'flat-blunt', 'flat-curve', 'flat-angle', 'flat-fan']
+export type ErodibleShape = 'point' | 'flat' | 'round' | 'square' | 'triangle'
+export const ERODIBLE_SHAPES: ErodibleShape[] = ['point', 'flat', 'round', 'square', 'triangle']
+
+export interface BristleTip {
+  kind: 'bristle'
+  shape: BristleShape
+  /** How many hairs, 0.01..1 (Photoshop's Bristles). */
+  bristles: number
+  /** How long the hairs are, 0.25..5: longer ones splay further. */
+  length: number
+  /** How thick each hair is, 0.01..2. */
+  thickness: number
+  /** How stiff, 0.01..1: stiffer hairs splay less under pressure. */
+  stiffness: number
+}
+
+export interface ErodibleTip {
+  kind: 'erodible'
+  shape: ErodibleShape
+  /** How fast it wears, 0..1. */
+  softness: number
+}
+
+export interface AirbrushTip {
+  kind: 'airbrush'
+  /** The spray's core, 0 soft to 1 hard. */
+  hardness: number
+  /** How far it stretches and leans as the pen tilts, 0..1. */
+  distortion: number
+  /** Grain in the spray, 0..1. */
+  granularity: number
+  /** The drops' size, 0..1. */
+  spatterSize: number
+  /** How many drops, 0..1. */
+  spatterAmount: number
+}
+
+export type SpecialTip = BristleTip | ErodibleTip | AirbrushTip
+
+export const DEFAULT_BRISTLE: BristleTip = { kind: 'bristle', shape: 'round-point', bristles: 0.35, length: 1, thickness: 0.15, stiffness: 0.5 }
+export const DEFAULT_ERODIBLE: ErodibleTip = { kind: 'erodible', shape: 'point', softness: 0.5 }
+export const DEFAULT_AIRBRUSH: AirbrushTip = { kind: 'airbrush', hardness: 0.2, distortion: 0.5, granularity: 0.2, spatterSize: 0.3, spatterAmount: 0.3 }
+
 export interface BrushSettings {
   // --- Brush Tip Shape
   tip: TipId
+  /** A bristle, erodible or airbrush tip, in place of `tip`; null for none. */
+  special: SpecialTip | null
   /** Diameter in document pixels. */
   size: number
   /** 0 soft to 1 hard; round tips only. */
@@ -246,6 +310,7 @@ export const DEFAULT_POSE: BrushPose = { tiltX: 0, tiltY: 0, rotation: 0, pressu
 
 export const DEFAULT_BRUSH: BrushSettings = {
   tip: 'round',
+  special: null,
   size: 30,
   hardness: 0.8,
   roundness: 1,
@@ -312,6 +377,13 @@ export const BRUSH_PRESETS: BrushPreset[] = [
   { id: 'pastel', name: 'Pastel on Canvas', settings: { tip: 'chalk', size: 50, spacing: 0.15, angleJitter: 0.3, noise: true, texture: { ...DEFAULT_TEXTURE, id: 'canvas', scale: 1, depth: 0.8, mode: 'height', eachTip: true, depthJitter: 0.3 }, dynamics: [pressureSize] } },
   { id: 'foliage', name: 'Scattered Leaves', settings: { tip: 'spatter', size: 45, spacing: 0.5, scatter: 1.5, scatterBothAxes: true, count: 3, countJitter: 0.5, sizeJitter: 0.6, angleJitter: 1, roundnessJitter: 0.4, colourJitter: 0.5, hueJitter: 0.08, brightnessJitter: 0.2, dynamics: [] } },
   { id: 'dual-spatter', name: 'Rough Dual', settings: { tip: 'round', size: 60, hardness: 0.6, spacing: 0.12, dual: { ...DEFAULT_DUAL }, dynamics: [pressureSize] } },
+  { id: 'bristle-round', name: 'Round Bristle', settings: { special: { ...DEFAULT_BRISTLE }, size: 40, spacing: 0.02, dynamics: [] } },
+  { id: 'bristle-flat', name: 'Flat Bristle', settings: { special: { ...DEFAULT_BRISTLE, shape: 'flat-blunt', bristles: 0.6, thickness: 0.2, stiffness: 0.7 }, size: 50, spacing: 0.02, dynamics: [] } },
+  { id: 'bristle-fan', name: 'Fan Bristle', settings: { special: { ...DEFAULT_BRISTLE, shape: 'flat-fan', bristles: 0.25, length: 1.5, thickness: 0.1, stiffness: 0.3 }, size: 70, spacing: 0.02, flow: 0.7, dynamics: [] } },
+  { id: 'erodible-pencil', name: 'Sketch Pencil', settings: { special: { ...DEFAULT_ERODIBLE }, size: 10, spacing: 0.05, texture: { ...DEFAULT_TEXTURE, id: 'paper', scale: 0.6, depth: 0.5, mode: 'height' }, dynamics: [pressureOpacity] } },
+  { id: 'erodible-pastel', name: 'Pastel Chisel', settings: { special: { ...DEFAULT_ERODIBLE, shape: 'flat', softness: 0.8 }, size: 36, spacing: 0.05, texture: { ...DEFAULT_TEXTURE, id: 'rough', scale: 0.8, depth: 0.7, mode: 'height' }, dynamics: [pressureOpacity] } },
+  { id: 'airbrush-soft', name: 'Soft Airbrush', settings: { special: { ...DEFAULT_AIRBRUSH, spatterAmount: 0.1, granularity: 0.1 }, size: 120, spacing: 0.05, flow: 0.15, buildUp: true, dynamics: [{ input: 'wheel', target: 'flow', curve: LINEAR, min: 0 }] } },
+  { id: 'airbrush-spray', name: 'Spray Paint', settings: { special: { ...DEFAULT_AIRBRUSH, hardness: 0.6, granularity: 0.6, spatterSize: 0.4, spatterAmount: 0.7 }, size: 90, spacing: 0.15, flow: 0.4, buildUp: true, dynamics: [pressureFlow] } },
 ]
 
 export const presetSettings = (p: BrushPreset): BrushSettings => ({ ...DEFAULT_BRUSH, ...p.settings })
@@ -364,6 +436,39 @@ function readPose(raw: unknown, warn: Warn): BrushPose | null {
   return { tiltX: opt(raw.tiltX, -90, 90, 'a pose’s tilt'), tiltY: opt(raw.tiltY, -90, 90, 'a pose’s tilt'), rotation: opt(raw.rotation, 0, 360, 'a pose’s rotation'), pressure: opt(raw.pressure, 0, 1, 'a pose’s pressure') }
 }
 
+function readSpecial(raw: unknown, warn: Warn): SpecialTip | null {
+  if (!isObject(raw)) return null
+  const unit = (v: unknown, d: number, what: string, lo = 0, hi = 1) => readNumber(v, d, lo, hi, what, warn)
+  if (raw.kind === 'bristle') {
+    const d = DEFAULT_BRISTLE
+    return {
+      kind: 'bristle',
+      shape: readOneOf(raw.shape, BRISTLE_SHAPES, d.shape, 'a bristle tip’s shape', warn),
+      bristles: unit(raw.bristles, d.bristles, 'a bristle tip’s bristles', 0.01),
+      length: unit(raw.length, d.length, 'a bristle tip’s length', 0.25, 5),
+      thickness: unit(raw.thickness, d.thickness, 'a bristle tip’s thickness', 0.01, 2),
+      stiffness: unit(raw.stiffness, d.stiffness, 'a bristle tip’s stiffness', 0.01),
+    }
+  }
+  if (raw.kind === 'erodible') {
+    const d = DEFAULT_ERODIBLE
+    return { kind: 'erodible', shape: readOneOf(raw.shape, ERODIBLE_SHAPES, d.shape, 'an erodible tip’s shape', warn), softness: unit(raw.softness, d.softness, 'an erodible tip’s softness') }
+  }
+  if (raw.kind === 'airbrush') {
+    const d = DEFAULT_AIRBRUSH
+    return {
+      kind: 'airbrush',
+      hardness: unit(raw.hardness, d.hardness, 'an airbrush tip’s hardness'),
+      distortion: unit(raw.distortion, d.distortion, 'an airbrush tip’s distortion'),
+      granularity: unit(raw.granularity, d.granularity, 'an airbrush tip’s granularity'),
+      spatterSize: unit(raw.spatterSize, d.spatterSize, 'an airbrush tip’s spatter size'),
+      spatterAmount: unit(raw.spatterAmount, d.spatterAmount, 'an airbrush tip’s spatter amount'),
+    }
+  }
+  warn('A kind of tip that wasn’t understood came in as the brush’s tip')
+  return null
+}
+
 /** Brush settings from storage: every field read with its default. */
 export function readBrush(raw: unknown, warn: Warn = () => {}): BrushSettings {
   const r = isObject(raw) ? raw : {}
@@ -384,6 +489,7 @@ export function readBrush(raw: unknown, warn: Warn = () => {}): BrushSettings {
     : d.dynamics.map((x) => ({ ...x }))
   return {
     tip: readTip(r.tip, d.tip, 'a brush’s tip', warn),
+    special: readSpecial(r.special, warn),
     size: readNumber(r.size, d.size, 1, 5000, 'a brush’s size', warn),
     hardness: unit('hardness', 'a brush’s hardness'),
     roundness: readNumber(r.roundness, d.roundness, 0.01, 1, 'a brush’s roundness', warn),
@@ -453,6 +559,17 @@ export function curveAt(curve: number[], x: number): number {
   const t = Math.min(1, Math.max(0, x)) * (curve.length - 1)
   const i = Math.min(curve.length - 2, Math.floor(t))
   return curve[i] + (curve[i + 1] - curve[i]) * (t - i)
+}
+
+/**
+ * The share of its size a brush paints at a pen pressure, from its pressure
+ * dynamics on size alone, as the stroke works it out (stroke.ts): for the
+ * cursor's inner ring. Null when pressure doesn't size the brush.
+ */
+export function pressureSizeShare(b: BrushSettings, pressure: number): number | null {
+  let k: number | null = null
+  for (const d of b.dynamics) if (d.input === 'pressure' && d.target === 'size') k = (k ?? 1) * (d.min + (1 - d.min) * curveAt(d.curve, pressure))
+  return k
 }
 
 /** Whether a dynamic of this kind is on: the switches in the options bar. */

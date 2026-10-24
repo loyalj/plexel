@@ -7,13 +7,18 @@
  * A drag of a number is one step; choosing a font, a style or a feature is
  * one each.
  */
+import { FontPicker } from './FontPicker'
 import { memo, useEffect, useRef, useState } from 'react'
 import { addFontFiles, canLoadSystemFonts, fontLibraryNow, loadSystemFonts, systemFontsLoaded } from '../app/fonts'
 import { applyChar, applyPara, shownChar, shownPara, subscribeTyping, typeTarget } from '../app/typing'
 import { addCharStyle, addParaStyle, deleteTextStyle, redefineCharStyle, redefineParaStyle, renameTextStyle } from '../app/textStyles'
 import { typeSettings } from '../app/typeSettings'
 import { documents } from '../app/documents'
-import { DEFAULT_CHAR, DEFAULT_PARA, locate, runAtPos, NO_STYLES, type Align, type CharProps, type ParaProps } from '../doc/text'
+import { DEFAULT_CHAR, DEFAULT_HYPHENATION, DEFAULT_PARA, locate, runAtPos, NO_STYLES, type Align, type CharProps, type Hyphenation, type ParaProps, type Range3, type TabStop } from '../doc/text'
+import { mainColour, solid, type Paint } from '../doc/vector'
+import type { Doc } from '../doc/types'
+import { DocColourChip } from './ColourChip'
+import { patternsFor } from '../text/hyphenate'
 import { startFonts } from '../app/text'
 import { Icon } from './Icon'
 import { NumberInput, ScrubLabel, Segmented, SliderField } from './controls'
@@ -95,7 +100,9 @@ export const CharacterPanel = memo(function CharacterPanel() {
   const c = shownChar()
   const target = typeTarget()
   const families = lib?.families() ?? []
-  const family = families.find((f) => f.family === c.font)
+  // The family the font is found as: a Photoshop file's PostScript name, or another name for it, shown as the family it is.
+  const found = lib?.resolve(c.font, c.style)
+  const family = families.find((f) => f.family === (found?.family ?? c.font))
   const face = lib?.face(c.font, c.style)
   const axes = face?.face.info.axes ?? []
   const fileInput = useRef<HTMLInputElement>(null)
@@ -110,25 +117,23 @@ export const CharacterPanel = memo(function CharacterPanel() {
       </p>
       <div className="field">
         <label htmlFor="type-font">Font</label>
-        <select id="type-font" value={family ? c.font : ''} onChange={(e) => {
-          const f = families.find((x) => x.family === e.target.value)
-          if (!f) return
-          // The same style in the new family if it has one, else its regular.
-          const style = f.styles.find((s) => s.style === c.style)?.style ?? f.styles.find((s) => /^(regular|book|roman|normal)$/i.test(s.style))?.style ?? f.styles[0].style
-          set({ font: f.family, style })
-        }}>
-          {!family && <option value="">{c.font} (missing)</option>}
-          {families.map((f) => (
-            <option key={f.family} value={f.family}>
-              {f.family}
-            </option>
-          ))}
-        </select>
+        <FontPicker
+          id="type-font"
+          label="Font"
+          value={family?.family ?? c.font}
+          onPick={(name) => {
+            const f = families.find((x) => x.family === name)
+            if (!f) return
+            // The same style in the new family if it has one, else its regular.
+            const style = f.styles.find((s) => s.style === (found?.style ?? c.style))?.style ?? f.styles.find((s) => /^(regular|book|roman|normal)$/i.test(s.style))?.style ?? f.styles[0].style
+            set({ font: f.family, style })
+          }}
+        />
       </div>
       <div className="field">
         <label htmlFor="type-style">Style</label>
-        <select id="type-style" value={c.style} onChange={(e) => set({ style: e.target.value })}>
-          {!family?.styles.some((s) => s.style === c.style) && <option value={c.style}>{c.style}</option>}
+        <select id="type-style" value={found && family ? found.style : c.style} onChange={(e) => set({ font: family?.family ?? c.font, style: e.target.value })}>
+          {!family?.styles.some((s) => s.style === (found && family ? found.style : c.style)) && <option value={c.style}>{c.style || '—'}</option>}
           {family?.styles.map((s) => (
             <option key={s.style} value={s.style}>
               {s.style}
@@ -161,14 +166,15 @@ export const CharacterPanel = memo(function CharacterPanel() {
       </div>
       <div className="type-grid">
         <NumberField id="type-size" label="Size" unit="px" value={c.size} min={0.1} max={10000} step={1} onChange={(v) => set({ size: v }, 'size')} />
-        <NumberField id="type-leading" label="Leading" unit={c.leading === null ? 'px (auto)' : 'px'} value={c.leading ?? c.size * 1.2} min={0} max={20000} onChange={(v) => set({ leading: v }, 'leading')} title="Baseline to baseline. Clear it with Auto." />
+        <NumberField id="type-leading" label="Leading" unit={c.leading === null ? 'px (auto)' : 'px'} value={c.leading ?? (c.size * shownPara().autoLeading) / 100} min={0} max={20000} onChange={(v) => set({ leading: v }, 'leading')} title="Baseline to baseline. Clear it with Auto." />
         <NumberField def={0} id="type-tracking" label="Tracking" unit="/1000 em" value={c.tracking} min={-1000} max={10000} step={10} onChange={(v) => set({ tracking: v }, 'tracking')} />
         <NumberField def={0} id="type-shift" label="Baseline" unit="px" value={c.baselineShift} min={-10000} max={10000} onChange={(v) => set({ baselineShift: v }, 'shift')} />
         <NumberField def={100} id="type-hscale" label="Width" unit="%" value={c.horizontalScale} min={1} max={1000} onChange={(v) => set({ horizontalScale: v }, 'hscale')} />
         <NumberField def={100} id="type-vscale" label="Height" unit="%" value={c.verticalScale} min={1} max={1000} onChange={(v) => set({ verticalScale: v }, 'vscale')} />
       </div>
+      {doc && <CharColours c={c} doc={doc} own={ownPaints(target)} set={set} />}
       <div className="panel-tools">
-        <button type="button" className="options-toggle" aria-pressed={c.leading === null} onClick={() => set({ leading: null })} data-tip="Leading of 120% of the size">
+        <button type="button" className="options-toggle" aria-pressed={c.leading === null} onClick={() => set({ leading: null })} data-tip="Leading of the paragraph’s auto leading (120% of the size unless Justification says)">
           Auto leading
         </button>
         <button type="button" className="options-toggle" aria-pressed={c.kerning === 'metrics'} data-type-kerning onClick={() => set({ kerning: c.kerning === 'metrics' ? 'none' : 'metrics' })} data-tip="The font’s own kerning">
@@ -221,6 +227,170 @@ export const CharacterPanel = memo(function CharacterPanel() {
   )
 })
 
+/** The text's own bottom fill and stroke, what characters without a paint of their own show. */
+function ownPaints(t: ReturnType<typeof typeTarget>): { fill: Paint | null; stroke: Paint | null } {
+  const node = t.kind === 'editing' ? t.s.node() : t.kind === 'layer' ? t.node : null
+  const items = node?.props.appearance ?? []
+  return { fill: items.find((x) => x.kind === 'fill' && x.enabled)?.paint ?? null, stroke: items.find((x) => x.kind === 'stroke' && x.enabled)?.paint ?? null }
+}
+
+/**
+ * Colour per character: the selected characters' fill and stroke, each
+ * the text's own until set (× gives it back), as Photoshop's colour and
+ * Illustrator's character fill and stroke are.
+ */
+function CharColours({ c, doc, own, set }: { c: CharProps; doc: Doc; own: { fill: Paint | null; stroke: Paint | null }; set(p: Partial<CharProps>, key?: string): void }) {
+  const black = doc.mode === 'cmyk' ? [0, 0, 0, 1] : doc.mode === 'gray' ? [0] : [0, 0, 0]
+  const fill = c.fill ?? own.fill
+  const stroke = c.stroke ?? own.stroke
+  return (
+    <div className="type-colours" data-type-colours>
+      <div className="type-colour" data-own={c.fill ? undefined : ''}>
+        <span className="field-label">Fill</span>
+        <DocColourChip value={fill ? mainColour(fill) : black} doc={doc} label="Characters’ fill" data={{ 'type-fill': '' }} onChange={(v) => set({ fill: solid(v) }, 'fill')} />
+        {c.fill ? (
+          <button type="button" className="icon-button" aria-label="Fill as the text’s own" data-tip="Back to the text’s own fill" data-type-fill-reset onClick={() => set({ fill: undefined })}>
+            <Icon name="ui.close" />
+          </button>
+        ) : (
+          <em className="type-colour-own">the text’s</em>
+        )}
+      </div>
+      <div className="type-colour" data-own={c.stroke ? undefined : ''}>
+        <span className="field-label">Stroke</span>
+        <DocColourChip value={stroke ? mainColour(stroke) : black} doc={doc} label="Characters’ stroke" data={{ 'type-stroke': '' }} onChange={(v) => set({ stroke: solid(v) }, 'stroke')} />
+        {c.stroke ? (
+          <>
+            <NumberInput id="type-stroke-width" className="type-colour-width" value={c.strokeWidth} min={0} max={1000} step={0.5} aria-label="Characters’ stroke width, px" onChange={(v) => set({ strokeWidth: v }, 'strokeWidth')} />
+            <button type="button" className="icon-button" aria-label="Stroke as the text’s own" data-tip="Back to the text’s own stroke" onClick={() => set({ stroke: undefined, strokeWidth: undefined })}>
+              <Icon name="ui.close" />
+            </button>
+          </>
+        ) : (
+          <em className="type-colour-own">{own.stroke ? 'the text’s' : 'none'}</em>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const TAB_ALIGNS: [TabStop['align'], string][] = [
+  ['left', 'Left'],
+  ['centre', 'Centre'],
+  ['right', 'Right'],
+  ['decimal', 'Decimal'],
+]
+
+/** Tab stops: each one's place, how text lines up on it and its leader; added, changed and taken away. */
+function TabStops({ tabs, interval, set }: { tabs: TabStop[]; interval: number; set(p: Partial<ParaProps>, key?: string): void }) {
+  const put = (next: TabStop[], key?: string) => set({ tabs: [...next].sort((a, b) => a.at - b.at) }, key)
+  return (
+    <details className="type-section" data-type-tabs>
+      <summary>Tabs{tabs.length ? ` (${tabs.length})` : ''}</summary>
+      {tabs.map((t, i) => (
+        <div className="type-tab" key={i} data-tab={i}>
+          <NumberInput id={`para-tab-${i}`} value={t.at} min={0} max={100000} aria-label={`Tab ${i + 1} position, px`} onChange={(v) => put(tabs.map((x, j) => (j === i ? { ...x, at: v } : x)), `tab${i}`)} />
+          <select aria-label={`Tab ${i + 1} alignment`} value={t.align} onChange={(e) => put(tabs.map((x, j) => (j === i ? { ...x, align: e.target.value as TabStop['align'] } : x)))}>
+            {TAB_ALIGNS.map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
+          </select>
+          <input aria-label={`Tab ${i + 1} leader`} data-tip="Leader: what fills the gap (a dot for dots)" className="type-tab-leader" maxLength={8} value={t.leader} onChange={(e) => put(tabs.map((x, j) => (j === i ? { ...x, leader: e.target.value.replace(/[\t\n\r]/g, '') } : x)), `leader${i}`)} />
+          {t.align === 'decimal' && <input aria-label={`Tab ${i + 1} aligns on`} data-tip="The character a decimal tab lines up on" className="type-tab-char" maxLength={1} value={t.char} onChange={(e) => e.target.value && put(tabs.map((x, j) => (j === i ? { ...x, char: e.target.value } : x)))} />}
+          <button type="button" className="icon-button" aria-label={`Remove tab ${i + 1}`} onClick={() => put(tabs.filter((_, j) => j !== i))}>
+            <Icon name="ui.close" />
+          </button>
+        </div>
+      ))}
+      <button type="button" className="button small" data-type-add-tab onClick={() => put([...tabs, { at: (tabs[tabs.length - 1]?.at ?? 0) + 100, align: 'left', leader: '', char: '.' }])}>
+        Add Tab Stop
+      </button>
+      <NumberField def={0} id="para-tab-interval" label="Then every" unit={interval ? 'px' : 'px (4 em)'} value={interval} min={0} max={100000} onChange={(v) => set({ tabInterval: v }, 'tabInterval')} title="Stops past the last, every so far; 0 is every four ems of the text’s size" />
+    </details>
+  )
+}
+
+/** Least, wanted and most, three numbers in a row, kept in order. */
+function RangeField({ id, label, unit, value, min, max, onChange, def }: { id: string; label: string; unit: string; value: Range3; min: number; max: number; onChange(v: Range3, key: string): void; def: Range3 }) {
+  const at = (i: number, v: number) => {
+    const next = [...value] as Range3
+    next[i] = v
+    if (i === 1) {
+      next[0] = Math.min(next[0], v)
+      next[2] = Math.max(next[2], v)
+    } else if (i === 0) next[1] = Math.max(next[1], v)
+    else next[1] = Math.min(next[1], v)
+    next[0] = Math.min(next[0], next[1])
+    next[2] = Math.max(next[2], next[1])
+    onChange(next, `${id}${i}`)
+  }
+  const changed = value.some((v, i) => v !== def[i])
+  return (
+    <div className={`type-range${changed ? ' changed' : ''}`} data-range={id}>
+      <span className="field-label">{label}</span>
+      {(['Least', 'Wanted', 'Most'] as const).map((l, i) => (
+        <NumberInput key={l} id={`${id}-${i}`} value={value[i]} min={min} max={max} aria-label={`${label}, ${l.toLowerCase()}, ${unit}`} title={l} onChange={(v) => at(i, v)} />
+      ))}
+      <em>{unit}</em>
+    </div>
+  )
+}
+
+/** Photoshop's Justification and Hyphenation settings, as sections of the panel. */
+function Composition({ p, set }: { p: ParaProps; set(patch: Partial<ParaProps>, key?: string): void }) {
+  const h = p.hyphenation
+  const lang = shownChar().language
+  const known = patternsFor(lang) !== null
+  const setH = (patch: Partial<Hyphenation>, key?: string) => set({ hyphenation: { ...h, ...patch } }, key)
+  return (
+    <>
+      <label className="check" data-tip={known ? undefined : `No hyphenation patterns for “${lang}”: set the text’s language in the Character panel`}>
+        <input type="checkbox" checked={p.hyphenate} data-type-hyphenate onChange={(e) => set({ hyphenate: e.target.checked })} />
+        Hyphenate{!known && <em className="type-colour-own"> (no patterns for {lang})</em>}
+      </label>
+      <details className="type-section" data-type-hyphenation>
+        <summary>Hyphenation</summary>
+        <div className="type-grid">
+          <NumberField def={DEFAULT_HYPHENATION.minWord} id="hy-word" label="Words longer than" unit="letters" value={h.minWord} min={1} max={50} onChange={(v) => setH({ minWord: Math.round(v) }, 'hy-word')} />
+          <NumberField def={DEFAULT_HYPHENATION.minBefore} id="hy-before" label="After first" unit="letters" value={h.minBefore} min={1} max={20} onChange={(v) => setH({ minBefore: Math.round(v) }, 'hy-before')} />
+          <NumberField def={DEFAULT_HYPHENATION.minAfter} id="hy-after" label="Before last" unit="letters" value={h.minAfter} min={1} max={20} onChange={(v) => setH({ minAfter: Math.round(v) }, 'hy-after')} />
+          <NumberField def={DEFAULT_HYPHENATION.limit} id="hy-limit" label="Hyphen limit" unit={h.limit ? 'lines' : '(none)'} value={h.limit} min={0} max={50} onChange={(v) => setH({ limit: Math.round(v) }, 'hy-limit')} title="The most lines in a row ending in a hyphen; 0 for no limit" />
+          <NumberField def={DEFAULT_HYPHENATION.zone} id="hy-zone" label="Zone" unit="px" value={h.zone} min={0} max={100000} onChange={(v) => setH({ zone: v }, 'hy-zone')} title="Unjustified text, single-line composer: no hyphen when the line already reaches this near its end" />
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={h.caps} onChange={(e) => setH({ caps: e.target.checked })} />
+          Hyphenate capitalized words
+        </label>
+      </details>
+      <details className="type-section" data-type-justification>
+        <summary>Justification</summary>
+        <RangeField id="just-word" label="Word spacing" unit="%" value={p.wordSpacing} min={0} max={1000} def={DEFAULT_PARA.wordSpacing} onChange={(v, k) => set({ wordSpacing: v }, k)} />
+        <RangeField id="just-letter" label="Letter spacing" unit="%" value={p.letterSpacing} min={-100} max={500} def={DEFAULT_PARA.letterSpacing} onChange={(v, k) => set({ letterSpacing: v }, k)} />
+        <RangeField id="just-glyph" label="Glyph scaling" unit="%" value={p.glyphScaling} min={50} max={200} def={DEFAULT_PARA.glyphScaling} onChange={(v, k) => set({ glyphScaling: v }, k)} />
+        <div className="type-grid">
+          <NumberField def={120} id="just-leading" label="Auto leading" unit="%" value={p.autoLeading} min={0} max={500} onChange={(v) => set({ autoLeading: v }, 'autoLeading')} />
+        </div>
+        <Segmented
+          id="just-single"
+          label="One word"
+          hint="A justified line of a single word: spread across its letters, or aligned"
+          value={p.singleWord}
+          defaultValue="full"
+          options={[
+            ['full', 'Spread'],
+            ['left', 'Left'],
+            ['centre', 'Centre'],
+            ['right', 'Right'],
+          ]}
+          onChange={(v) => set({ singleWord: v })}
+        />
+      </details>
+    </>
+  )
+}
+
 export const ParagraphPanel = memo(function ParagraphPanel() {
   useTypeState()
   const p = shownPara()
@@ -254,6 +424,8 @@ export const ParagraphPanel = memo(function ParagraphPanel() {
       </div>
       <Segmented id="para-direction" label="Direction" value={p.direction} options={DIRECTIONS} onChange={(v) => set({ direction: v })} />
       <Segmented id="para-composer" label="Composer" hint="Every-line weighs the whole paragraph for even spacing; single-line fills each line as it goes" value={p.composer} options={COMPOSERS} onChange={(v) => set({ composer: v })} />
+      <Composition p={p} set={set} />
+      <TabStops tabs={p.tabs} interval={p.tabInterval} set={set} />
       <StyleList
         kind="paragraph"
         styles={styles.paragraph}

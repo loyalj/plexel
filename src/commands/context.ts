@@ -38,6 +38,8 @@ export type DialogId =
   | 'saveSelection'
   | 'loadSelection'
   | 'interface'
+  | 'moveToGroup'
+  | 'renameLayers'
   | 'toolbar'
   | 'newWorkspace'
   | 'manageWorkspaces'
@@ -232,6 +234,37 @@ export interface CommandContext {
   canClip(): boolean
   toggleClip(): void
   rasterize(): void
+  /** What Merge (Ctrl+E) would do: several layers, a group alone, or a layer into the one below; null for nothing. */
+  mergeMode(): 'layers' | 'group' | 'down' | null
+  /** Whether Merge has something to merge. */
+  canMerge(): boolean
+  /** Layer → Merge Layers, Merge Group or Merge Down: the result one pixel layer. */
+  mergeLayers(): void
+  /** Merge Visible: the visible top-level layers made one. */
+  mergeVisible(): void
+  /** Stamp Visible: everything visible as one new layer, the layers kept. */
+  stampVisible(): void
+  /** How many layers are selected. */
+  selectionCount(): number
+  /** Group Layers: the selected layers into a new group. */
+  groupLayers(): void
+  canUngroup(): boolean
+  ungroupLayers(): void
+  /** The name of the group Select All in Group works in, or null. */
+  groupForSelect(): string | null
+  selectInGroup(): void
+  /** Collapse All Groups (true) or Expand All Groups (false). */
+  foldAll(fold: boolean): void
+  foldOthers(): void
+  /** Draw Into: the selected group (if one is), and the name of the group new layers are pinned to (if any). */
+  drawIntoState(): { target: string | null; pinned: string | null; pinnedName: string | null }
+  toggleDrawInto(): void
+  /** The key layer's colour label, or null. */
+  colourTag(): string | null
+  setColourTag(tag: string | null): void
+  canCombineOne(): boolean
+  /** Combine into One Shape: the selected shapes as one shape of all their paths. */
+  combineOne(): void
   cropToSelection(): void
 
   /** Whether the selected layer is a shape with a shape (or compound shape) right below it. */
@@ -263,6 +296,8 @@ export interface CommandContext {
   canMakeSymbol(): boolean
   /** Whether a symbol instance is selected. */
   instanceSelected(): boolean
+  /** Make Pattern: the selected layers as a new pattern's tile, opened in pattern editing mode. */
+  makePattern(): void
   /** Object construction: a Pathfinder operation (`pf-<op>`), a path command, or Live Paint's Make and Expand. */
   construct(kind: string): void
   /** Whether the selected layer is a live shape, which Convert to Path makes a path. */

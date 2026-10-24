@@ -14,7 +14,7 @@ import { breakLink, deleteSymbol, duplicateSymbol, instancesOf, makeSymbol, next
 import { placeOf, whereNew } from '../doc/tree'
 import type { Doc, NodeId } from '../doc/types'
 import { layersBox } from './bounds'
-import { documents, newId, selectedIds, type OpenDoc } from './documents'
+import { documents, newId, placing, selectedIds, type OpenDoc } from './documents'
 import { notify } from './notices'
 import { views } from './views'
 
@@ -71,7 +71,7 @@ export function placeInstance(symbolId: string, at?: [number, number]): NodeId |
   const v = views().front()
   const doc = d.history.present
   let [cx, cy] = at ?? (v ? [v.cx, v.cy] : [doc.width / 2, doc.height / 2])
-  const { parent, index } = whereNew(doc, d.selected, [cx, cy])
+  const { parent, index } = whereNew(doc, d.selected, [cx, cy], placing(d))
   // Going onto an artboard the point isn't on (the middle of the view in a gap between them): its middle instead.
   const board = doc.nodes[parent]
   if (isArtboard(board)) {

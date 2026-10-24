@@ -12,8 +12,7 @@
  * screen pixels, so it feels the same at any zoom.
  */
 import { addVector, invertAffine, removeNode, setGeometry, setTransform } from '../doc/edit'
-import { freshName } from '../doc/tree'
-import type { Affine, Doc, DocNode, NodeId } from '../doc/types'
+import type { Affine, Doc, DocNode } from '../doc/types'
 import { fillItem, geometryPath, solid, strokeItem, type AppearanceItem } from '../doc/vector'
 import { booleanPaths } from '../geom/boolean'
 import { extendSubpath, fitFreehand, nearestOnSubpath, spliceSubpath } from '../geom/freehand'
@@ -26,7 +25,8 @@ import { Listeners } from '../lib/listeners'
 import { tools, type ToolId } from '../tools'
 import { CLICK, clearToolOverlay, registerTool, setToolOverlay, type Gesture, type Pointer } from './canvasTools'
 import { swatchIn } from './colour'
-import { documents, newId, selectedIds, type OpenDoc } from './documents'
+import { documents, newId, placing, selectedIds, type OpenDoc } from './documents'
+import { layerName } from './naming'
 import { views } from './views'
 import { brushById } from './vectorBrushes'
 import { whereNew } from '../doc/tree'
@@ -115,7 +115,7 @@ function perScreenPx(): number {
 const colourIn = (doc: Doc, which: 'fg' | 'bg') => swatchIn(doc, which) ?? (doc.mode === 'cmyk' ? (which === 'fg' ? [0, 0, 0, 1] : [0, 0, 0, 0]) : doc.mode === 'gray' ? [which === 'fg' ? 0 : 1] : which === 'fg' ? [0, 0, 0] : [1, 1, 1])
 
 /** Where a new layer goes (doc/tree.ts): above the selected one, or into the artboard it's drawn on. */
-const newLayerPlace = (doc: Doc, selected: NodeId | null, at?: [number, number] | null) => whereNew(doc, selected, at)
+const newLayerPlace = (doc: Doc, d: OpenDoc, at?: [number, number] | null) => whereNew(doc, d.selected, at, placing(d))
 
 /** How near (screen pixels) a stroke must start to the selected path to redraw it, or to its start to close. */
 const NEAR = 12
@@ -208,9 +208,9 @@ function linePress(tool: 'pencil' | 'vbrush') {
       if (s.fillNew) items.push(fillItem(solid(colourIn(doc, 'bg'))))
       items.push(brush ? { ...stroke, brush } : stroke)
       const id = newId('n')
-      const { parent, index } = newLayerPlace(doc, d.selected, sub.anchors[0]?.p ?? null)
+      const { parent, index } = newLayerPlace(doc, d, sub.anchors[0]?.p ?? null)
       const name = tool === 'vbrush' ? (brush?.name ?? 'Brush Stroke') : 'Pencil'
-      documents().commit((x) => addVector(x, id, freshName(x, name), { kind: 'path', path: { fillRule: 'nonzero', subpaths: [sub] } }, items, parent, index), { key: d.key, label: tool === 'vbrush' ? 'Paintbrush' : 'Pencil' })
+      documents().commit((x) => addVector(x, id, layerName(x, parent, name), { kind: 'path', path: { fillRule: 'nonzero', subpaths: [sub] } }, items, parent, index), { key: d.key, label: tool === 'vbrush' ? 'Paintbrush' : 'Pencil' })
       if (s.keepSelected) documents().select(id, d.key)
     })
 }
@@ -244,7 +244,7 @@ function blobPress(d: OpenDoc, p0: Pointer): Gesture {
   const colour = colourIn(doc0, 'fg')
   const tol = s.fidelity * perScreenPx()
   const previewId = newId('blob')
-  const { parent, index } = newLayerPlace(doc0, d.selected, [p0.x, p0.y])
+  const { parent, index } = newLayerPlace(doc0, d, [p0.x, p0.y])
   return strokeGesture(
     d,
     p0,
@@ -265,7 +265,7 @@ function blobPress(d: OpenDoc, p0: Pointer): Gesture {
       const smooth = simplifyPath(united, Math.max(0.1, tol / 2), 70)
       if (!touching.length) {
         const id = newId('n')
-        documents().commit((x) => addVector(x, id, freshName(x, 'Blob'), { kind: 'path', path: smooth }, [fillItem(solid(colour))], parent, index), { key: d.key, label: 'Blob Brush' })
+        documents().commit((x) => addVector(x, id, layerName(x, parent, 'Blob'), { kind: 'path', path: smooth }, [fillItem(solid(colour))], parent, index), { key: d.key, label: 'Blob Brush' })
         return
       }
       // Joined into the topmost it touches; the rest go.

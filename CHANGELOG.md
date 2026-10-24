@@ -2,6 +2,146 @@
 
 Newest first.
 
+## Working with many layers
+
+- **Draw Into a group**: pin a group (Layer menu, or right-click it) and
+  new layers go into it whatever's selected; a pin on its row unpins it.
+- **New layers go above the topmost** of several selected layers.
+- **Numbers aren't given twice**: deleting "Home 3" and drawing again gives
+  "Home 4" (the document remembers the highest number each name has had).
+  Edit → Interface can write them in three digits ("Home 007").
+- **A folded group opens** for a new layer, and the panel scrolls to it;
+  folded again by hand, it stays folded.
+- **Select All in Group** (Layer menu, or Ctrl-click a group's arrow).
+- **Group Layers** (Ctrl+G) and **Ungroup Layers** (Ctrl+Shift+G).
+- **Move to Group…**: a list of groups narrowed as you type.
+- **Dragging in the Layers panel**: rest on a folded group to open it; the
+  list scrolls near its edges; Alt-drop copies.
+- **Merge Down** and **Merge Group** (Ctrl+E with one layer or a group),
+  **Flatten Group to Pixels**, **Merge Visible** (Ctrl+Shift+E) and **Stamp
+  Visible** (Ctrl+Alt+Shift+E).
+- **Combine into One Shape**: several shapes as one shape of all their
+  paths, open strokes kept open.
+- **Collapse All, Expand All and Collapse Others** (Alt-click an arrow for
+  the first two).
+- **Colour labels** on layers, from the Layer menu and the panel's
+  right-click menu; new layers in a labelled group take its label.
+- **Rename Layers…**: name and number with a # pattern, or find and replace.
+- **The Layers panel's own right-click menu**, for the layers selected.
+- Merge, Rasterize, Group, Ungroup and copies leave their result selected,
+  so the next command can follow.
+- **Panels no longer drift under the pointer.** A docked column measured a
+  list that fills its panel (Layers, History, Brushes) by the room it had
+  been given, so its heights fed on themselves and shifted at a hover or a
+  selection, moving layer rows while you aimed at them. Lists are now
+  measured by what’s in them, and while you press or drag in the Layers
+  panel the column holds still (a group opening scrolls inside the panel).
+- **Drag several layers at once** in the Layers panel: everything selected
+  moves together, in its order, as one step. Pressing on one of several
+  selected layers no longer selects it alone until you let go without
+  dragging.
+- **New layers go into the selected group**, at its top, or just above the
+  layer selected inside it, and are **named after the group** ("Home 1",
+  "Home 2"…): pixel layers and shapes from the Pencil, Paintbrush, Blob
+  Brush, Pen and shape tools.
+- **Rasterize a group**: every layer in it made pixels, each kept a layer of
+  its own, in one step, with progress and Cancel for big groups. Rasterize
+  also works on several selected layers.
+- **Merge Layers** (Layer menu, Ctrl+E): the selected layers made one pixel
+  layer of what they draw together.
+
+## Brushes that change as they paint, tool presets, and patterns from artwork
+
+- **Bristle tips**: Photoshop's ten bristle shapes, with bristles, length,
+  thickness and stiffness; the hairs splay as the pen is pressed and
+  tilted, and each lays its own paint, so strokes widen and streak.
+- **Erodible tips**: point, flat, round, square and triangle pencils and
+  pastels that wear as they draw (with softness and pressure), draw with
+  their side when tilted, and keep their wear until **Sharpen Tip**.
+- **Airbrush tips**: a cone of spray with hardness, granularity and
+  spatter, stretching and leaning as the pen tilts.
+- **The brush cursor shows pen pressure**: while a pen paints with a brush
+  whose size follows pressure, a thin inner ring shows the size it's
+  painting at, inside the ring of the brush's full size.
+- **The stylus wheel** and **Initial Rotation** as controls, from the pen
+  and from Photoshop's brushes.
+- **Seven new presets**: Round, Flat and Fan Bristle, Sketch Pencil, Pastel
+  Chisel, Soft Airbrush and Spray Paint.
+- **Photoshop's brushes** now come in with their bristle, erodible and
+  airbrush tips, and wheel and initial-rotation controls.
+- **Export brushes** as a Photoshop ABR file, tips and textures included;
+  Plexel reads them back exactly.
+- **Tool presets** (Window → Tool Presets): any tool with its options under
+  a name, Current Tool Only, and Photoshop's `.tpl` files imported.
+- **Make Pattern** (Layer → Pattern): a pattern from any layers, shapes and
+  text included, kept as artwork.
+- **Pattern editing mode**: a pattern's tile in a tab of its own with its
+  copies round it; grid, brick and hex layouts, size and spacing; what's
+  drawn goes into the pattern at once; Done, Cancel, Save a Copy. Patterns
+  from pixels open as a layer to paint on.
+- **Pattern Overlay** draws the document's own patterns, at a scale.
+- Document → Mode now converts symbols' contents with the document.
+
+## Typography: colour per character, hyphenation, justification, tabs, glyphs
+
+- **Colour per character**: the Character panel's **Fill** and **Stroke**
+  set the selected characters' own colour and outline, over the text
+  layer's; Photoshop files keep each run's colour and stroke both ways;
+  Create Outlines makes a shape per colour.
+- **Hyphenation**: words broken at line ends by their language's patterns
+  (TeX's, over 30 languages, each loaded when first used), with Photoshop's
+  settings (words longer than, letters before and after, hyphen limit,
+  zone, capitalized words); soft hyphens break too.
+- **Justification**: word spacing, letter spacing and glyph scaling ranges,
+  auto leading, and how a one-word line is justified, as Photoshop's
+  Justification dialog; the every-line composer weighs them, and hyphens.
+- **Tab stops**: left, centre, right and decimal, with leaders, and default
+  stops past the last.
+- **The Glyphs panel**: every character of the font, alternates from its
+  OpenType features, double-click to insert at the caret, recently used.
+
+## Fonts that turn up
+
+- **No false "font isn't available" message**: a system font that's still
+  loading is drawn in Inter for a moment without a warning; warnings wait
+  until the system's fonts are listed, and name only fonts still missing.
+- **System fonts keep their names** after they're read, so text set in
+  them before isn't left in a placeholder; fonts are also found by
+  PostScript name, full name, or their names written another way.
+- **System fonts listed automatically** once you've allowed it.
+- **Photoshop text looks as it did in Photoshop** while its font isn't
+  here (the file's own picture of it), and turns into live text in the
+  right font when the font arrives, found by its PostScript name.
+- **A new font menu**: each family in its own face, search, favourites,
+  recent fonts, and Sans, Serif, Mono, Script and Display.
+
+## Gradients on the canvas, freeform gradients and meshes
+
+- **Gradients edited on the canvas**: with the Gradient tool, the selected
+  layer's gradient shows its line, ends and stops, as Illustrator's
+  annotator does. Drag the ends, slide stops (Alt for a copy), click the
+  line to add a stop, drag one off or press Delete to remove it.
+- **Freeform gradients**: colour points anywhere in a shape, blending
+  smoothly; placed and moved on the canvas, each with its colour, opacity
+  and spread in Properties.
+- **Gradient meshes** and **the Mesh tool**: a grid of coloured points;
+  click a shape to make it a mesh, click inside to add rows and columns,
+  drag points to bend it, Alt-click to remove lines; Columns and Rows in
+  Properties.
+- **Gradients along and across strokes**: a stroke's gradient can run
+  from the path's start to its end, or from one edge to the other
+  (following width profiles; inside and outside strokes from the path out).
+- All of it on the GPU, held to a CPU reference in every mode and depth.
+
+## The start page
+
+- **A start page** fills the document area when nothing is open, in place
+  of the small Start card. **Open** comes first: Open… and your recent files
+  as cards with a picture of each, and a × to take one off the list.
+  **New** has **Custom…** (the New Document dialog), **From Clipboard**, and
+  a card for each preset (Full HD, A4, a 24 MP photo and the rest) that
+  makes the document in one click. The arrow keys move between cards.
+
 ## Artboards and symbols
 
 - **Artboards**: pages of one document, each its own size: from New

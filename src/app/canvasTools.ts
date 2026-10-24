@@ -13,7 +13,7 @@
  * sessions, open until Enter commits or Esc cancels (or the document moves
  * on underneath them), and the options bar shows what they're doing.
  */
-import { carried, crop, moveBy, moveNode, rebaseWarps, setTiles, setTransform, transformNode } from '../doc/edit'
+import { carried, crop, insertNode, mergeLayers, moveBy, moveNode, rebaseWarps, setTiles, setTransform, transformNode } from '../doc/edit'
 import type { Affine, Doc, DocNode, NodeId } from '../doc/types'
 import { engine } from '../engine/EngineHost'
 import type { SelectShape } from '../engine/selectHost'
@@ -21,12 +21,13 @@ import { clearToolOverlay, setToolOverlay } from './overlay'
 import { apply, viewMatrix } from '../render/view'
 import { ellipsePoints } from '../tiles/coverage'
 import { geometryPath } from '../doc/vector'
-import { placeOf, subtree } from '../doc/tree'
+import { freshName, outermost, placeOf, subtree, whereNew } from '../doc/tree'
+import { makeNode } from '../doc/nodes'
 import { pathBounds } from '../geom/path'
 import { docPathOf } from '../vector/shape'
 import { layoutOf } from './text'
 import { tools, type ToolId } from '../tools'
-import { documents, selectedIds, type OpenDoc } from './documents'
+import { documents, newId, selectedIds, type OpenDoc } from './documents'
 import { addGuides, moveGuide, removeGuide } from '../doc/guides'
 import { layersBox } from './bounds'
 import { guidePrefs } from './guidePrefs'
@@ -39,6 +40,7 @@ import { layersAt, topGroupOf } from './pick'
 import { moveTool } from './moveTool'
 import { docPx } from './snapping'
 import { notify } from './notices'
+import { isCancelled, runJob } from './jobs'
 import { hold } from './pixels'
 import { deselect, modifySelection, selectShape, wandAt } from './selection'
 import { opFor, selectTools } from './selectTools'
@@ -840,33 +842,176 @@ export async function transformBy(kind: 'flip-h' | 'flip-v' | 'cw' | 'ccw' | '18
   documents().commit((x) => transformNode(x, node.id, op[kind]), { key: d.key, label: labels[kind] })
 }
 
-/** Rasterize: the selected pixel layer's transform baked into its pixels, or a smart object made a pixel layer of what it shows. */
+/** The kinds Rasterize makes pixels of; a pixel layer, only when it has a transform to bake in. */
+const RASTERIZES = ['pixel', 'embedded', 'vector', 'boolean', 'text', 'fill', 'symbol']
+const plain = (t: Affine) => t.every((v, i) => v === [1, 0, 0, 1, 0, 0][i])
+
+/**
+ * What Rasterize works on: each selected layer, and for a group every layer
+ * in it, in groups in it and clipped to layers in it, each kept a layer of
+ * its own. A compound's shapes and a smart object's or an instance's
+ * layers go into its picture, so they aren't gone into.
+ */
+function toRasterize(doc: Doc, ids: readonly NodeId[]): DocNode[] {
+  const out = new Map<NodeId, DocNode>()
+  const visit = (id: NodeId, deep: boolean) => {
+    const n = doc.nodes[id]
+    if (!n || out.has(id)) return
+    if (RASTERIZES.includes(n.kind) && !(n.kind === 'pixel' && plain(n.transform))) out.set(id, n)
+    const inside = deep || n.kind === 'group'
+    if (inside && n.kind !== 'boolean' && n.kind !== 'symbol' && n.kind !== 'embedded') for (const c of n.children ?? []) visit(c, true)
+  }
+  for (const id of ids) visit(id, false)
+  return [...out.values()]
+}
+
+/** A layer as Rasterize leaves it: `set`, its pixels in document pixels, and no transform. */
+function rasterized(x: Doc, node: DocNode, set: string | null): Doc {
+  if (!x.nodes[node.id]) return x
+  if (node.kind === 'pixel') return rebaseWarps(setTransform(setTiles(x, node.id, set), node.id, [1, 0, 0, 1, 0, 0]), node.id, node.transform)
+  // The same layer, its kind changed: its masks, effects, style and clipped layers stay. A compound's shapes go.
+  const operands = node.kind === 'boolean' ? (node.children ?? []).flatMap((c) => subtree(x, c)) : []
+  const pixel = { ...node, kind: 'pixel', transform: [1, 0, 0, 1, 0, 0], props: { tiles: set, resample: 'bicubic' }, ...(operands.length || node.kind === 'symbol' ? { children: [] } : {}) } as unknown as DocNode
+  const nodes = { ...x.nodes, [node.id]: pixel }
+  for (const id of operands) delete nodes[id]
+  // Its warps stay where they were: their coordinates were the node's, now the document's.
+  return rebaseWarps({ ...x, nodes }, node.id, node.transform)
+}
+
+/**
+ * Rasterize: each selected layer (a group, every layer in it) made pixels
+ * where it isn't, each still a layer of its own: a pixel layer's transform
+ * baked into its pixels, a smart object, instance, shape, text or fill
+ * layer made a pixel layer of what it shows. One step, however many.
+ */
 export async function rasterize() {
   const d = documents().active()
   if (!d) return
-  const node = d.selected ? d.history.present.nodes[d.selected] : null
-  if (!node || !['pixel', 'embedded', 'vector', 'boolean', 'text', 'fill', 'symbol'].includes(node.kind)) return notify('info', 'Rasterize works on a pixel layer, a smart object, a symbol instance, a shape, text or a fill layer.')
-  if (node.kind === 'pixel' && node.transform.every((v, i) => v === [1, 0, 0, 1, 0, 0][i])) return notify('info', `“${node.name}” has no transform to bake in.`)
+  const doc = d.history.present
+  const ids = selectedIds(d)
+  const key = ids.length === 1 ? doc.nodes[ids[0]] : null
+  const nodes = toRasterize(doc, ids)
+  if (!nodes.length) {
+    if (key?.kind === 'pixel') return notify('info', `“${key.name}” has no transform to bake in.`)
+    if (key?.kind === 'group') return notify('info', `Nothing in “${key.name}” to rasterize: its layers are pixels already.`)
+    return notify('info', 'Rasterize works on a pixel layer, a smart object, a symbol instance, a shape, text, a fill layer, or a group of them.')
+  }
+  const releases: (() => void)[] = []
+  let stopped = false
   try {
-    const set = await engine().call('render.rasterize', { key: d.key, node: node.id })
+    const work = async () => {
+      const sets: (string | null)[] = []
+      for (const n of nodes) {
+        if (stopped) break
+        const set = await engine().call('render.rasterize', { key: d.key, node: n.id })
+        // Called off meanwhile: what came back is let go at once, the rest not asked for.
+        if (stopped) break
+        if (set) releases.push(hold([set]))
+        sets.push(set)
+      }
+      return sets
+    }
+    // Many layers (a group of a hundred shapes) show the job bar, and can be called off.
+    const sets = nodes.length > 1 ? await runJob(`Rasterize ${nodes.length} layers`, work) : await work()
+    if (stopped) return
+    documents().commit((x) => nodes.reduce((y, n, i) => rasterized(y, n, sets[i]), x), { key: d.key, label: nodes.length > 1 ? 'Rasterize Layers' : 'Rasterize' })
+  } catch (e) {
+    stopped = true
+    if (!isCancelled(e)) notify('error', 'Rasterize didn’t work.', [e instanceof Error ? e.message : String(e)])
+  } finally {
+    for (const r of releases) r()
+  }
+}
+
+/**
+ * What Merge (Ctrl+E) would do with what's selected, as Photoshop decides:
+ * several layers, Merge Layers; a group alone, Merge Group; any other
+ * layer alone, Merge Down, into the layer below it in its group. Null when
+ * there's nothing to merge.
+ */
+export function mergeMode(d: OpenDoc | null | undefined): 'layers' | 'group' | 'down' | null {
+  if (!d) return null
+  const doc = d.history.present
+  const ids = outermost(doc, selectedIds(d))
+  if (ids.length >= 2) return 'layers'
+  const n = ids.length ? doc.nodes[ids[0]] : null
+  if (!n) return null
+  if (n.kind === 'group') return n.props.artboard ? null : 'group'
+  const place = placeOf(doc, n.id)!
+  const below = place.index > 0 ? doc.nodes[doc.nodes[place.parent].children![place.index - 1]] : null
+  return below && below.kind !== 'adjustment' && !(below.kind === 'group' && below.props.artboard) && doc.nodes[place.parent].kind !== 'boolean' ? 'down' : null
+}
+
+/** Whether Merge has something to merge. */
+export const canMerge = (d: OpenDoc | null | undefined) => mergeMode(d) !== null
+
+/**
+ * Merge (Ctrl+E): Merge Layers, Merge Group or Merge Down (mergeMode). The
+ * layers become one pixel layer of what they draw together (each with its
+ * opacity, blend, masks, effects and clipped layers, as the canvas shows
+ * them; a hidden one draws nothing), in the top one's place: named after
+ * the top one, the group, or for Merge Down the layer merged into. Shapes
+ * and text are made pixels on the way. The result is selected.
+ */
+export async function mergeSelected() {
+  const d = documents().active()
+  if (!d) return
+  const doc = d.history.present
+  const mode = mergeMode(d)
+  if (!mode) return notify('info', 'Select two or more layers to merge, a group, or a layer with a layer below it.')
+  let ids = outermost(doc, selectedIds(d))
+  let name: string | undefined
+  if (mode === 'down') {
+    const place = placeOf(doc, ids[0])!
+    const below = doc.nodes[place.parent].children![place.index - 1]
+    ids = [below, ids[0]]
+    name = doc.nodes[below].name
+  }
+  if (mode === 'group') name = doc.nodes[ids[0]].name
+  await mergeInto(d, ids, { label: mode === 'down' ? 'Merge Down' : mode === 'group' ? 'Merge Group' : 'Merge Layers', name })
+}
+
+/** Merge Visible (Ctrl+Shift+E): the visible layers at the top level made one pixel layer, in the top one's place; hidden ones stay as they are. */
+export async function mergeVisible() {
+  const d = documents().active()
+  if (!d) return
+  const doc = d.history.present
+  const ids = (doc.nodes[doc.root].children ?? []).filter((id) => doc.nodes[id].visible && !(doc.nodes[id].kind === 'group' && (doc.nodes[id] as DocNode & { kind: 'group' }).props.artboard))
+  if (ids.length < 2) return notify('info', 'Merge Visible needs two or more visible layers at the top level.')
+  await mergeInto(d, ids, { label: 'Merge Visible' })
+}
+
+/** Stamp Visible (Ctrl+Alt+Shift+E): everything visible, as one new pixel layer above the selected one; the layers stay as they were. */
+export async function stampVisible() {
+  const d = documents().active()
+  if (!d) return
+  const doc = d.history.present
+  const ids = doc.nodes[doc.root].children ?? []
+  if (!ids.some((id) => doc.nodes[id].visible)) return notify('info', 'Nothing visible to stamp.')
+  try {
+    const set = await engine().call('render.merge', { key: d.key, nodes: [...ids] })
     const release = set ? hold([set]) : () => {}
-    if (node.kind === 'embedded' || node.kind === 'vector' || node.kind === 'boolean' || node.kind === 'text' || node.kind === 'fill' || node.kind === 'symbol') {
-      // The same layer, its kind changed: its masks, effects, style and clipped layers stay. A compound's shapes go.
-      const operands = node.kind === 'boolean' ? (node.children ?? []).flatMap((c) => subtree(d.history.present, c)) : []
-      const pixel = { ...node, kind: 'pixel', transform: [1, 0, 0, 1, 0, 0], props: { tiles: set, resample: 'bicubic' }, ...(operands.length || node.kind === 'symbol' ? { children: [] } : {}) } as unknown as DocNode
-      documents().commit(
-        (x) => {
-          const nodes = { ...x.nodes, [node.id]: pixel }
-          for (const id of operands) delete nodes[id]
-          // Its warps stay where they were: their coordinates were the node's, now the document's.
-          return rebaseWarps({ ...x, nodes }, node.id, node.transform)
-        },
-        { key: d.key, label: 'Rasterize' },
-      )
-    } else documents().commit((x) => rebaseWarps(setTransform(setTiles(x, node.id, set), node.id, [1, 0, 0, 1, 0, 0]), node.id, node.transform), { key: d.key, label: 'Rasterize' })
+    const id = newId('n')
+    const { parent, index } = whereNew(doc, d.selected)
+    documents().commit((x) => insertNode(x, makeNode('pixel', id, freshName(x, 'Stamp'), { tiles: set }), parent, index), { key: d.key, label: 'Stamp Visible' })
+    if (documents().get(d.key)?.history.present.nodes[id]) documents().select(id, d.key)
     release()
   } catch (e) {
-    notify('error', 'Rasterize didn’t work.', [e instanceof Error ? e.message : String(e)])
+    notify('error', 'Stamp Visible didn’t work.', [e instanceof Error ? e.message : String(e)])
+  }
+}
+
+/** The layers `ids` (bottom first) drawn together and made one pixel layer, selected. */
+async function mergeInto(d: OpenDoc, ids: NodeId[], o: { label: string; name?: string }) {
+  try {
+    const set = await engine().call('render.merge', { key: d.key, nodes: ids })
+    const release = set ? hold([set]) : () => {}
+    const id = newId('n')
+    documents().commit((x) => mergeLayers(x, ids, id, set, o.name), { key: d.key, label: o.label })
+    if (documents().get(d.key)?.history.present.nodes[id]) documents().select(id, d.key)
+    release()
+  } catch (e) {
+    notify('error', `${o.label} didn’t work.`, [e instanceof Error ? e.message : String(e)])
   }
 }
 

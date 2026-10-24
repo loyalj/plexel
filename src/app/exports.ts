@@ -44,7 +44,7 @@ export async function profileBytes(doc: Doc): Promise<Uint8Array | null> {
 /** A font's PostScript name: the font's own when it's here, otherwise made from its family and style as Adobe names them. */
 export async function postscriptNames(): Promise<(family: string, style: string) => string> {
   const lib = await fontLibrary().catch(() => null)
-  return (family, style) => lib?.entry(family, style)?.postscript ?? `${family.replace(/\s+/g, '')}-${style.replace(/\s+/g, '') || 'Regular'}`
+  return (family, style) => lib?.resolve(family, style)?.postscript ?? `${family.replace(/\s+/g, '')}${style ? `-${style.replace(/\s+/g, '')}` : ''}`
 }
 
 /**

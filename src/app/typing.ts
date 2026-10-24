@@ -13,7 +13,8 @@
  * New text isn't in the document until something is typed: a click that
  * types nothing leaves no step and no empty layer behind.
  */
-import { addVector, invertAffine, setTextContent } from '../doc/edit'
+import { addGroup, addVector, invertAffine, setTextContent } from '../doc/edit'
+import { characterGroups } from '../vector/outline'
 import { freshName, layerRows, placeOf } from '../doc/tree'
 import { makeNode } from '../doc/nodes'
 import {
@@ -48,7 +49,7 @@ import { tools } from '../tools'
 import { swatchIn } from './colour'
 import { clearToolOverlay, registerTool, sessions, setToolOverlay, snapped, type Gesture, type Pointer, type Session } from './canvasTools'
 import { startSnap } from './snapping'
-import { documents, newId, type OpenDoc } from './documents'
+import { documents, newId, placing, type OpenDoc } from './documents'
 import { layoutOf, startFonts } from './text'
 import { typeSettings } from './typeSettings'
 import { views } from './views'
@@ -624,7 +625,7 @@ function editText(d: OpenDoc, id: NodeId, pos: number | null, pending: Pending |
 }
 
 /** Where a new layer goes (doc/tree.ts): above the selected one, or into the artboard it's drawn on. */
-const newLayerPlace = (doc: Doc, selected: NodeId | null, at?: [number, number] | null) => whereNew(doc, selected, at)
+const newLayerPlace = (doc: Doc, d: OpenDoc, at?: [number, number] | null) => whereNew(doc, d.selected, at, placing(d))
 
 /** New text: point text at a point, area text in a frame, or path text along a path. */
 function newText(d: OpenDoc, mode: 'point' | 'area' | 'path', transform: Affine, frame: Geometry | null, pathOffset = 0) {
@@ -637,7 +638,7 @@ function newText(d: OpenDoc, mode: 'point' | 'area' | 'path', transform: Affine,
   const node = makeNode('text', id, freshName(doc, 'Text'), { mode, content, frame, pathOffset, appearance: [fillItem(solid(fg))] }) as TextNode
   node.transform = transform
   autoNamed.add(id)
-  const { parent, index } = newLayerPlace(doc, d.selected, [transform[4], transform[5]])
+  const { parent, index } = newLayerPlace(doc, d, [transform[4], transform[5]])
   editText(d, id, 0, { node, parent, index })
 }
 
@@ -795,7 +796,12 @@ export function applyPara(patch: Partial<ParaProps>, coalesce?: string, style?: 
   } else typeSettings().update({ para: patch })
 }
 
-/** Create Outlines: the selected text as a shape with the same fills and strokes, in its place. */
+/**
+ * Create Outlines: the selected text as a shape with the same fills and
+ * strokes, in its place; text with colour per character as a group of
+ * shapes, one for each paint its characters have (vector/outline.ts,
+ * characterGroups), the group taking the text's place.
+ */
 export function createOutlines() {
   const d = documents().active()
   const n = d?.selected ? d.history.present.nodes[d.selected] : null
@@ -804,16 +810,23 @@ export function createOutlines() {
   const l = layoutOf(n, doc)
   if (!l) return
   if (sessions().get()?.kind === 'type') sessions().commit()
-  const path = glyphsPath(l)
+  const groups = characterGroups(l.glyphs, n.props.appearance)
   const id = newId('n')
   documents().commit(
     (x) => {
       const place = placeOf(x, n.id)
       if (!place || place.slot !== 'children') return x
-      let next = addVector(x, id, n.name, { kind: 'path', path }, n.props.appearance, place.parent, place.index + 1, [...n.transform] as Affine)
+      let next: Doc
+      if (groups.length > 1) {
+        // One shape for each paint, in a group in the text's place.
+        next = addGroup(x, id, n.name, place.parent, place.index + 1)
+        groups.forEach((g, k) => {
+          next = addVector(next, newId('n'), `${n.name} ${k + 1}`, { kind: 'path', path: glyphsToPath(g.glyphs) }, g.appearance, id, k, [...n.transform] as Affine)
+        })
+      } else next = addVector(x, id, n.name, { kind: 'path', path: glyphsPath(l) }, n.props.appearance, place.parent, place.index + 1, [...n.transform] as Affine)
       const v = next.nodes[id]
       // The shape takes the text's place: its masks, effects, style and layer settings come too.
-      next = { ...next, nodes: { ...next.nodes, [id]: { ...v, visible: n.visible, opacity: n.opacity, fillOpacity: n.fillOpacity, blend: n.blend, masks: n.masks, effects: n.effects, fx: n.fx, children: n.children ?? [] } as DocNode } }
+      next = { ...next, nodes: { ...next.nodes, [id]: { ...v, visible: n.visible, opacity: n.opacity, fillOpacity: n.fillOpacity, blend: n.blend, masks: n.masks, effects: n.effects, fx: n.fx, children: groups.length > 1 ? [...(v.children ?? []), ...(n.children ?? [])] : (n.children ?? []) } as DocNode } }
       const parent = next.nodes[place.parent]
       const nodes = { ...next.nodes, [place.parent]: { ...parent, children: (parent.children ?? []).filter((c) => c !== n.id) } as DocNode }
       delete nodes[n.id]
@@ -828,3 +841,29 @@ import { glyphsToPath } from '../geom/glyphs'
 import { Listeners } from '../lib/listeners'
 import { whereNew } from '../doc/tree'
 const glyphsPath = (l: TextLayout) => glyphsToPath(l.glyphs)
+
+/** Whether text is being edited: what the Glyphs panel inserts into. */
+export const isTyping = () => !!typing()
+
+/**
+ * The Glyphs panel's insert: a character at the caret of the text being
+ * edited, replacing what's selected, in the settings there; an alternate
+ * goes in with the feature that makes it on that character. Returns
+ * whether there was text to put it in.
+ */
+export function insertGlyph(text: string, feature?: string): boolean {
+  const s = typing()
+  if (!s) return false
+  const [a] = s.range()
+  s.insert(text)
+  const end = a + text.length
+  if (feature) {
+    const tag = feature.split('=')[0]
+    s.select(a, end)
+    const c = shownChar()
+    s.styleChars({ features: [...c.features.filter((f) => f.replace(/^[-+]/, '').split('=')[0] !== tag), feature] }, undefined)
+    s.select(end, end)
+  }
+  s.focus()
+  return true
+}

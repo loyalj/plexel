@@ -6,6 +6,7 @@
  * Number fields take typing, and their labels scrub: drag a label left or
  * right to change the value, as in Photoshop.
  */
+import { FontPicker } from './FontPicker'
 import { freehand } from '../app/freehand'
 import { brushChoices } from '../app/vectorBrushes'
 import { useSyncExternalStore } from 'react'
@@ -396,28 +397,30 @@ function Option({ o, paints, state }: { o: ToolOption; paints?: PaintTool; state
       return <SourceOptions tool={o.tool} />
     case 'type-font': {
       const c = shownChar()
-      const fams = fontLibraryNow()?.families() ?? []
-      const fam = fams.find((f) => f.family === c.font)
+      const lib = fontLibraryNow()
+      const fams = lib?.families() ?? []
+      const found = lib?.resolve(c.font, c.style)
+      const fam = fams.find((f) => f.family === (found?.family ?? c.font))
+      const style = found && fam ? found.style : c.style
       return (
         <>
-          <label className="options-field">
+          <span className="options-field">
             <span>Font</span>
-            <select id="opt-type-font" value={fam ? c.font : ''} onChange={(e) => {
-              const f = fams.find((x) => x.family === e.target.value)
-              if (f) applyChar({ font: f.family, style: f.styles.find((s) => s.style === c.style)?.style ?? f.styles[0].style })
-            }}>
-              {!fam && <option value="">{c.font}</option>}
-              {fams.map((f) => (
-                <option key={f.family} value={f.family}>
-                  {f.family}
-                </option>
-              ))}
-            </select>
-          </label>
+            <FontPicker
+              id="opt-type-font"
+              label="Font"
+              className="compact"
+              value={fam?.family ?? c.font}
+              onPick={(name) => {
+                const f = fams.find((x) => x.family === name)
+                if (f) applyChar({ font: f.family, style: f.styles.find((s) => s.style === style)?.style ?? f.styles.find((s) => /^(regular|book|roman|normal)$/i.test(s.style))?.style ?? f.styles[0].style })
+              }}
+            />
+          </span>
           <label className="options-field">
             <span>Style</span>
-            <select id="opt-type-style" value={c.style} onChange={(e) => applyChar({ style: e.target.value })}>
-              {!fam?.styles.some((s) => s.style === c.style) && <option value={c.style}>{c.style}</option>}
+            <select id="opt-type-style" value={style} onChange={(e) => applyChar({ font: fam?.family ?? c.font, style: e.target.value })}>
+              {!fam?.styles.some((s) => s.style === style) && <option value={style}>{style || '—'}</option>}
               {fam?.styles.map((s) => (
                 <option key={s.style} value={s.style}>
                   {s.style}

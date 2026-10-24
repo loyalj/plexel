@@ -23,6 +23,7 @@
 import { curveAt, type BrushSettings, type DynInput, type DynTarget } from './defs'
 import type { Dab } from './dab'
 import { rng } from './rng'
+import { BRISTLE_LEVELS, SPRAY_VARIANTS, WEAR_LEVELS, Wear, airbrushTipId, bristleTipId, erodibleTipId } from './special'
 
 export interface PenSample {
   /** Document pixels. */
@@ -35,6 +36,8 @@ export interface PenSample {
   tiltY: number
   /** Degrees, 0..359. */
   twist: number
+  /** An airbrush pen's finger wheel, 0..1; absent (a pen without one) is 1. */
+  wheel?: number
   /** Milliseconds. */
   t: number
 }
@@ -51,10 +54,18 @@ interface Point {
   y: number
   pressure: number
   tilt: number
+  /** Which way the pen leans, radians in the document (0 is to the right). */
+  azimuth: number
   twist: number
+  wheel: number
   speed: number
   /** Direction of travel, radians; NaN until the stroke has moved. */
   dir: number
+}
+
+export interface StrokeOptions {
+  /** How worn an erodible tip is when the stroke begins, 0..1. */
+  wear?: number
 }
 
 export class StrokeBuilder {
@@ -75,12 +86,23 @@ export class StrokeBuilder {
   private strokeColour: Pick<Dab, 'colour' | 'hsb'> | null = null
   /** When the last dab went down, for Build-up. */
   private lastDabAt = 0
+  /** The pen's rotation when the stroke began, for Initial Rotation. */
+  private initialTwist = NaN
+  /** An erodible tip's wear, growing as the stroke goes. */
+  private wear: Wear
 
   constructor(
     private b: BrushSettings,
     seed: number,
+    o: StrokeOptions = {},
   ) {
     this.random = rng(seed)
+    this.wear = new Wear(b.special?.kind === 'erodible' ? b.special : null, b.size, o.wear ?? 0)
+  }
+
+  /** How worn an erodible tip is now. */
+  get wearNow() {
+    return this.wear.value
   }
 
   private input(p: Point, i: DynInput, steps = 25): number {
@@ -91,6 +113,10 @@ export class StrokeBuilder {
         return Math.min(1, p.tilt / 90)
       case 'twist':
         return p.twist / 360
+      case 'wheel':
+        return p.wheel
+      case 'initial-twist':
+        return (Number.isNaN(this.initialTwist) ? p.twist : this.initialTwist) / 360
       case 'speed':
         return Math.min(1, p.speed / FULL_SPEED)
       case 'distance':
@@ -184,7 +210,7 @@ export class StrokeBuilder {
       if (k < 1) k = Math.max(tex.minDepth, k)
       texDepth = tex.depth * k
     }
-    return {
+    const dab: Dab = {
       x: p.x - ty * side + tx * along,
       y: p.y + tx * side + ty * along,
       size,
@@ -204,6 +230,67 @@ export class StrokeBuilder {
       grain: Math.floor(r() * 0x7fffffff),
       dual: false,
     }
+    return b.special ? this.special(dab, p) : dab
+  }
+
+  /**
+   * A bristle, erodible or airbrush tip: the footprint the pen's pressure,
+   * tilt and the tip's wear call for (special.ts), and how it's stretched.
+   */
+  private special(d: Dab, p: Point): Dab {
+    const s = this.b.special!
+    const tilt = Math.min(1, p.tilt / 90)
+    if (s.kind === 'bristle') {
+      // Pressed and tilted, the hairs go deeper and splay; tilted, the footprint flattens too.
+      const depth = Math.min(1, p.pressure * 0.8 + tilt * 0.35)
+      const level = Math.round(depth * (BRISTLE_LEVELS - 1))
+      return { ...d, tip: bristleTipId(s, level), roundness: d.roundness * (1 - 0.35 * tilt) }
+    }
+    if (s.kind === 'airbrush') {
+      // Tilted, the spray stretches the way the pen leans and its middle moves that way.
+      const k = s.distortion * tilt
+      const lean = k * d.size * 0.3
+      const variant = Math.floor(this.random() * SPRAY_VARIANTS)
+      return {
+        ...d,
+        tip: airbrushTipId(s, variant),
+        x: d.x + Math.cos(p.azimuth) * lean,
+        y: d.y + Math.sin(p.azimuth) * lean,
+        size: d.size * (1 + k * 0.6),
+        roundness: d.roundness / (1 + k * 1.5),
+        angle: tilt > 0 ? p.azimuth : d.angle,
+      }
+    }
+    // Erodible: worn, it draws wider; pressed, deeper into the cone; tilted, with its side.
+    const w = this.wear.value
+    const side = tilt > 0 && (s.shape === 'point' || s.shape === 'round')
+    let size = d.size
+    let roundness = d.roundness
+    let hardness = 0.9
+    let tip = 'round'
+    switch (s.shape) {
+      case 'point':
+        size *= 0.15 + 0.85 * Math.min(1, w + 0.35 * p.pressure)
+        hardness = 0.95 - 0.35 * w
+        break
+      case 'round':
+        size *= 0.5 + 0.5 * Math.min(1, w * 2 + 0.5 * p.pressure)
+        hardness = 0.85
+        break
+      case 'flat':
+        roundness *= 0.15 + 0.45 * Math.min(1, w)
+        size *= 0.7 + 0.3 * p.pressure
+        hardness = 0.95
+        break
+      default:
+        size *= 0.6 + 0.4 * Math.min(1, w + 0.4 * p.pressure)
+        tip = erodibleTipId(s, Math.round(w * (WEAR_LEVELS - 1)))
+    }
+    if (side) {
+      size *= 1 + 0.8 * tilt
+      roundness /= 1 + 1.5 * tilt
+    }
+    return { ...d, tip, size: Math.max(0.5, size), roundness: Math.max(0.01, roundness), hardness, angle: side ? p.azimuth : d.angle }
   }
 
   /** A dual brush's dab: its own tip, size and scatter; it only marks where the main stroke may show. */
@@ -246,7 +333,8 @@ export class StrokeBuilder {
     const pose = this.b.pose
     const tiltX = pose?.tiltX ?? s.tiltX
     const tiltY = pose?.tiltY ?? s.tiltY
-    return { x: s.x, y: s.y, pressure: pose?.pressure ?? s.pressure, tilt: Math.hypot(tiltX, tiltY), twist: pose?.rotation ?? s.twist, speed, dir: NaN }
+    // The pen leans the way its tilts point: tiltX right, tiltY towards the user (down the page).
+    return { x: s.x, y: s.y, pressure: pose?.pressure ?? s.pressure, tilt: Math.hypot(tiltX, tiltY), azimuth: Math.atan2(tiltY, tiltX), twist: pose?.rotation ?? s.twist, wheel: s.wheel ?? 1, speed, dir: NaN }
   }
 
   /** Adds a sample; returns the dabs it completes. */
@@ -254,6 +342,8 @@ export class StrokeBuilder {
     const speed = this.last ? Math.hypot(s.x - this.last.x, s.y - this.last.y) / Math.max(1, s.t - this.last.t) : 0
     this.last = s
     const raw = this.point(s, speed)
+    if (Number.isNaN(this.initialTwist)) this.initialTwist = raw.twist
+    this.wear.add(raw.x, raw.y, raw.pressure)
     let p: Point
     if (!this.smoothed) p = raw
     else if (this.b.pulledString && this.b.smoothing > 0) {
@@ -361,14 +451,16 @@ function lerpPoint(a: Point, b: Point, t: number): Point {
     y: a.y + (b.y - a.y) * t,
     pressure: a.pressure + (b.pressure - a.pressure) * t,
     tilt: a.tilt + (b.tilt - a.tilt) * t,
+    azimuth: b.azimuth,
     twist: a.twist + (b.twist - a.twist) * t,
+    wheel: a.wheel + (b.wheel - a.wheel) * t,
     speed: a.speed + (b.speed - a.speed) * t,
     dir: b.dir,
   }
 }
 
 /** Every dab a whole stroke makes: the samples in order, then the finish. */
-export function strokeDabs(b: BrushSettings, seed: number, samples: PenSample[]): Dab[] {
-  const s = new StrokeBuilder(b, seed)
+export function strokeDabs(b: BrushSettings, seed: number, samples: PenSample[], o: StrokeOptions = {}): Dab[] {
+  const s = new StrokeBuilder(b, seed, o)
   return [...samples.flatMap((x) => s.add(x)), ...s.finish()]
 }

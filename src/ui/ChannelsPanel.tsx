@@ -23,11 +23,15 @@ import { deletePattern, renameDocPattern } from '../app/fills'
 import { loadColourChannel, loadSelection, renameDocChannel, saveSelection } from '../app/selection'
 import { opFor } from '../app/selectTools'
 import type { DialogId } from '../commands'
-import { channelKind, type Doc, type DocChannel } from '../doc/types'
+import { PATTERN_TILE_TYPES, channelKind, type Doc, type DocChannel, type PatternTileType } from '../doc/types'
 import { engine } from '../engine/EngineHost'
 import type { Thumbnail } from '../engine/protocol'
 import { Icon } from './Icon'
-import { Hint } from './controls'
+import { Hint, NumberField } from './controls'
+import { cancelPattern, editPattern, finishPattern, makePatternFromSelection, patternEditOf, renameEditedPattern, savePatternCopy, setPatternTile, setTileSize, subscribePatternEdit } from '../app/patternEdit'
+import { guidePrefs } from '../app/guidePrefs'
+import { BRICK_OFFSETS, TILE_TYPE_LABELS } from '../doc/patterns'
+import { MAX_PATTERN } from '../vector/paint'
 
 /** A name that becomes a field on double-click; Enter keeps it, Esc puts it back. */
 function Name({ name, onRename }: { name: string; onRename(n: string): void }) {
@@ -312,8 +316,12 @@ function ChannelList({ d, view, openDialog }: { d: OpenDoc; view: ChannelView; o
 
 export const PatternsPanel = memo(function PatternsPanel({ openDialog }: { openDialog(id: DialogId): void }) {
   const d = useSyncExternalStore(documents().subscribe, () => documents().active())
+  useSyncExternalStore(subscribePatternEdit, () => patternEditOf(d?.key)?.tile)
   const doc = d?.history.present
-  if (!doc) return <p className="panel-empty">No document open</p>
+  if (!d || !doc) return <p className="panel-empty">No document open</p>
+  // A pattern's tile in its own tab: the Pattern Options.
+  const editing = patternEditOf(d.key)
+  if (editing) return <PatternOptions tabKey={d.key} doc={doc} />
   const list = doc.patterns ?? []
   return (
     <div className="patterns" data-panel="patterns">
@@ -324,11 +332,15 @@ export const PatternsPanel = memo(function PatternsPanel({ openDialog }: { openD
       ) : (
         <ul className="channel-list">
           {list.map((p) => (
-            <li key={p.id} className="channel-row" data-pattern={p.id}>
+            <li key={p.id} className="channel-row" data-pattern={p.id} onDoubleClick={() => editPattern(p.id)}>
               <Name name={p.name} onRename={(n) => renameDocPattern(p.id, n)} />
-              <span className="item-meta">
+              <span className="item-meta" title={p.art ? 'Made from artwork' : 'Made from pixels'}>
+                {p.art ? '◇ ' : ''}
                 {p.width} × {p.height}
               </span>
+              <button type="button" className="icon-button" aria-label={`Edit ${p.name}`} data-pattern-edit={p.id} data-tip="Edit Pattern: its tile in a tab of its own, its copies round it" onClick={() => editPattern(p.id)}>
+                <Icon name="ui.settings" />
+              </button>
               <button type="button" className="icon-button" aria-label={`Delete ${p.name}`} onClick={() => deletePattern(p.id)}>
                 <Icon name="ui.close" />
               </button>
@@ -340,7 +352,70 @@ export const PatternsPanel = memo(function PatternsPanel({ openDialog }: { openD
         <button type="button" className="button small" data-patterns="define" onClick={() => openDialog('definePattern')}>
           Define Pattern…
         </button>
+        <button type="button" className="button small" data-patterns="make" disabled={!d.selected} title="The selected layers as a new pattern’s tile, opened to edit" onClick={() => void makePatternFromSelection()}>
+          Make Pattern
+        </button>
       </div>
     </div>
   )
 })
+
+/** Pattern editing mode's options: the tile's layout, size and spacing, and the way out. */
+function PatternOptions({ tabKey, doc }: { tabKey: string; doc: Doc }) {
+  const e = patternEditOf(tabKey)!
+  const prefs = useSyncExternalStore(guidePrefs().subscribe, guidePrefs().get)
+  const t = e.tile
+  const brick = t.type === 'brick-row' || t.type === 'brick-column'
+  return (
+    <div className="patterns pattern-options" data-panel="patterns" data-pattern-options={e.pattern}>
+      <p className="field-meta">
+        Pattern Options <Hint text="What’s drawn here is the pattern’s tile; everything drawn with the pattern follows as you go. The copies round it show how the tiles meet." />
+      </p>
+      <label className="field">
+        <span>Name</span>
+        <input id="pattern-name" defaultValue={e.name} key={e.name} onBlur={(ev) => renameEditedPattern(tabKey, ev.target.value)} onKeyDown={(ev) => ev.key === 'Enter' && (ev.target as HTMLInputElement).blur()} />
+      </label>
+      <label className="field">
+        <span>Tile Type</span>
+        <select id="pattern-tile-type" value={t.type} onChange={(ev) => setPatternTile(tabKey, { type: ev.target.value as PatternTileType })}>
+          {PATTERN_TILE_TYPES.map((k) => (
+            <option key={k} value={k}>
+              {TILE_TYPE_LABELS[k]}
+            </option>
+          ))}
+        </select>
+      </label>
+      {brick && (
+        <label className="field">
+          <span>Brick Offset</span>
+          <select id="pattern-brick-offset" value={String(t.offset)} onChange={(ev) => setPatternTile(tabKey, { offset: Number(ev.target.value) })}>
+            {BRICK_OFFSETS.map((o) => (
+              <option key={o} value={String(o)}>
+                1/{Math.round(1 / o)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <NumberField id="pattern-width" label="Width" unit="px" min={1} max={MAX_PATTERN} value={doc.width} onChange={(w) => setTileSize(tabKey, w, doc.height)} hint="The tile’s width: the tab’s canvas, round its middle." />
+      <NumberField id="pattern-height" label="Height" unit="px" min={1} max={MAX_PATTERN} value={doc.height} onChange={(h) => setTileSize(tabKey, doc.width, h)} />
+      <NumberField id="pattern-spacing-x" label="H Spacing" unit="px" min={-MAX_PATTERN} max={MAX_PATTERN} value={t.spacing[0]} onChange={(v) => setPatternTile(tabKey, { spacing: [v, t.spacing[1]] })} hint="Room between tiles across; less than 0 overlaps them. With none, what’s drawn over the edge comes in at the other side." />
+      <NumberField id="pattern-spacing-y" label="V Spacing" unit="px" min={-MAX_PATTERN} max={MAX_PATTERN} value={t.spacing[1]} onChange={(v) => setPatternTile(tabKey, { spacing: [t.spacing[0], v] })} />
+      <label className="check">
+        <input type="checkbox" id="pattern-copies" checked={prefs.tiledView} onChange={() => guidePrefs().toggle('tiledView')} />
+        Show copies
+      </label>
+      <div className="panel-tools">
+        <button type="button" className="button small primary" data-pattern-done onClick={() => void finishPattern(tabKey)}>
+          Done
+        </button>
+        <button type="button" className="button small" data-pattern-cancel onClick={() => cancelPattern(tabKey)}>
+          Cancel
+        </button>
+        <button type="button" className="button small" data-pattern-copy onClick={() => void savePatternCopy(tabKey)}>
+          Save a Copy
+        </button>
+      </div>
+    </div>
+  )
+}

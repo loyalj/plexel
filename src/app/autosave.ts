@@ -95,7 +95,7 @@ export class Autosave {
             clean = false
           }
         }
-        docs.add({ key: d.key, doc, file: d.file, saved: clean, folded: d.folded, label: 'Restore', parent: d.parent ?? null })
+        docs.add({ key: d.key, doc, file: d.file, saved: clean, folded: d.folded, drawInto: d.drawInto ?? null, label: 'Restore', parent: d.parent ?? null })
         if (doc === d.doc) this.written.set(d.key, doc)
         for (const w of d.warnings) problems.push(`${doc.name}: ${w}`)
         restored++
@@ -192,7 +192,7 @@ export class Autosave {
       }
       await writeSession(this.store, {
         active: state.active,
-        docs: state.docs.map((d) => ({ key: d.key, file: d.file, clean: !isDirty(d), folded: [...d.folded], parent: d.parent })),
+        docs: state.docs.map((d) => ({ key: d.key, file: d.file, clean: !isDirty(d), folded: [...d.folded], drawInto: d.drawInto, parent: d.parent })),
       })
       for (const key of [...this.written.keys()]) {
         if (open.has(key)) continue

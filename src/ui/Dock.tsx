@@ -739,6 +739,31 @@ function DockColumn({ side, index, column, content, scale, onLayout, onMenu }: C
 }
 
 /**
+ * Holds the docked column holding `el` as it is: each of its groups kept at
+ * the height it has now, until the returned function lets go. For a drag
+ * inside a panel (layers in the Layers panel): the column shares its height
+ * by what's in each group, so a group opening, a selection changing
+ * Properties or thumbnails arriving would otherwise move the rows under the
+ * pointer while it's aiming. Meanwhile what changes size scrolls inside its
+ * own group. Outside a docked column (a floating window) it does nothing.
+ */
+export function holdColumn(el: Element | null): () => void {
+  const col = el?.closest<HTMLElement>('.dock')
+  if (!col) return () => {}
+  const groups = [...col.querySelectorAll<HTMLElement>(':scope > [data-group]')]
+  const held = groups.map((g) => {
+    // Exactly, in the group's own pixels under the interface's zoom: offsetHeight rounds, and a rounded height nudges the rows.
+    const h = `${g.getBoundingClientRect().height / ((g as HTMLElement & { currentCSSZoom?: number }).currentCSSZoom || 1)}px`
+    const was = [g.style.minHeight, g.style.maxHeight] as const
+    g.style.minHeight = g.style.maxHeight = h
+    return () => {
+      ;[g.style.minHeight, g.style.maxHeight] = was
+    }
+  })
+  return () => held.forEach((f) => f())
+}
+
+/**
  * The one height a column's open groups are held to so they all fit, the
  * tallest giving up room first ("water-filling"); null while they fit as
  * they are, or when the column's groups have shares of their own. Worked out
@@ -757,6 +782,12 @@ function useLevel(col: RefObject<HTMLElement | null>, on: boolean): number | nul
       const top = el.querySelector<HTMLElement>(':scope > .dock-col-head')?.offsetHeight ?? 0
       let room = el.clientHeight - top - Math.max(0, groups.length - 1)
       const wants: number[] = []
+      // Measured with nothing stretched to fill (data-measuring, app.css): a list that fills its
+      // group (Layers, History, Brushes) would otherwise report the room it was given as what it
+      // wants, and the level would follow its own last answer, the groups drifting with every
+      // small change (a hover, a selection) and moving rows under the pointer. Put back before
+      // anything is drawn.
+      el.dataset.measuring = ''
       for (const g of groups) {
         const head = g.querySelector<HTMLElement>(':scope > .panel-head')?.offsetHeight ?? 0
         if (g.classList.contains('collapsed')) {
@@ -766,6 +797,7 @@ function useLevel(col: RefObject<HTMLElement | null>, on: boolean): number | nul
         const body = g.querySelector<HTMLElement>(':scope > .panel-body')
         wants.push(Math.max(GROUP_FLOOR, head + (body?.scrollHeight ?? 0)))
       }
+      delete el.dataset.measuring
       const total = wants.reduce((a, b) => a + b, 0)
       if (!wants.length || total <= room) return setLevel((l) => (l === null ? l : null))
       // The smallest keep what they want; the rest share what's left equally.

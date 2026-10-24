@@ -26,7 +26,7 @@ export async function fontsToCarry(doc: Doc, sources: ('local' | 'user' | 'docum
   if (!lib) return []
   const out = new Map<string, Uint8Array>()
   for (const { family, style } of fontsUsed(doc)) {
-    const e = lib.entry(family, style)
+    const e = lib.resolve(family, style)
     if (!e || e.source === 'builtin' || !sources.includes(e.source) || e.embeddable === false) continue
     const bytes = lib.bytesOf(family, style)
     if (!bytes) continue

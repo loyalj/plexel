@@ -6,7 +6,8 @@
  * the name, Esc or an empty name puts the old one back. Folding is view
  * state, kept beside the document and not in its history.
  *
- * Dragging a layer moves it: dropped on the top or bottom edge of a row it
+ * Dragging a layer moves it (dragging one of several selected moves them
+ * all, in their order): dropped on the top or bottom edge of a row it
  * goes above or below that layer, in the same group; dropped on the middle
  * of a row it goes inside that layer, as its top child. Inside a group
  * that's grouping; inside any other layer it's clipping, since children are
@@ -40,13 +41,14 @@ import { selectedIds, type MaskTarget, type OpenDoc } from '../app/documents'
 import { pixelMaskOf, vectorMaskOf } from '../app/selection'
 import { nodeDef } from '../doc/nodes'
 import { ADJUSTMENT_BY_ID } from '../adjust/defs'
-import { layerRows, placeOf } from '../doc/tree'
+import { isWithin, layerRows, placeOf } from '../doc/tree'
 import type { BoolOp, Doc, DocNode, NodeId } from '../doc/types'
 import { engine } from '../engine/EngineHost'
 import type { Thumbnail } from '../engine/protocol'
 import { Icon } from './Icon'
 import type { IconName } from './icons'
 import { Hint } from './controls'
+import { holdColumn } from './Dock'
 import { zoomToLayer } from '../app/zoomTo'
 import { isArtboard } from '../doc/artboards'
 
@@ -57,6 +59,20 @@ const THUMBS_AT_ONCE = 8
 /** The larger picture a resting pointer shows. */
 const PEEK = 176
 const PEEK_DELAY = 450
+/** How long a drag rests on a folded group before it opens. */
+const REST_OPENS = 650
+/** How near the list's edge (CSS pixels) a drag starts it scrolling, and its fastest, in pixels a frame. */
+const EDGE = 32
+const EDGE_SPEED = 18
+
+/** The nearest element holding `el` that scrolls up and down. */
+function scrollParent(el: HTMLElement | null): HTMLElement | null {
+  for (let at = el; at; at = at.parentElement) {
+    const o = getComputedStyle(at).overflowY
+    if ((o === 'auto' || o === 'scroll') && at.scrollHeight > at.clientHeight) return at
+  }
+  return null
+}
 
 /** A version per node object, as EngineHost keeps; a subtree's key is its nodes' versions. */
 const versions = new WeakMap<DocNode, number>()
@@ -177,8 +193,18 @@ interface Props {
   onDeleteLayer(id: NodeId): void
   onToggleFold(id: NodeId): void
   onRename(id: NodeId, name: string): void
-  /** Moves a layer into `parent` at `index` (painting order, counted without it). */
-  onMove(id: NodeId, parent: NodeId, index: number): void
+  /** Moves layers (one, or everything selected) into `parent` at `index` (painting order, counted without them). */
+  onMove(ids: NodeId[], parent: NodeId, index: number): void
+  /** Alt-drag: copies of the layers there instead. */
+  onCopy(ids: NodeId[], parent: NodeId, index: number): void
+  /** A right-click on a row: the panel's menu at the pointer, for what's selected. */
+  onContextMenu(x: number, y: number): void
+  /** The pin on the group new layers go into: a click unpins it. */
+  onToggleDrawInto(id: NodeId): void
+  /** Ctrl-click on a group's arrow: every layer in it selected. */
+  onSelectInGroup(id: NodeId): void
+  /** Alt-click on an arrow: every group folded (true) or unfolded. */
+  onFoldAll(fold: boolean): void
   /** The panel's foot: a new pixel layer, a new adjustment layer (a menu of them, at the button), and Duplicate and Delete for what's selected. */
   onNewLayer(): void
   onNewAdjustment(at: { x: number; y: number }): void
@@ -189,41 +215,63 @@ interface Props {
 /** What the panel asks for: the app gives the same functions every render (lib/stable.ts), so the memoised panel draws again only for its document. */
 export type LayerActions = Omit<Props, 'doc' | 'renaming'>
 
-export const LayersPanel = memo(function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany, onMaskClick, onToggleEffect, onStyle, onToggleVisible, onSolo, onToggleLock, onDuplicate, onDeleteLayer, onToggleFold, onRename, onMove, onNewLayer, onNewAdjustment, onDuplicateSelected, onDelete }: Props) {
+export const LayersPanel = memo(function LayersPanel({ doc, renaming, onRenaming, onSelect, onSelectMany, onMaskClick, onToggleEffect, onStyle, onToggleVisible, onSolo, onToggleLock, onDuplicate, onDeleteLayer, onToggleFold, onRename, onMove, onCopy, onContextMenu, onToggleDrawInto, onSelectInGroup, onFoldAll, onNewLayer, onNewAdjustment, onDuplicateSelected, onDelete }: Props) {
   const present = doc.history.present
   const rows = layerRows(present, doc.folded)
   const thumbs = useThumbs(doc.key, present)
   const [drop, setDrop] = useState<Drop | null>(null)
-  const dragging = useRef<{ id: NodeId; x: number; y: number; started: boolean; pointer: number } | null>(null)
-  /** The layer being dragged and where the pointer is, for the label that follows it. */
-  const [carry, setCarry] = useState<{ id: NodeId; x: number; y: number } | null>(null)
+  /** `ids`: what the drag carries (the row, or everything selected with it); `click`: the select a plain click on a selected row waits to make until it's known not to be a drag. */
+  const dragging = useRef<{ id: NodeId; ids: NodeId[]; x: number; y: number; started: boolean; pointer: number; click: (() => void) | null } | null>(null)
+  /** The layers being dragged and where the pointer is, for the label that follows it; `copy` while Alt is held. */
+  const [carry, setCarry] = useState<{ ids: NodeId[]; x: number; y: number; copy: boolean } | null>(null)
+  /** A folded group a drag rests on, opened after a moment. */
+  const resting = useRef<{ id: NodeId; timer: number } | null>(null)
+  /** Scrolling the list while a drag is near its top or bottom edge. */
+  const edgeScroll = useRef<{ el: HTMLElement | null; speed: number; raf: number; x: number; y: number; alt: boolean }>({ el: null, speed: 0, raf: 0, x: 0, y: 0, alt: false })
+  const track = useRef<(x: number, y: number, alt: boolean) => void>(() => {})
+  /** Lets go of the dock column held still while a row is pressed or dragged. */
+  const held = useRef<() => void>(() => {})
+  useEffect(() => () => held.current(), [])
   const list = useRef<HTMLUListElement>(null)
   const peek = usePeek(doc.key)
 
-  /** Where a drop at (x, y) would put the layer. */
-  const dropAt = (x: number, y: number, id: NodeId): Drop | null => {
+  // A layer just made (drawn, pasted, a new group's) is scrolled into sight, so it never lands out of view in a long list.
+  const before = useRef<{ key: string; nodes: Doc['nodes'] } | null>(null)
+  useEffect(() => {
+    const was = before.current
+    before.current = { key: doc.key, nodes: present.nodes }
+    if (!was || was.key !== doc.key || was.nodes === present.nodes) return
+    const made = rows.find((r) => !was.nodes[r.node.id])
+    if (made) list.current?.querySelector(`[data-layer="${CSS.escape(made.node.id)}"]`)?.scrollIntoView({ block: 'nearest' })
+  })
+
+  /** Where a drop at (x, y) would put the layers. */
+  const dropAt = (x: number, y: number, ids: NodeId[]): Drop | null => {
     const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('.layer-row')
     if (!el) return list.current && list.current.getBoundingClientRect().bottom < y ? { target: null, where: 'below' } : null
     const target = el.dataset.layer!
-    if (target === id) return null
+    if (!target || ids.includes(target)) return null
     const r = el.getBoundingClientRect()
     const f = (y - r.top) / r.height
     const where = f < 0.3 ? 'above' : f > 0.7 ? 'below' : 'into'
     return { target, where }
   }
 
-  /** The parent and index a drop means, or null if the move isn't allowed there. */
-  const resolve = (id: NodeId, d: Drop): { parent: NodeId; index: number } | null => {
+  /** The parent and index a drop means, or null if the move isn't allowed there (for any of the layers). */
+  const resolve = (ids: NodeId[], d: Drop): { parent: NodeId; index: number } | null => {
     if (!d.target) return { parent: present.root, index: 0 }
     const t = present.nodes[d.target]
     if (!t) return null
+    // Into or beside one of the layers being carried, or something inside one, is nowhere.
+    if (ids.some((id) => isWithin(present, t.id, id))) return null
+    const accepts = (p: DocNode) => ids.every((id) => nodeDef(p.kind).accepts?.(present.nodes[id].kind))
     if (d.where === 'into') {
-      if (!t.children || !nodeDef(t.kind).accepts?.(present.nodes[id].kind)) return null
-      return { parent: t.id, index: t.children.filter((c) => c !== id).length }
+      if (!t.children || !accepts(t)) return null
+      return { parent: t.id, index: t.children.filter((c) => !ids.includes(c)).length }
     }
     const place = placeOf(present, t.id)
-    if (!place || place.slot !== 'children') return null
-    const siblings = present.nodes[place.parent].children!.filter((c) => c !== id)
+    if (!place || place.slot !== 'children' || !accepts(present.nodes[place.parent])) return null
+    const siblings = present.nodes[place.parent].children!.filter((c) => !ids.includes(c))
     const at = siblings.indexOf(t.id)
     return { parent: place.parent, index: d.where === 'above' ? at + 1 : at }
   }
@@ -249,9 +297,66 @@ export const LayersPanel = memo(function LayersPanel({ doc, renaming, onRenaming
         return
       }
     }
-    onSelect(id, thumb ? (thumb === 'mask' ? 'pixel' : thumb === 'vmask' ? 'vector' : false) : doc.selected === id ? doc.maskTarget : false)
+    const select = () => onSelect(id, thumb ? (thumb === 'mask' ? 'pixel' : thumb === 'vmask' ? 'vector' : false) : doc.selected === id ? doc.maskTarget : false)
+    // A press on one of several selected layers keeps them all, so a drag carries them all; let go without dragging and it's this one alone.
+    const all = selectedIds(doc)
+    // A right-click on a selected row keeps the selection, for the menu to act on.
+    if (e.button === 2 && all.includes(id)) return
+    const many = e.button === 0 && !renaming && all.length > 1 && all.includes(id)
+    // The column's panels held still from the press, before the click changes Properties, until the drag's let go.
+    if (e.button === 0 && !renaming) {
+      held.current()
+      held.current = holdColumn(list.current)
+    }
+    if (!many) select()
     if (e.button !== 0 || renaming) return
-    dragging.current = { id, x: e.clientX, y: e.clientY, started: false, pointer: e.pointerId }
+    dragging.current = { id, ids: many ? all : [id], x: e.clientX, y: e.clientY, started: false, pointer: e.pointerId, click: many ? select : null }
+  }
+
+  /** Where a drag at (x, y) would land, shown; resting on a folded group opens it. */
+  track.current = (x, y, alt) => {
+    const d = dragging.current
+    if (!d) return
+    const at = dropAt(x, y, d.ids)
+    const ok = at && resolve(d.ids, at) ? at : null
+    setDrop(ok)
+    setCarry({ ids: d.ids, x, y, copy: alt })
+    const folded = ok?.target && ok.where === 'into' && doc.folded.has(ok.target) ? ok.target : null
+    if ((resting.current?.id ?? null) !== folded) {
+      if (resting.current) clearTimeout(resting.current.timer)
+      resting.current = folded ? { id: folded, timer: window.setTimeout(() => onToggleFold(folded), REST_OPENS) } : null
+    }
+  }
+
+  /** Near the scrolling list's top or bottom edge, a drag scrolls it, faster the nearer. */
+  const scrollNearEdge = (x: number, y: number, alt: boolean) => {
+    const s = edgeScroll.current
+    s.el ??= scrollParent(list.current)
+    Object.assign(s, { x, y, alt })
+    if (!s.el) return
+    const r = s.el.getBoundingClientRect()
+    const edge = Math.min(EDGE, r.height / 4)
+    s.speed = y < r.top + edge ? -EDGE_SPEED * Math.min(1, (r.top + edge - y) / edge) : y > r.bottom - edge ? EDGE_SPEED * Math.min(1, (y - r.bottom + edge) / edge) : 0
+    if (!s.speed || s.raf) return
+    const step = () => {
+      if (!dragging.current?.started || !s.speed || !s.el) {
+        s.raf = 0
+        return
+      }
+      s.el.scrollTop += s.speed
+      track.current(s.x, s.y, s.alt)
+      s.raf = requestAnimationFrame(step)
+    }
+    s.raf = requestAnimationFrame(step)
+  }
+
+  const endDrag = () => {
+    held.current()
+    held.current = () => {}
+    if (resting.current) clearTimeout(resting.current.timer)
+    resting.current = null
+    cancelAnimationFrame(edgeScroll.current.raf)
+    edgeScroll.current = { el: null, speed: 0, raf: 0, x: 0, y: 0, alt: false }
   }
 
   useEffect(() => {
@@ -260,19 +365,20 @@ export const LayersPanel = memo(function LayersPanel({ doc, renaming, onRenaming
       if (!d || e.pointerId !== d.pointer) return
       if (!d.started && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5) return
       d.started = true
-      const at = dropAt(e.clientX, e.clientY, d.id)
-      setDrop(at && resolve(d.id, at) ? at : null)
-      setCarry({ id: d.id, x: e.clientX, y: e.clientY })
+      track.current(e.clientX, e.clientY, e.altKey)
+      scrollNearEdge(e.clientX, e.clientY, e.altKey)
     }
     const up = (e: PointerEvent) => {
       const d = dragging.current
       if (!d || e.pointerId !== d.pointer) return
       dragging.current = null
+      endDrag()
       if (d.started) {
-        const at = dropAt(e.clientX, e.clientY, d.id)
-        const r = at && resolve(d.id, at)
-        if (r) onMove(d.id, r.parent, r.index)
-      }
+        const at = dropAt(e.clientX, e.clientY, d.ids)
+        const r = at && resolve(d.ids, at)
+        // Alt held at the drop: copies go there, the layers stay.
+        if (r) (e.altKey && e.type === 'pointerup' ? onCopy : onMove)(d.ids, r.parent, r.index)
+      } else if (e.type === 'pointerup') d.click?.()
       setDrop(null)
       setCarry(null)
     }
@@ -324,10 +430,15 @@ export const LayersPanel = memo(function LayersPanel({ doc, renaming, onRenaming
                 role="treeitem"
                 aria-selected={selected || also}
                 aria-expanded={hasKids ? !folded : undefined}
-                className={`layer-row${selected ? ' selected' : ''}${also ? ' selected also' : ''}${node.visible ? '' : ' hidden-layer'}${clipped ? ' clipped' : ''}${dropHere}${carry?.id === node.id ? ' carried' : ''}`}
+                className={`layer-row${selected ? ' selected' : ''}${also ? ' selected also' : ''}${node.visible ? '' : ' hidden-layer'}${clipped ? ' clipped' : ''}${dropHere}${carry?.ids.includes(node.id) ? ' carried' : ''}`}
                 data-layer={node.id}
+                data-tag={node.tag ?? undefined}
                 style={{ paddingLeft: 4 + depth * 14 }}
                 onPointerDown={(e) => onRowPointerDown(e, node.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  onContextMenu(e.clientX, e.clientY)
+                }}
                 onDoubleClick={() => onRenaming(node.id)}
               >
                 <button
@@ -346,8 +457,9 @@ export const LayersPanel = memo(function LayersPanel({ doc, renaming, onRenaming
                   className="layer-fold"
                   aria-label={folded ? `Unfold ${node.name}` : `Fold ${node.name}`}
                   disabled={!hasKids}
+                  data-tip={hasKids ? 'Alt-click folds or opens every group; Ctrl-click selects every layer in it' : undefined}
                   onPointerDown={(e) => e.stopPropagation()}
-                  onClick={() => onToggleFold(node.id)}
+                  onClick={(e) => (e.altKey ? onFoldAll(!folded) : e.ctrlKey || e.metaKey ? onSelectInGroup(node.id) : onToggleFold(node.id))}
                 >
                   {hasKids ? <Icon name={folded ? 'layer.fold-closed' : 'layer.fold-open'} /> : ''}
                 </button>
@@ -411,6 +523,19 @@ export const LayersPanel = memo(function LayersPanel({ doc, renaming, onRenaming
                   >
                     <LayerThumb thumb={thumbs.get(vmask.id)} group={false} />
                   </span>
+                )}
+                {doc.drawInto === node.id && (
+                  <button
+                    type="button"
+                    className="layer-pin"
+                    data-pinned
+                    aria-label={`Stop drawing into ${node.name}`}
+                    data-tip="New layers go into this group, whatever’s selected. Click to stop."
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={() => onToggleDrawInto(node.id)}
+                  >
+                    <Icon name="layer.pinned" />
+                  </button>
                 )}
                 {renaming === node.id ? (
                   <RenameField
@@ -499,7 +624,7 @@ export const LayersPanel = memo(function LayersPanel({ doc, renaming, onRenaming
         <FootButton action="delete" label={doc.others.length ? 'Delete Layers' : 'Delete Layer'} icon="layer.delete" why={doc.selected ? null : 'Select a layer first'} onClick={onDelete} />
       </div>
       {/* On the page, not in the dock, whose scrolling and zoom would carry them off. */}
-      {carry && createPortal(<DragLabel name={present.nodes[carry.id]?.name ?? ''} drop={drop} doc={present} x={carry.x} y={carry.y} />, document.body)}
+      {carry && createPortal(<DragLabel name={`${carry.copy ? 'Copy ' : ''}${carry.ids.length > 1 ? `${carry.ids.length} layers` : (present.nodes[carry.ids[0]]?.name ?? '')}`} drop={drop} doc={present} x={carry.x} y={carry.y} />, document.body)}
       {peek.view && createPortal(peek.view, document.body)}
     </div>
   )

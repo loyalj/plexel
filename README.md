@@ -217,20 +217,26 @@ things line up: to guides, the grid, the canvas and each other.
   a seeded random number onto size, opacity, flow, hardness, angle, scatter
   or colour. Shift-click for straight lines, Esc to abandon a stroke. Each
   stroke is one undo step, sharing every tile it didn't touch.
-- **Pen input**: pressure, tilt and twist from every coalesced sample, sent
-  to the engine through shared memory, with a pressure response in Edit →
-  Pen Settings.
-- **Brushes**: nine presets (round, soft, inking, airbrush, pencil,
-  calligraphy, chalk, spatter, dry bristle), each previewed with a stroke in
-  the Brushes panel, and presets of your own.
+- **Pen input**: pressure, tilt, twist and an airbrush pen's wheel from
+  every coalesced sample, sent to the engine through shared memory, with a
+  pressure response in Edit → Pen Settings.
+- **Brushes**: sixteen presets (round, soft, inking, airbrush, pencil,
+  calligraphy, chalk, spatter, dry bristle, round, flat and fan bristle,
+  sketch pencil, pastel chisel, soft airbrush, spray paint), each previewed
+  with a stroke in the Brushes panel, and presets of your own.
 - **Photoshop's brush engine**: the **Brush Settings** panel (F5) with every
   section (Brush Tip Shape, Shape Dynamics, Scattering, Texture, Dual Brush,
   Colour Dynamics, Transfer, Brush Pose, Noise, Wet Edges, Build-up,
   pulled-string Smoothing, Protect Texture), each control (Fade, pressure,
-  tilt, rotation, direction, initial direction, speed) through a curve.
-  Tips of any size and shape, mipmapped so they stay clean when small;
-  **Define Brush Preset** from the image; Photoshop's **ABR files**
-  imported (versions 1, 2 and 6 to 10), tips, patterns and settings.
+  tilt, rotation, the stylus wheel, direction, initial direction and
+  rotation, speed) through a curve. Tips of any size and shape, mipmapped
+  so they stay clean when small; **bristle tips** whose hairs splay with
+  pressure and tilt, **erodible tips** that wear as they draw, and
+  **airbrush tips** that lean with the pen; **Define Brush Preset** from
+  the image; Photoshop's **ABR files** imported (versions 1, 2 and 6 to 10),
+  tips, patterns and settings, and brushes **exported** as ABR.
+- **Tool presets** (Window → Tool Presets): any tool with its options
+  under a name; Photoshop's `.tpl` files imported.
 - **The Mixer Brush** (B, Shift+B from the Brush), whose paint picks up and
   mixes with the canvas's (Wet, Load, Mix, Flow, Photoshop's combinations,
   Load and Clean, Sample All Layers), and **Smudge** (Strength, Finger
@@ -308,8 +314,13 @@ things line up: to guides, the grid, the canvas and each other.
   The **Paint Bucket** (G) fills what's like the pixel clicked.
 - **Patterns from pixels**: **Edit → Define Pattern** keeps what's visible
   under the selection as a pattern of the document's, for fills, fill
-  layers, the Paint Bucket and shapes' fills and strokes; the Patterns panel
-  lists them. They convert with the document and travel with copied layers.
+  layers, the Paint Bucket, Pattern Overlay and shapes' fills and strokes;
+  the Patterns panel lists them. They convert with the document and travel
+  with copied layers.
+- **Patterns from artwork** (Layer → Pattern → Make Pattern) and **pattern
+  editing mode**: the tile in a tab of its own with its copies round it,
+  grid, brick and hex layouts with spacing, drawn seamlessly across the
+  edges, every use following as it's drawn.
 - **The tile store**, in the engine worker: 256-pixel tiles, planar, at 8
   or 16 bits in RGB, Gray or CMYK. Tile sets are copy-on-write, so undo
   costs only what changed; uniform tiles cost a few bytes; memory is held
@@ -805,6 +816,7 @@ src/
     canvasTools.ts    Move, Marquee, Lasso, Wand, Crop, Free Transform and Transform Selection gestures; sessions; overlays
     toolGestures.ts   the Gradient tool, the Paint Bucket, Quick Selection and the Magnetic Lasso
     fills.ts          Edit → Fill, content-aware fill, Define Pattern, fill layers
+    patternEdit.ts    Make Pattern and pattern editing mode: the tile's tab, its repeat drawn back into the pattern
     fillTools.ts      the Gradient tool's and the Paint Bucket's settings
     vectors.ts        the Pen, Direct Selection and Shape tools, paths' overlay, compound shapes, vector masks
     fonts.ts          the font library on the page: built-in, added, the computer's, documents' own
@@ -816,7 +828,8 @@ src/
     effects.ts        adjustment layers, filters, layer styles, smart objects and Edit Contents
     brushes.ts        the painting tools' brushes, saved presets, the Mixer's and Smudge's settings, pen settings
     brushAssets.ts    image tips and patterns, kept in IndexedDB by content hash and sent to the engine once
-    brushImport.ts    ABR files imported into the Brushes panel; Define Brush Preset
+    brushImport.ts    ABR files imported into the Brushes panel and exported from it; Define Brush Preset
+    toolPresets.ts    tool presets: each tool's options taken and given back; TPL files imported
     swatches.ts       kept colours
     docSwatches.ts    the document's swatches: made, changed, linked, libraries in and out
     convert.ts        Convert to Profile and Document → Mode
@@ -860,6 +873,7 @@ src/
     params.ts         parameters described once: reading them, and what the controls are made from
     tree.ts           places, subtrees, the layers panel's rows
     fragment.ts       layers lifted out as a small document, and pasted back with new ids
+    patterns.ts       patterns from artwork: tile layouts and their repeats, the edit tab's tiling, contents
     history.ts        undo and redo for any immutable value
     describe.ts       names each history step by diffing
     serialize.ts      JSON out, and a defensive, repairing loader
@@ -908,6 +922,8 @@ src/
     jpegDecode.ts     our own JPEG decoder, for CMYK: baseline, progressive, YCCK
     flat.ts           what SVG and PDF can hold as vectors, and what flattens
     abr.ts            Photoshop's brush files: tips, patterns and presets mapped onto Plexel's
+    abrWrite.ts       brushes written as an ABR file, with Plexel's settings whole beside Photoshop's keys
+    tpl.ts            Photoshop's tool presets: each preset's tool and the options of it Plexel has
     psd/              Photoshop documents (no DOM, runs in Node)
       bin.ts          bytes in and out, PSB's wider lengths included
       format.ts       the file as Photoshop lays it out, read and written exactly
@@ -949,6 +965,7 @@ src/
     stroke.ts         pen samples to dabs: smoothing (and the pulled string), spacing, dynamics, jitter, Build-up
     dab.ts            a dab mapped into a layer's pixels, and its coverage: tips, Noise, Wet Edges
     tips.ts           tips of any size with their mips, the built-in ones made from fixed seeds
+    special.ts        bristle, erodible and airbrush footprints, made from their names; erodible wear
     textures.ts       the built-in papers, patterns, and the ten texture modes
     colour.ts         Colour Dynamics in RGB, CMYK and Gray
     outline.ts        a tip's outline, for the cursor
@@ -1002,7 +1019,8 @@ src/
     Icon.tsx          an icon from the registry, in the text's colour and size
     selectDialogs.tsx Feather, Expand and Contract, Border and Smooth, Colour Range, Save and Load Selection, Select and Mask
     fillDialogs.tsx   Fill and Define Pattern
-    ChannelsPanel.tsx alpha channels, and the document's patterns
+    ToolPresetsPanel.tsx tool presets: new, choose, rename, Current Tool Only, import
+    ChannelsPanel.tsx alpha channels, and the document's patterns (and pattern editing mode's options)
     ParamControls.tsx controls from parameter lists, the Curves, Levels and gradient editors
     VectorProps.tsx   a shape's or text's settings and its appearance stack, in Properties
     TypePanels.tsx    the Character and Paragraph panels, and their styles

@@ -17,7 +17,8 @@
  *   sizes and where each starts, then the levels.
  */
 import { PATTERN_WGSL } from '../../vector/patterns'
-import { PATTERN_STRIDE, type PaintParams, type PatternLevel } from '../../vector/paint'
+import { FIELD_HEAD, FREEFORM_STRIDE, MESH_STRIDE, PATTERN_STRIDE, STROKE_SEG, type PaintParams, type PatternLevel } from '../../vector/paint'
+import { FREEFORM_EPS } from '../../vector/mesh'
 import { bufferAccess, preamble, type BufferFormat } from './common'
 
 /** RasterParams: one vec4u. */
@@ -62,6 +63,9 @@ export function patternBuffer(levels: PatternLevel[]): Float32Array {
   })
   return out
 }
+
+/** Pattern sampling in WGSL reading the pyramid from a buffer of another name (Pattern Overlay's). */
+export const patternImageWgsl = (buffer: string) => PATTERN_IMAGE_WGSL.replaceAll('pat[', `${buffer}[`)
 
 /** Pattern sampling in WGSL, the same sums as vector/paint.ts's patternSample, reading `pat`. */
 const PATTERN_IMAGE_WGSL = `
@@ -113,6 +117,146 @@ fn pattern_image(u: f32, v: f32, fw: f32) -> array<f32, 5> {
     for (var c = 0u; c < 5u; c++) { r[c] = r[c] * (1.0 - t) + q[c] * t; }
   }
   return r;
+}
+`
+
+/**
+ * A stroke gradient's, a freeform gradient's and a mesh's sums, reading
+ * their field from `pat` (vector/paint.ts: strokeT, freeformField and
+ * meshFieldAt, the same sums; vector/mesh.ts has the mesh's arithmetic).
+ */
+const FIELD_WGSL = `
+struct Paint4 { c: vec4f, a: f32 }
+
+fn stroke_t(q: vec2f) -> f32 {
+  let n = u32(pat[0]);
+  var best = 3.0e38;
+  var k = 0xffffffffu;
+  var tau = 0.0;
+  for (var s = 0u; s < n; s++) {
+    let o = ${FIELD_HEAD}u + s * ${STROKE_SEG}u;
+    let a = vec2f(pat[o], pat[o + 1u]);
+    let ab = vec2f(pat[o + 2u], pat[o + 3u]) - a;
+    let l2 = dot(ab, ab);
+    var t = 0.0;
+    if (l2 > 0.0) { t = clamp(dot(q - a, ab) / l2, 0.0, 1.0); }
+    let dq = q - (a + ab * t);
+    let d2 = dot(dq, dq);
+    if (d2 < best) {
+      best = d2;
+      k = o;
+      tau = t;
+    }
+  }
+  if (k == 0xffffffffu) { return 0.0; }
+  if (pat[1] < 0.5) { return (pat[k + 4u] + tau * (pat[k + 5u] - pat[k + 4u])) / max(pat[k + 6u], 1e-9); }
+  let a = vec2f(pat[k], pat[k + 1u]);
+  let ab = vec2f(pat[k + 2u], pat[k + 3u]) - a;
+  let side = ab.x * (q.y - a.y) - ab.y * (q.x - a.x);
+  var d = sqrt(best);
+  if (side * pat[k + 11u] < 0.0) { d = -d; }
+  let wl = pat[k + 7u] + tau * (pat[k + 9u] - pat[k + 7u]);
+  let wr = pat[k + 8u] + tau * (pat[k + 10u] - pat[k + 8u]);
+  return (d + wr) / max(wl + wr, 1e-9);
+}
+
+fn freeform_at(q: vec2f) -> Paint4 {
+  let n = u32(pat[0]);
+  var c = vec4f(0.0);
+  var a = 0.0;
+  var sum = 0.0;
+  for (var i = 0u; i < n; i++) {
+    let o = ${FIELD_HEAD}u + i * ${FREEFORM_STRIDE}u;
+    let dq = q - vec2f(pat[o], pat[o + 1u]);
+    let s2 = pat[o + 7u] * pat[o + 7u];
+    let w = pow(s2 / (dot(dq, dq) + ${FREEFORM_EPS}), 1.5);
+    let al = pat[o + 6u];
+    c += vec4f(pat[o + 2u], pat[o + 3u], pat[o + 4u], pat[o + 5u]) * al * w;
+    a += al * w;
+    sum += w;
+  }
+  if (sum <= 0.0) { return Paint4(vec4f(0.0), 0.0); }
+  return Paint4(c / sum, a / sum);
+}
+
+fn mesh_pt(vs: u32, cols: u32, i: u32, j: u32) -> vec2f {
+  let o = vs + (j * (cols + 1u) + i) * ${MESH_STRIDE}u;
+  return vec2f(pat[o], pat[o + 1u]);
+}
+
+// Where q is in the patch a b c d: u, v and how far outside it (vector/mesh.ts, invBilinear).
+fn inv_bilinear(q: vec2f, a: vec2f, b: vec2f, c: vec2f, d: vec2f) -> vec3f {
+  let e = b - a;
+  let f = d - a;
+  let g = a - b + c - d;
+  let h = q - a;
+  let k2 = g.x * f.y - g.y * f.x;
+  let k1 = e.x * f.y - e.y * f.x + h.x * g.y - h.y * g.x;
+  let k0 = h.x * e.y - h.y * e.x;
+  let w = sqrt(max(0.0, k1 * k1 - 4.0 * k0 * k2));
+  var qq = -0.5 * (k1 - w);
+  if (k1 >= 0.0) { qq = -0.5 * (k1 + w); }
+  var roots = array<f32, 2>(1e9, 1e9);
+  if (qq != 0.0) { roots[0] = k0 / qq; }
+  if (k2 != 0.0) { roots[1] = qq / k2; }
+  var best = vec3f(0.0, 0.0, 3.0e38);
+  for (var r = 0u; r < 2u; r++) {
+    let v = roots[r];
+    let p = e + g * v;
+    let pp = dot(p, p);
+    var u = 0.0;
+    if (pp > 0.0) { u = dot(h - f * v, p) / pp; }
+    let out = max(max(0.0, max(-u, u - 1.0)), max(-v, v - 1.0));
+    if (out < best.z) { best = vec3f(u, v, out); }
+  }
+  return best;
+}
+
+fn catmull_rom(f: f32) -> vec4f {
+  let f2 = f * f;
+  let f3 = f2 * f;
+  return vec4f((-f3 + 2.0 * f2 - f) / 2.0, (3.0 * f3 - 5.0 * f2 + 2.0) / 2.0, (-3.0 * f3 + 4.0 * f2 + f) / 2.0, (f3 - f2) / 2.0);
+}
+
+fn mesh_at(q: vec2f) -> Paint4 {
+  let cols = u32(pat[0]);
+  let rows = u32(pat[1]);
+  let np = u32(pat[2]);
+  let vs = u32(pat[3]);
+  var bi = 0u;
+  var bj = 0u;
+  var best = vec3f(0.0, 0.0, 3.0e38);
+  for (var k = 0u; k < np; k++) {
+    let i = u32(pat[${FIELD_HEAD}u + k * 2u]);
+    let j = u32(pat[${FIELD_HEAD}u + k * 2u + 1u]);
+    let r = inv_bilinear(q, mesh_pt(vs, cols, i, j), mesh_pt(vs, cols, i + 1u, j), mesh_pt(vs, cols, i + 1u, j + 1u), mesh_pt(vs, cols, i, j + 1u));
+    if (r.z < best.z) {
+      best = r;
+      bi = i;
+      bj = j;
+      if (r.z <= 0.0) { break; }
+    }
+  }
+  let gu = f32(bi) + clamp(best.x, 0.0, 1.0);
+  let gv = f32(bj) + clamp(best.y, 0.0, 1.0);
+  let iu = min(cols - 1u, u32(max(0.0, floor(gu))));
+  let iv = min(rows - 1u, u32(max(0.0, floor(gv))));
+  let wu = catmull_rom(clamp(gu - f32(iu), 0.0, 1.0));
+  let wv = catmull_rom(clamp(gv - f32(iv), 0.0, 1.0));
+  var c = vec4f(0.0);
+  var a = 0.0;
+  for (var b = 0u; b < 4u; b++) {
+    let j = u32(clamp(i32(iv) - 1 + i32(b), 0, i32(rows)));
+    for (var aa = 0u; aa < 4u; aa++) {
+      let i = u32(clamp(i32(iu) - 1 + i32(aa), 0, i32(cols)));
+      let w = wu[aa] * wv[b];
+      let o = vs + (j * (cols + 1u) + i) * ${MESH_STRIDE}u;
+      c += vec4f(pat[o + 2u], pat[o + 3u], pat[o + 4u], pat[o + 5u]) * w;
+      a += pat[o + 6u] * w;
+    }
+  }
+  let al = clamp(a, 0.0, 1.0);
+  return Paint4(clamp(c, vec4f(0.0), vec4f(al)), al);
 }
 `
 
@@ -230,6 +374,7 @@ ${PATTERN_WGSL}
 ${PATTERN_IMAGE_WGSL}
 
 const PI2: f32 = 6.283185307179586;
+${FIELD_WGSL}
 
 fn stop_at(i: u32) -> f32 { return stops[i * 6u]; }
 fn stop_colour(i: u32) -> vec4f { let o = i * 6u + 1u; return vec4f(stops[o], stops[o + 1u], stops[o + 2u], stops[o + 3u]); }
@@ -262,6 +407,14 @@ fn paint(@builtin(global_invocation_id) g: vec3u) {
       let s = pattern_image(gp.x, gp.y, P.m1.z);
       c = vec4f(s[0], s[1], s[2], s[3]);
       a = s[4];
+    } else if (kind == 9u) {
+      let s = freeform_at(gp);
+      c = s.c;
+      a = s.a;
+    } else if (kind == 10u) {
+      let s = mesh_at(gp);
+      c = s.c;
+      a = s.a;
     } else if (kind == 5u) {
       let v = pattern_value(P.u.z, gp, P.m1.z);
       a = P.alphas.y * (1.0 - v) + P.alphas.x * v;
@@ -270,6 +423,8 @@ fn paint(@builtin(global_invocation_id) g: vec3u) {
       var t: f32;
       if (kind == 1u) {
         t = gp.x;
+      } else if (kind == 8u) {
+        t = stroke_t(gp);
       } else if (kind == 6u) {
         t = abs(gp.x);
       } else if (kind == 2u) {

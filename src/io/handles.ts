@@ -7,6 +7,11 @@
  * files. The browser asks again for permission to write when the page is
  * next opened; that's its rule, and requestWrite below is where we ask.
  *
+ * Each recent file keeps a small picture of itself (the thumbnail.png a
+ * .pxll carries, or the one made as it's saved) in a store of its own, so
+ * the start screen can show it without asking for the file again; a file
+ * handle can't be read without a click.
+ *
  * Everything here is optional comfort. Each call is guarded, and without
  * IndexedDB or file handles the app works on, with downloads instead of
  * saving in place and no recent list.
@@ -16,6 +21,7 @@ const DB = 'plexel'
 const HANDLES = 'handles'
 const RECENT_KEY = 'recent'
 const META = 'meta'
+const PICTURES = 'pictures'
 /** How many files the start screen lists. */
 const RECENT_LIMIT = 12
 
@@ -31,10 +37,10 @@ let dbPromise: Promise<IDBDatabase | null> | null = null
 function db(): Promise<IDBDatabase | null> {
   dbPromise ??= new Promise((resolve) => {
     try {
-      const req = indexedDB.open(DB, 1)
+      const req = indexedDB.open(DB, 2)
       req.onupgradeneeded = () => {
-        req.result.createObjectStore(HANDLES)
-        req.result.createObjectStore(META)
+        // Version 2 added the pictures; a database from version 1 keeps its handles and list.
+        for (const name of [HANDLES, META, PICTURES]) if (!req.result.objectStoreNames.contains(name)) req.result.createObjectStore(name)
       }
       req.onsuccess = () => resolve(req.result)
       req.onerror = () => resolve(null)
@@ -87,19 +93,45 @@ export async function recentFiles(): Promise<RecentFile[]> {
   return list.filter((r): r is RecentFile => !!r && typeof r.handleKey === 'string' && typeof r.name === 'string' && typeof r.at === 'number')
 }
 
-/** Puts a file at the top of the recent list. */
-export async function touchRecent(handleKey: string, name: string) {
+const changed = new Set<() => void>()
+/** Calls `fn` whenever the recent list or a picture in it changes; returns the unsubscribe. */
+export function onRecentChange(fn: () => void): () => void {
+  changed.add(fn)
+  return () => changed.delete(fn)
+}
+const announce = () => changed.forEach((fn) => fn())
+
+/**
+ * Puts a file at the top of the recent list, with its picture (a PNG) when
+ * there is one. Without one, the picture it had is kept.
+ */
+export async function touchRecent(handleKey: string, name: string, picture?: Uint8Array | null) {
   const list = (await recentFiles()).filter((r) => r.handleKey !== handleKey)
   list.unshift({ handleKey, name, at: Date.now() })
   const kept = list.slice(0, RECENT_LIMIT)
   await run(META, 'readwrite', (s) => s.put(kept, RECENT_KEY))
-  // Handles that fell off the end aren't needed any more.
-  for (const r of list.slice(RECENT_LIMIT)) await run(HANDLES, 'readwrite', (s) => s.delete(r.handleKey))
+  if (picture) await run(PICTURES, 'readwrite', (s) => s.put(new Blob([picture as BlobPart], { type: 'image/png' }), handleKey))
+  // Handles that fell off the end aren't needed any more, nor their pictures.
+  for (const r of list.slice(RECENT_LIMIT)) {
+    await run(HANDLES, 'readwrite', (s) => s.delete(r.handleKey))
+    await run(PICTURES, 'readwrite', (s) => s.delete(r.handleKey))
+  }
+  announce()
 }
 
+/** A recent file's picture, as a PNG blob; null when it has none. */
+export async function recentPicture(handleKey: string): Promise<Blob | null> {
+  const b = await run<unknown>(PICTURES, 'readonly', (s) => s.get(handleKey))
+  return b instanceof Blob ? b : null
+}
+
+/** Takes a file off the recent list: its handle and picture go too. */
 export async function forgetRecent(handleKey: string) {
   const list = (await recentFiles()).filter((r) => r.handleKey !== handleKey)
   await run(META, 'readwrite', (s) => s.put(list, RECENT_KEY))
+  await run(HANDLES, 'readwrite', (s) => s.delete(handleKey))
+  await run(PICTURES, 'readwrite', (s) => s.delete(handleKey))
+  announce()
 }
 
 type PermissionHandle = FileSystemFileHandle & {

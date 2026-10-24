@@ -22,6 +22,8 @@ export interface MenuDef {
 
 const cmd = (command: string): MenuItem => ({ command })
 const SEP: MenuItem = { separator: true }
+/** The Colour Label submenu: none, then Photoshop's seven. */
+const LABEL_ITEMS: MenuItem[] = ['layer.tag.none', 'layer.tag.red', 'layer.tag.orange', 'layer.tag.yellow', 'layer.tag.green', 'layer.tag.blue', 'layer.tag.violet', 'layer.tag.gray'].map(cmd)
 
 /** A menu's items with its run-time entries filled in, and no separator left doubled or at an end by an empty one. */
 export function expandMenu(items: MenuItem[], c: CommandContext): MenuItem[] {
@@ -128,7 +130,16 @@ export const MENUS: MenuDef[] = [
       { submenu: 'Smart Objects', items: [cmd('layer.smart-convert'), cmd('layer.smart-edit')] },
       SEP,
       cmd('layer.rename'),
+      cmd('layer.rename-many'),
       cmd('layer.toggle-visible'),
+      { submenu: 'Colour Label', items: LABEL_ITEMS },
+      SEP,
+      cmd('layer.group'),
+      cmd('layer.ungroup'),
+      cmd('layer.select-in-group'),
+      cmd('layer.move-to-group'),
+      cmd('layer.draw-into'),
+      { submenu: 'Groups in the Panel', items: [cmd('layer.fold-all'), cmd('layer.unfold-all'), cmd('layer.fold-others')] },
       SEP,
       {
         submenu: 'Layer Mask',
@@ -153,10 +164,11 @@ export const MENUS: MenuDef[] = [
       SEP,
       { submenu: 'Artboards', items: [cmd('layer.new-artboard'), cmd('layer.artboard-from-layers'), SEP, cmd('layer.release-artboard')] },
       { submenu: 'Symbols', items: [cmd('layer.new-symbol'), SEP, cmd('layer.edit-symbol'), cmd('layer.break-symbol')] },
+      { submenu: 'Pattern', items: [cmd('layer.make-pattern')] },
       SEP,
       {
         submenu: 'Combine Shapes',
-        items: [cmd('layer.combine-add'), cmd('layer.combine-subtract'), cmd('layer.combine-intersect'), cmd('layer.combine-exclude'), SEP, cmd('layer.compound-release'), cmd('layer.compound-expand')],
+        items: [cmd('layer.combine-add'), cmd('layer.combine-subtract'), cmd('layer.combine-intersect'), cmd('layer.combine-exclude'), SEP, cmd('layer.compound-release'), cmd('layer.compound-expand'), SEP, cmd('shape.combine-one')],
       },
       {
         submenu: 'Pathfinder',
@@ -167,6 +179,10 @@ export const MENUS: MenuDef[] = [
       { submenu: 'Brushes', items: [cmd('shape.brush-new-art'), cmd('shape.brush-new-scatter'), cmd('shape.brush-new-pattern'), SEP, cmd('shape.brush-remove'), cmd('shape.brush-options')] },
       cmd('layer.convert-path'),
       cmd('layer.rasterize'),
+      cmd('layer.merge'),
+      cmd('layer.flatten-group'),
+      cmd('layer.merge-visible'),
+      cmd('layer.stamp-visible'),
       cmd('layer.image-trace'),
       SEP,
       cmd('layer.raise'),
@@ -318,6 +334,8 @@ export function disabledReason(def: CommandDef, c: CommandContext): string | nul
  * All" there.
  */
 export function contextLabel(def: CommandDef, c: CommandContext): string {
+  // Out of their submenu, colour labels say what they are: "Colour Label: Red".
+  if (def.id.startsWith('layer.tag.')) return def.label
   const label = def.menuLabel ? def.menuLabel(c) : def.label
   return /Mask$/.test(def.category) && !/Mask/.test(label) ? `${def.category}: ${label}` : label
 }
@@ -350,9 +368,9 @@ export function contextMenu(c: CommandContext): MenuItem[] {
         text: ['type.create-outlines', 'layer.rasterize'],
         fill: ['layer.rasterize', 'layer.mask-reveal-all'],
         embedded: ['layer.smart-edit', 'layer.rasterize', 'layer.image-trace'],
-        group: ['layer.mask-reveal-all'],
+        group: ['layer.rasterize', 'layer.flatten-group', 'layer.select-in-group', 'layer.draw-into', 'layer.mask-reveal-all'],
       }
-      groups.push(['edit.free-transform', 'layer.duplicate', 'layer.rename', 'layer.style', 'layer.clip', ...(byKind[kind] ?? []), 'layer.delete'])
+      groups.push(['edit.free-transform', 'layer.duplicate', 'layer.rename', 'layer.style', 'layer.clip', ...(byKind[kind] ?? []), 'layer.group', 'layer.merge', 'layer.delete'])
       if (c.hasMask()) groups.push(['layer.mask-toggle', 'layer.mask-invert', 'layer.mask-apply', 'layer.mask-delete'])
     }
     groups.push(['edit.undo', 'edit.paste'])
@@ -372,6 +390,34 @@ export function contextMenu(c: CommandContext): MenuItem[] {
 }
 
 /** A right-click on a ruler: its units, and the rulers' other settings. */
+/**
+ * The Layers panel's menu, at a right-click on a row: what works on the
+ * layers selected, the many-layer actions first. Items that can't run
+ * now are left out, as on the canvas.
+ */
+export function layersMenu(c: CommandContext): MenuItem[] {
+  // A context menu has no submenus: the colour labels are listed, each saying what it is.
+  const groups: string[][] = [
+    ['layer.draw-into', 'layer.select-in-group', 'layer.group', 'layer.ungroup', 'layer.move-to-group'],
+    ['layer.merge', 'layer.flatten-group', 'layer.rasterize', 'shape.combine-one'],
+    ['layer.duplicate', 'layer.rename', 'layer.rename-many'],
+    LABEL_ITEMS.map((i) => ('command' in i ? i.command : '')),
+    ['layer.fold-all', 'layer.unfold-all', 'layer.fold-others'],
+    ['layer.delete'],
+  ]
+  const out: MenuItem[] = []
+  for (const g of groups) {
+    const items = g.flatMap((x): MenuItem[] => {
+      const def = COMMANDS_BY_ID.get(x)
+      return def && (!def.enabled || def.enabled(c)) ? [cmd(x)] : []
+    })
+    if (!items.length) continue
+    if (out.length) out.push(SEP)
+    out.push(...items)
+  }
+  return out
+}
+
 export function rulerMenu(): MenuItem[] {
   return [...UNITS.map((u) => cmd(`view.units.${u.id}`)), SEP, cmd('view.show-guides'), cmd('view.lock-guides'), cmd('view.new-guide'), SEP, cmd('view.rulers')]
 }

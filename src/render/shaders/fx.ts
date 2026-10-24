@@ -6,6 +6,7 @@
  */
 import { OPS_WGSL, blendWgsl } from './composite'
 import { PATTERN_WGSL } from '../../vector/patterns'
+import { patternImageWgsl } from './vector'
 import { preamble, strideOf, type BufferFormat } from './common'
 
 /** FxParams: five vec4s. */
@@ -21,6 +22,8 @@ export const FX_INDEX = {
   'colour-overlay': 5,
   'gradient-overlay': 6,
   'pattern-overlay': 10,
+  /** Pattern Overlay with a pattern of the document's: its pyramid in `stops`. */
+  'pattern-image': 11,
   'bevel-highlight': 7,
   'bevel-shadow': 8,
   stroke: 9,
@@ -74,6 +77,7 @@ struct FxP {
 ${blendWgsl(fmt.mode)}
 ${OPS_WGSL}
 ${PATTERN_WGSL}
+${patternImageWgsl('stops')}
 
 const RS: u32 = ${S}u;
 
@@ -221,6 +225,14 @@ fn layer(@builtin(global_invocation_id) g: vec3u) {
       let pa = P.f2.w * (1.0 - v) + v;
       colour = select(vec4f(0.0), (P.f0 * P.f2.w * (1.0 - v) + P.colour * v) / pa, pa > 0.0);
       cov = a * pa;
+    }
+    case 11u: {
+      // A pattern of the document's in document space: f1 and f2.xy map the pixel's centre
+      // into its pixels, f2.z is how many of them a pixel here covers.
+      let gp = vec2f(P.f1.x * (x + 0.5) + P.f1.z * (y + 0.5) + P.f2.x, P.f1.y * (x + 0.5) + P.f1.w * (y + 0.5) + P.f2.y);
+      let s = pattern_image(gp.x, gp.y, P.f2.z);
+      colour = select(vec4f(0.0), vec4f(s[0], s[1], s[2], s[3]) / s[4], s[4] > 0.0);
+      cov = a * s[4];
     }
     case 6u: {
       var t = clamp(0.5 + ((x + 0.5 - P.f1.x) * P.f1.z + (y + 0.5 - P.f1.y) * P.f1.w) / (2.0 * P.f2.x), 0.0, 1.0);

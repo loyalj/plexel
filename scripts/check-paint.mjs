@@ -14,6 +14,9 @@
 import { check, dialogShown, finish, frames, open, pageHelpers, settle, waitForEngine, waitUntil } from './harness.mjs'
 import { decodePng, pixelAt } from './png.mjs'
 import { fileURLToPath } from 'node:url'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const { page, url } = await open({ viewport: { width: 1280, height: 860 } })
 await page.goto(url)
@@ -189,7 +192,7 @@ await press('Control+Comma')
 await setForeground(255, 0, 0)
 await stroke([[-50, 220], [50, 220]])
 check('a new, empty pixel layer takes paint', near(await at(0, 220), [255, 0, 0]), String(await at(0, 220)))
-check('and its thumbnail shows it', await waitUntil(page, () => [...document.querySelectorAll('.layer-row')].some((r) => r.querySelector('.layer-name').textContent === 'Layer 1' && r.querySelector('.layer-thumb').dataset.thumb === 'image')))
+check('and its thumbnail shows it', await waitUntil(page, () => [...document.querySelectorAll('.layer-row')].some((r) => r.classList.contains('selected') && r.querySelector('.layer-thumb').dataset.thumb === 'image')))
 
 // The refusals' notices sit over the canvas's corner; out of the way.
 await page.$$eval('.notice button', (bs) => bs.forEach((b) => b.click()))
@@ -487,6 +490,150 @@ check('an image tip’s cursor follows its shape instead', tipCursor.length > 20
 await page.click('[aria-label="Remove the myer-settlement-brushes brushes"]')
 await frames(page)
 check('a whole imported group can be removed', !(await page.$('[data-brush-group="myer-settlement-brushes"]')))
+
+console.log('\nbrushes out as ABR')
+const exportedBefore = (await steps()).length
+// The save picker hands back a file in the page's own storage.
+await page.evaluate(() => {
+  window.showSaveFilePicker = async ({ suggestedName }) => (await navigator.storage.getDirectory()).getFileHandle(suggestedName, { create: true })
+})
+await page.click('[data-export-brushes]')
+check('Export saves the brushes as a Photoshop file, and says what Photoshop has no place for', await notice(/brush(es)? saved as Photoshop brushes/), await page.evaluate(() => [...document.querySelectorAll('.notice')].map((n) => n.textContent).join(' / ')))
+const saved = await page.evaluate(async () => {
+  const f = await (await (await navigator.storage.getDirectory()).getFileHandle('Plexel Brushes.abr')).getFile()
+  const b = new Uint8Array(await f.arrayBuffer())
+  return { size: b.length, head: [b[0], b[1], b[2], b[3]], sig: String.fromCharCode(...b.subarray(4, 8)) }
+})
+check('the file is ABR version 6.2, its tips first', saved.size > 1000 && saved.head.join() === '0,6,0,2' && saved.sig === '8BIM', JSON.stringify(saved))
+check('it changes nothing in the document', (await steps()).length === exportedBefore)
+await page.$$eval('.notice button', (bs) => bs.forEach((b) => b.click()))
 await page.click('[data-panel="brushes"] .panel-close')
+
+console.log('\nbristle, erodible and airbrush tips')
+await pickTool('brush')
+if (!(await page.$('[data-brush-settings]'))) await press('F5')
+await page.waitForSelector('[data-brush-settings]')
+await page.click('[data-tip="special:bristle"]')
+await frames(page)
+check('the tip picker has a bristle tip, with its own settings', (await brushState()).special?.kind === 'bristle' && !!(await page.$('[data-special="bristle"] #bs-bristles')) && !!(await page.$('#bs-special-shape')))
+await page.select('#bs-special-shape', 'flat-fan')
+check('its shape from the menu', (await brushState()).special.shape === 'flat-fan')
+await page.evaluate(() => globalThis.plexel.brushes().update('brush', { size: 60, special: { kind: 'bristle', shape: 'round-point', bristles: 0.5, length: 1, thickness: 0.4, stiffness: 0.5 } }))
+await setForeground(0, 0, 0)
+const sb = (await steps()).length
+await penStroke(Array.from({ length: 30 }, (_, i) => [-250 + i * 12, -200, 0.2 + (0.8 * i) / 29]))
+check('a bristle stroke paints, wider and darker as it’s pressed', (await steps()).length === sb + 1 && grey(await at(80, -200)) < grey(await at(-240, -200)) + 1)
+await page.click('[data-tip="special:erodible"]')
+await frames(page)
+check('an erodible tip, with Softness and its wear', (await brushState()).special?.kind === 'erodible' && !!(await page.$('#bs-softness')) && !!(await page.$('[data-wear="0"]')))
+await page.evaluate(() => globalThis.plexel.brushes().update('brush', { size: 20, special: { kind: 'erodible', shape: 'point', softness: 1 } }))
+await penStroke(Array.from({ length: 40 }, (_, i) => [-250 + i * 12, -150, 0.8]))
+const worn = await page.evaluate(() => globalThis.plexel.brushes().get().wear.brush ?? 0)
+check('drawing wears it, and the wear is kept for the next stroke', worn > 0.05 && !!(await page.$(`[data-wear="${Math.round(worn * 100)}"]`)), worn.toFixed(3))
+await page.click('[data-sharpen]')
+check('Sharpen Tip makes it new', (await page.evaluate(() => globalThis.plexel.brushes().get().wear.brush)) === 0)
+await page.click('[data-tip="special:airbrush"]')
+await frames(page)
+check('an airbrush tip, with its spatter and distortion', (await brushState()).special?.kind === 'airbrush' && !!(await page.$('#bs-air-distortion')) && !!(await page.$('#bs-air-spatter-amount')))
+const sa = (await steps()).length
+await penStroke(Array.from({ length: 20 }, (_, i) => [-250 + i * 15, -100, 0.7]))
+check('and it sprays', (await steps()).length === sa + 1 && grey(await at(-120, -100)) < 250)
+await page.click('[data-section="shape"] .brush-section-title')
+await frames(page)
+check('Stylus Wheel and Initial Rotation are in every control menu', (await page.$$eval('#bs-size-control option', (os) => os.map((o) => o.value))).includes('wheel') && (await page.$$eval('#bs-angle-control option', (os) => os.map((o) => o.value))).includes('initial-twist'))
+await page.click('[data-tip="round"]')
+check('choosing an image tip again leaves the special tip', (await brushState()).special === null)
+await press('F5')
+
+console.log('\ntool presets')
+await clickMenu('Window', 'window.panel.tool-presets')
+await page.waitForSelector('[data-panel="tool-presets"]')
+await page.evaluate(() => globalThis.plexel.brushes().update('brush', { size: 77, special: { kind: 'bristle', shape: 'flat-blunt', bristles: 0.6, length: 1, thickness: 0.2, stiffness: 0.7 }, opacity: 0.5 }))
+await page.click('[data-tool-preset-new]')
+await page.waitForSelector('#tool-preset-name')
+await page.click('#tool-preset-name', { clickCount: 3 })
+await page.keyboard.type('Big Flat')
+await page.keyboard.press('Enter')
+await frames(page)
+const presets = () => page.evaluate(() => globalThis.plexel.toolPresets().get())
+check('New Tool Preset keeps the tool and its options under a name', (await presets()).some((p) => p.name === 'Big Flat' && p.tool === 'brush' && p.options.brush.size === 77))
+await page.evaluate(() => globalThis.plexel.brushes().update('brush', { size: 5, special: null, opacity: 1 }))
+await page.evaluate(() => globalThis.plexel.tools().set('marquee'))
+await frames(page)
+await page.evaluate(() => globalThis.plexel.selectTools().update('marquee', { shape: 'ellipse', feather: 6 }))
+await page.click('[data-tool-preset-new]')
+await page.waitForSelector('#tool-preset-name')
+await page.keyboard.press('Enter')
+await frames(page)
+check('Current Tool Only shows the Marquee’s presets with the Marquee', (await page.$$('[data-tool-preset]')).length === 1)
+await page.click('#tool-presets-only')
+await frames(page)
+check('off, it shows every tool’s', (await page.$$('[data-tool-preset]')).length === 2)
+const big = (await presets()).find((p) => p.name === 'Big Flat').id
+await page.click(`[data-tool-preset="${big}"] .tool-preset`)
+await frames(page)
+check('choosing one takes up its tool with its options', (await page.evaluate(() => globalThis.plexel.tools().get())) === 'brush' && (await brushState()).size === 77 && (await brushState()).special?.shape === 'flat-blunt' && (await brushState()).opacity === 0.5)
+// Photoshop's tool presets: a TPL file made here, one Brush preset and one for a tool Plexel hasn't got.
+const tpl = (() => {
+  const out = []
+  const u32 = (v) => out.push((v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255)
+  const sig = (s) => out.push(...[...s].map((c) => c.charCodeAt(0)))
+  const uni = (s) => {
+    u32(s.length + 1)
+    for (const c of s) out.push(c.charCodeAt(0) >> 8, c.charCodeAt(0) & 255)
+    out.push(0, 0)
+  }
+  const id = (s) => (s.length === 4 ? (u32(0), sig(s)) : (u32(s.length), sig(s)))
+  const f64 = (v) => {
+    const b = new DataView(new ArrayBuffer(8))
+    b.setFloat64(0, v)
+    for (let i = 0; i < 8; i++) out.push(b.getUint8(i))
+  }
+  const desc = (cls, items) => {
+    uni('')
+    id(cls)
+    u32(items.length)
+    for (const [k, w] of items) {
+      id(k)
+      w()
+    }
+  }
+  const long = (v) => () => (sig('long'), u32(v))
+  const unit = (u, v) => () => (sig('UntF'), sig(u), f64(v))
+  const objc = (cls, items) => () => (sig('Objc'), desc(cls, items))
+  sig('8BTP')
+  u32(3)
+  u32(4)
+  sig('8BIM')
+  sig('tptp')
+  const lenAt = out.length
+  u32(0)
+  const start = out.length
+  u32(2)
+  uni('$$$/Presets/Tools/A=Wide Soft')
+  u32(16)
+  desc('paintbrushTool', [['Opct', long(40)], ['Brsh', objc('computedBrush', [['Dmtr', unit('#Pxl', 150)], ['Hrdn', unit('#Prc', 0)]])]])
+  uni('$$$/Presets/Tools/B=Sponge 9')
+  u32(16)
+  desc('saturationTool', [])
+  const n = out.length - start
+  out.splice(lenAt, 4, (n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255)
+  while (out.length % 4) out.push(0)
+  return Uint8Array.from(out)
+})()
+const tplDir = mkdtempSync(join(tmpdir(), 'plexel-tpl-'))
+const tplFile = join(tplDir, 'Studio.tpl')
+writeFileSync(tplFile, tpl)
+const [tplChooser] = await Promise.all([page.waitForFileChooser({ timeout: 5000 }), page.click('[data-import-tool-presets]')])
+await tplChooser.accept([tplFile])
+await waitUntil(page, () => !!document.querySelector('[data-tool-preset-group="Studio"]'), { timeout: 8000 })
+const studio = (await presets()).filter((p) => p.group === 'Studio')
+check('Import reads Photoshop’s tool presets, the ones for Plexel’s tools, grouped by file', studio.length === 1 && studio[0].name === 'Wide Soft' && studio[0].tool === 'brush')
+check('and says what was left out', await notice(/1 tool preset came in/))
+await page.click(`[data-tool-preset="${studio[0].id}"] .tool-preset`)
+await frames(page)
+check('choosing it gives the Brush its tip and options', (await brushState()).size === 150 && (await brushState()).hardness === 0 && (await brushState()).opacity === 0.4)
+await page.$$eval('.notice button', (bs) => bs.forEach((b) => b.click()))
+await page.click('[data-panel="tool-presets"] .panel-close')
 
 await finish()

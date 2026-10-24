@@ -56,6 +56,7 @@ export const KEY_SETS: KeySet[] = [
       'tool.eraser': ['Shift+E'],
       'tool.rotate': ['Shift+H'],
       'tool.gradient': ['G'],
+      'tool.mesh': ['U'],
       'tool.group-fill': [],
       'tool.next-fill': [],
       'tool.group-shape': [],
